@@ -1,0 +1,202 @@
+#!/usr/bin/env bash
+#
+# net-doctor —— 网络自检
+#
+# 开机后先跑一次:  net-doctor
+# 逐层检查"网卡 → IP → 路由 → DNS → 外网", 哪一层断了就给出对应的修复命令。
+#
+#   net-doctor            完整检查
+#   net-doctor --fix      尝试自动修复(重启 NetworkManager / 重建连接 / 重启 resolved)
+#
+set -uo pipefail
+
+FIX=0
+[[ "${1:-}" == "--fix" ]] && FIX=1
+
+RED=$'\033[1;31m'; GRN=$'\033[1;32m'; YEL=$'\033[1;33m'; BLU=$'\033[1;34m'; RST=$'\033[0m'
+ok()   { printf '  %s✅%s %s\n' "$GRN" "$RST" "$*"; }
+bad()  { printf '  %s❌%s %s\n' "$RED" "$RST" "$*"; BAD=$((BAD+1)); }
+warn() { printf '  %s⚠️ %s%s\n' "$YEL" "$*" "$RST"; }
+info() { printf '  %s·%s %s\n' "$BLU" "$RST" "$*"; }
+step() { printf '\n%s==> %s%s\n' "$BLU" "$*" "$RST"; }
+BAD=0
+
+printf '%s=== 网络自检 ===%s\n' "$BLU" "$RST"
+
+############################### 1. 网络服务 ###############################
+step "1. 网络服务"
+if command -v nmcli >/dev/null 2>&1; then
+  ok "NetworkManager 已安装 ($(nmcli --version 2>/dev/null | head -1))"
+else
+  bad "没有 nmcli —— 系统里没有 NetworkManager"
+  info "修复: sudo apt-get install -y network-manager wpasupplicant && sudo systemctl enable --now NetworkManager"
+fi
+
+NM_RUNNING="$(systemctl is-active NetworkManager 2>/dev/null || true)"
+case "$NM_RUNNING" in
+  active)   ok "NetworkManager 正在运行" ;;
+  inactive) bad "NetworkManager 没在运行"
+            info "修复: sudo systemctl enable --now NetworkManager" ;;
+  *)        bad "NetworkManager 状态异常: ${NM_RUNNING:-未知}"
+            info "修复: sudo systemctl enable --now NetworkManager" ;;
+esac
+
+if command -v nmcli >/dev/null 2>&1 && [[ "$NM_RUNNING" == "active" ]]; then
+  info "nmcli 设备状态:"
+  nmcli -t -f DEVICE,TYPE,STATE,CONNECTION device status 2>/dev/null | sed 's/^/      /'
+fi
+
+############################### 2. 网卡与 IP ###############################
+step "2. 网卡与 IP 地址"
+if ! command -v ip >/dev/null 2>&1; then
+  bad "没有 ip 命令(iproute2 未安装)"
+  info "修复: sudo apt-get install -y iproute2"
+else
+  ip -br link show 2>/dev/null | sed 's/^/      /'
+  # 找已经拿到 IP 的非回环网卡
+  UP_IFS="$(ip -o -4 addr show scope global 2>/dev/null | awk '{print $2}' | sort -u)"
+  if [[ -n "$UP_IFS" ]]; then
+    while read -r i; do
+      [[ -z "$i" ]] && continue
+      ok "$i 已分配 IPv4: $(ip -br -4 addr show "$i" 2>/dev/null | awk '{print $3}')"
+    done <<< "$UP_IFS"
+  else
+    bad "没有任何网卡拿到 IPv4 地址"
+    if command -v nmcli >/dev/null 2>&1; then
+      info "当前所有连接: $(nmcli -t -f NAME,TYPE,DEVICE con show 2>/dev/null | tr '\n' ' ')"
+      info "网卡没拿到地址, 通常是没插网线 / 没连 WiFi, 或者 DHCP 没成功"
+      info "修复: 确认网线插好; WiFi 用 nmcli dev wifi list 扫描, nmcli con add type wifi ..."
+    fi
+  fi
+fi
+
+############################### 3. 路由 ###############################
+step "3. 路由"
+if command -v ip >/dev/null 2>&1; then
+  DEFAULT_RT="$(ip route show default 2>/dev/null | head -1)"
+  if [[ -n "$DEFAULT_RT" ]]; then
+    ok "有默认路由: ${DEFAULT_RT}"
+    GW="$(ip route show default 2>/dev/null | awk '{print $3; exit}')"
+  else
+    bad "没有默认路由(连本网段都出不去)"
+    GW=""
+  fi
+else
+  warn "没有 ip 命令, 跳过路由检查"
+  GW=""
+fi
+
+############################### 4. 外网连通性 ###############################
+step "4. 外网连通性"
+if [[ -n "${GW:-}" ]] && command -v ping >/dev/null 2>&1; then
+  if ping -c 2 -W 2 "$GW" >/dev/null 2>&1; then
+    ok "能 ping 通网关 ${GW}"
+  else
+    warn "ping 不通网关 ${GW}(可能是网关禁了 ICMP, 不一定代表断网)"
+  fi
+fi
+if command -v ping >/dev/null 2>&1; then
+  if ping -c 2 -W 3 223.5.5.5 >/dev/null 2>&1; then
+    ok "能 ping 通公网 IP 223.5.5.5 (DNS 本身可用)"
+  else
+    warn "ping 不通 223.5.5.5"
+  fi
+fi
+
+############################### 5. DNS ###############################
+step "5. DNS 解析"
+# 先给默认值: 下面这些变量在"配置异常"的分支里可能没被赋值,
+# set -u 下直接引用会报 unbound variable 并退出, 就看不到后面的诊断了
+nameservers=""
+RESOLVED_ST="unknown"
+RESOLV_TGT="$(readlink -f /etc/resolv.conf 2>/dev/null || true)"
+info "/etc/resolv.conf -> ${RESOLV_TGT}"
+if [[ -e /etc/resolv.conf ]]; then
+  nameservers="$(grep -E '^nameserver' /etc/resolv.conf 2>/dev/null | awk '{print $2}' | tr '\n' ' ')"
+  if [[ -n "$nameservers" ]]; then
+    ok "nameserver: ${nameservers}"
+  else
+    bad "/etc/resolv.conf 里没有 nameserver"
+  fi
+else
+  bad "/etc/resolv.conf 不存在或指向了不存在的文件(${RESOLV_TGT})"
+  info "修复: sudo rm -f /etc/resolv.conf && sudo ln -s /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf"
+fi
+
+RESOLVED_ST="$(systemctl is-active systemd-resolved 2>/dev/null || true)"
+if [[ "$RESOLVED_ST" == "active" ]]; then
+  ok "systemd-resolved 正在运行"
+elif [[ -n "$nameservers" ]]; then
+  warn "systemd-resolved 没运行(${RESOLVED_ST:-未安装}), 但 resolv.conf 里仍有 nameserver"
+else
+  bad "systemd-resolved 状态: ${RESOLVED_ST:-未安装}, 且 resolv.conf 为空"
+  info "修复: sudo apt-get install -y systemd-resolved && sudo systemctl enable --now systemd-resolved"
+fi
+
+if command -v getent >/dev/null 2>&1; then
+  if getent hosts www.baidu.com >/dev/null 2>&1; then
+    ok "域名解析正常 (www.baidu.com -> $(getent hosts www.baidu.com | head -1 | awk '{print $1}'))"
+  else
+    bad "域名解析失败"
+    info "修复: sudo systemctl restart systemd-resolved NetworkManager"
+  fi
+fi
+
+if command -v curl >/dev/null 2>&1; then
+  HTTP_CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 https://www.gequhai.com/ 2>/dev/null || echo 000)"
+  if [[ "$HTTP_CODE" =~ ^(2|3) ]]; then
+    ok "HTTPS 出站正常 (gequhai.com 返回 ${HTTP_CODE})"
+  else
+    warn "HTTPS 请求异常 (gequhai.com 返回 ${HTTP_CODE})"
+  fi
+fi
+
+############################### 6. 代理 ###############################
+step "6. 代理设置"
+PROXY_ENV="$(env | grep -iE '^(http|https|all|no)_proxy=' || true)"
+if [[ -n "$PROXY_ENV" ]]; then
+  warn "当前 shell 里设了代理:"
+  echo "$PROXY_ENV" | sed 's/^/      /'
+  info "如果代理没在跑, 会导致所有下载失败: unset http_proxy https_proxy all_proxy"
+fi
+if [[ -f "$HOME/projects/gequhai-downloader/config.json" ]]; then
+  CFG_PROXY="$(grep -o '"proxy"[[:space:]]*:[[:space:]]*"[^"]*"' "$HOME/projects/gequhai-downloader/config.json" 2>/dev/null | head -1)"
+  info "下载器代理配置: ${CFG_PROXY:-读不到}"
+  if [[ "$CFG_PROXY" != *'""'* && "$CFG_PROXY" == *'"proxy"'* ]]; then
+    warn "下载器里配了代理但这台机器可能没跑 Clash, 建议清空: music setup-proxy"
+  fi
+fi
+
+############################### 自动修复 ###############################
+if (( FIX == 1 )); then
+  step "尝试自动修复"
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl is-enabled systemd-resolved >/dev/null 2>&1 || systemctl enable systemd-resolved >/dev/null 2>&1
+    systemctl restart systemd-resolved 2>&1 | sed 's/^/      /' || true
+    ok "已重启 systemd-resolved"
+    if command -v nmcli >/dev/null 2>&1; then
+      systemctl restart NetworkManager 2>&1 | sed 's/^/      /' || true
+      ok "已重启 NetworkManager, 等 5 秒重新获取地址..."
+      sleep 5
+    fi
+  fi
+  # resolv.conf 是坏链接时重建
+  if [[ ! -e /etc/resolv.conf ]]; then
+    rm -f /etc/resolv.conf
+    ln -s /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+    ok "已重建 /etc/resolv.conf 软链接"
+  fi
+  printf '\n请重新运行 net-doctor 看结果\n'
+  exec "$(command -v net-doctor)" 2>/dev/null || true
+fi
+
+############################### 结论 ###############################
+echo
+if (( BAD == 0 )); then
+  printf '%s✅ 网络自检全部通过, 可以正常下载歌曲了%s\n' "$GRN" "$RST"
+  exit 0
+else
+  printf '%s❌ 发现 %d 项问题%s(每项上面都给了对应的修复命令)\n' "$RED" "$BAD" "$RST"
+  info "还连不上就重跑: net-doctor --fix"
+  exit 1
+fi

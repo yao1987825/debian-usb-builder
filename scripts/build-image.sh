@@ -192,6 +192,8 @@ FONT_PKGS="fonts-wqy-zenhei"
 [[ "$WITH_NOTO_CJK" == "1" ]] && FONT_PKGS="${FONT_PKGS} fonts-noto-cjk"
 
 # ---- 必需组件 ----
+# 网络: 必须装 NetworkManager。Debian 12 + Xfce 默认不带任何网卡配置服务,
+# 没有它开机就没人给网卡分配 IP(DHCP), 表现为"完全连不上网"。
 chroot_run apt-get install -y --no-install-recommends \
   linux-image-amd64 \
   dbus-x11 policykit-1 sudo locales tzdata \
@@ -205,7 +207,8 @@ chroot_run apt-get install -y --no-install-recommends \
   ffmpeg aria2 vim tmux htop \
   cloud-guest-utils gdisk parted dosfstools e2fsprogs rsync \
   grub-efi-amd64-bin grub-efi-amd64-signed shim-signed \
-  systemd-resolved
+  systemd-resolved \
+  network-manager wpasupplicant iproute2 iputils-ping dnsutils
 
 # ---- 可选组件: 装不上不影响系统, 但少了会影响输入法/桌面体验 ----
 apt_optional() {
@@ -250,6 +253,16 @@ EOF
 # DNS: 构建期间保持用宿主机 resolv.conf(第 3 步的 clone/pip/playwright 都要联网),
 # 等所有联网步骤结束、切换到 systemd-resolved, 这样换台机器启动也能自动拿 DNS。
 chroot_run systemctl enable systemd-resolved
+# 网卡配置: NetworkManager 负责 DHCP / 路由 / WiFi。没有它就是一台没有网络的机器。
+chroot_run systemctl enable NetworkManager || die "NetworkManager 启用失败"
+# 让 NetworkManager 用 systemd-resolved 提供的 DNS(和 Debian 官方桌面一致)
+mkdir -p "${ROOTFS}/etc/NetworkManager/conf.d"
+cat > "${ROOTFS}/etc/NetworkManager/conf.d/10-dns.conf" <<'EOF'
+[main]
+dns=systemd-resolved
+systemd-resolved=true
+EOF
+[[ -x "${ROOTFS}/usr/bin/nmcli" ]] || die "nmcli 没装上, NetworkManager 安装异常"
 
 # 账户
 chroot_run useradd --create-home --shell /bin/bash --comment "USB User" "$USER_NAME"
@@ -332,6 +345,17 @@ fi
 find "${ROOTFS}/usr/local/bin" -type f -exec chmod 0755 {} + 2>/dev/null || true
 chmod 0755 "${ROOTFS}/usr/local/lib/musictools/single.py" 2>/dev/null || true
 chown -R "${USER_UID}:${USER_GID}" "${ROOTFS}/home/${USER_NAME}"
+
+# 对着"即将装进镜像的那份" music 跑一遍命令行回归测试。
+# 这一步放在这里是因为 x86 的 CI runner 没有 loop 设备, 事后没法再从镜像里
+# 把文件抠出来跑; 构建期 rootfs 就是一个目录, 直接测最省事也最可靠。
+if [[ -f "${ROOTFS}/usr/local/bin/music" ]]; then
+  if MUSIC_BIN="${ROOTFS}/usr/local/bin/music" bash "${SCRIPT_DIR}/test-music-cli.sh" >/dev/null 2>&1; then
+    log "music 命令行回归测试通过(参数没有丢失)"
+  else
+    die "music 命令行回归测试失败, 镜像里的 music 脚本有问题"
+  fi
+fi
 
 # 所有联网步骤已结束, 现在把 DNS 交给 systemd-resolved
 rm -f "${ROOTFS}/etc/resolv.conf"

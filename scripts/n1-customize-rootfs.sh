@@ -324,6 +324,15 @@ fi
 find "${ROOTFS_MOUNT}/usr/local/bin" -type f -exec chmod 0755 {} + 2>/dev/null || true
 chmod 0755 "${ROOTFS_MOUNT}/usr/local/lib/musictools/single.py" 2>/dev/null || true
 
+# 对着"即将装进镜像的那份" music 跑一遍命令行回归测试
+if [[ -f "${ROOTFS_MOUNT}/usr/local/bin/music" ]]; then
+  if MUSIC_BIN="${ROOTFS_MOUNT}/usr/local/bin/music" bash "${SCRIPT_DIR}/test-music-cli.sh" >/dev/null 2>&1; then
+    log "music 命令行回归测试通过(参数没有丢失)"
+  else
+    die "music 命令行回归测试失败, 镜像里的 music 脚本有问题"
+  fi
+fi
+
 # fcitx5 默认使用 rime
 mkdir -p "${ROOTFS_MOUNT}/home/${USER_NAME}/.config/fcitx5/rime"
 cat > "${ROOTFS_MOUNT}/home/${USER_NAME}/.config/fcitx5/profile" <<'EOF'

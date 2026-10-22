@@ -53,13 +53,22 @@ struct_check() {
   fi
 
   local loop=""
-  loop="$($SUDO losetup --show -P "$IMG" 2>/dev/null || true)"
+  # 必须带 -f: 不带 -f 时 losetup 只会"查询"文件已有的关联设备, 不会新建,
+  # 结果永远是 "failed to use device: No such device", 内容校验会被静默跳过。
+  loop="$($SUDO losetup -P -f --show "$IMG" 2>/dev/null || true)"
   if [[ -z "$loop" ]]; then
     warn "无法创建 loop 设备(容器里可能没权限), 跳过内容校验"
     return 0
   fi
   # shellcheck disable=SC2064
   trap "$SUDO losetup -d '$loop' 2>/dev/null || true" RETURN
+  # 等内核把分区节点建出来
+  local _i
+  for _i in $(seq 1 20); do
+    [[ -b "${loop}p4" ]] && break
+    $SUDO partprobe "$loop" 2>/dev/null || true
+    sleep 1
+  done
 
   local p2="${loop}p2" p3="${loop}p3" p4="${loop}p4"
   [[ -b "$p2" ]] || die "EFI 分区设备不存在: $p2"
@@ -83,21 +92,22 @@ struct_check() {
   rmdir "$esp_mount" 2>/dev/null || true
 
   # 4) 根分区内容(只读, 用 debugfs 不用挂载)
+  #    debugfs / dumpe2fs 要读块设备, 权限是 root 专属, 所以必须走 $SUDO
   if command -v debugfs >/dev/null 2>&1; then
     local boot_list kver
-    boot_list="$(debugfs -R "ls /boot" "$p3" 2>/dev/null | tr -s ' ' '\n' | grep -E '^vmlinuz-' | head -1 || true)"
+    boot_list="$($SUDO debugfs -R "ls /boot" "$p3" 2>/dev/null | tr -s ' ' '\n' | grep -E '^vmlinuz-' | head -1 || true)"
     if [[ -n "$boot_list" ]]; then
       kver="${boot_list#vmlinuz-}"
       ok "根分区内核: ${kver}"
     else
       die "根分区 /boot 下没有找到内核"
     fi
-    if debugfs -R "ls /boot" "$p3" 2>/dev/null | grep -q "initrd.img-${kver}"; then
+    if $SUDO debugfs -R "ls /boot" "$p3" 2>/dev/null | grep -q "initrd.img-${kver}"; then
       ok "根分区 initrd 存在"
     else
       die "根分区缺少 initrd.img-${kver}"
     fi
-    local fstab; fstab="$(debugfs -R "cat /etc/fstab" "$p3" 2>/dev/null || true)"
+    local fstab; fstab="$($SUDO debugfs -R "cat /etc/fstab" "$p3" 2>/dev/null || true)"
     if grep -q "songdisk" <<<"$fstab"; then
       ok "/etc/fstab 已挂载歌曲分区"
     else
@@ -112,7 +122,7 @@ struct_check() {
     # 把镜像里安装的那份 music 抠出来, 跑一遍命令行回归测试
     # (防止 "关键词被 shift 吃掉" 这类静默 bug 混进产物)
     local tmp_music; tmp_music="$(mktemp -d)/music"
-    if debugfs -R "dump /usr/local/bin/music ${tmp_music}" "$p3" 2>/dev/null && [[ -s "$tmp_music" ]]; then
+    if $SUDO debugfs -R "dump /usr/local/bin/music ${tmp_music}" "$p3" 2>/dev/null && [[ -s "$tmp_music" ]]; then
       chmod +x "$tmp_music"
       if MUSIC_BIN="$tmp_music" bash "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test-music-cli.sh" >/dev/null 2>&1; then
         ok "镜像里的 music 命令行回归测试通过(参数没有丢失)"
@@ -122,13 +132,33 @@ struct_check() {
     else
       warn "没能从根分区取出 /usr/local/bin/music, 跳过回归测试"
     fi
+
+    # 网络: 没有 NetworkManager 就是一台没有网络的机器, 必须卡住
+    local _f
+    for _f in /usr/local/bin/net-doctor /usr/local/bin/usb-grow.sh /usr/bin/nmcli; do
+      if $SUDO debugfs -R "stat ${_f}" "$p3" 2>/dev/null | grep -q "Inode:"; then
+        ok "根分区存在 ${_f}"
+      else
+        die "根分区缺少 ${_f} —— 没有它开机就没有网络 / 无法扩容"
+      fi
+    done
+    if $SUDO debugfs -R "ls /etc/systemd/system/multi-user.target.wants" "$p3" 2>/dev/null | grep -q "NetworkManager.service"; then
+      ok "NetworkManager 已设为开机自启"
+    else
+      die "NetworkManager 没有开机自启 —— 开机后没人给网卡分配 IP, 必然连不上网"
+    fi
+    if $SUDO debugfs -R "ls /etc/systemd/system/sysinit.target.wants" "$p3" 2>/dev/null | grep -q "systemd-resolved.service"; then
+      ok "systemd-resolved 已设为开机自启(DNS 解析)"
+    else
+      warn "systemd-resolved 没开机自启, DNS 可能解析不了"
+    fi
   else
     warn "缺少 debugfs, 跳过根分区内容校验"
   fi
 
   # 5) 歌曲分区
   if [[ -b "$p4" ]]; then
-    if dumpe2fs -h "$p4" 2>/dev/null | grep -q "Filesystem volume name:.*MUSIC"; then
+    if $SUDO dumpe2fs -h "$p4" 2>/dev/null | grep -q "Filesystem volume name:.*MUSIC"; then
       ok "歌曲分区标签 MUSIC 正确"
     else
       warn "歌曲分区标签不是 MUSIC"
