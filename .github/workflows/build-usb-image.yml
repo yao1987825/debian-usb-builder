@@ -100,9 +100,11 @@ jobs:
       - name: 压缩产物
         run: |
           cd out
+          # build 脚本是以 root 跑的, 产物属主是 root, 这里先清掉再以普通用户重建
+          sudo rm -f SHA256SUMS.txt
           # build-image.sh 已经压过一次, 这里只在缺失时补压, 避免重复压缩浪费时间
           if [ ! -f "debian-usb-${SUITE}.img.xz" ]; then
-            xz -T0 -6 -k -f "debian-usb-${SUITE}.img"
+            sudo xz -T0 -6 -k -f "debian-usb-${SUITE}.img"
           fi
           sha256sum ./*.img.xz > SHA256SUMS.txt
           ls -lh

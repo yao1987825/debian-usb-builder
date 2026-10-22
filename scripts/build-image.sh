@@ -667,7 +667,9 @@ Secure Boot: 需要 shim 签名(已随镜像写入); 若无法启动请在固件
 EOF
 cat "${OUT_DIR}/BUILD-INFO.txt"
 
-( cd "$OUT_DIR" && sha256sum ./*.img.xz > SHA256SUMS.txt 2>/dev/null || true )
+# 注意: 本脚本以 root 运行, 而 workflow 的后续步骤以普通用户运行,
+# 所以这里生成的校验和文件必须放开权限, 否则后面覆盖会 Permission denied。
+( cd "$OUT_DIR" && sha256sum ./*.img.xz > SHA256SUMS.txt 2>/dev/null || true; chmod 0666 SHA256SUMS.txt 2>/dev/null || true )
 log "产物:"
 ls -lh "$OUT_DIR" | sed 's/^/[out]   /'
 log "完成 ✅"
