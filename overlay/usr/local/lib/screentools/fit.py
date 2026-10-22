@@ -345,8 +345,11 @@ def main(argv):
 
     disp = resolve_display(None)
     if not disp:
-        print(f"{RED}[screen-fit]{RST} 找不到 X 显示(没有 DISPLAY)。")
-        print(f"  这个脚本要在图形界面里跑: 先登录桌面, 再从终端执行 screen-fit")
+        print(f"{RED}[screen-fit]{RST} 找不到 X 显示(DISPLAY 是空的)。")
+        print("  屏幕分辨率只有在图形界面里才存在, 所以这个命令必须在桌面的终端里跑:")
+        print("    · 如果你现在在纯终端(TTY / SSH), 按 Ctrl+Alt+F2~F6 切到图形会话")
+        print("    · 在图形界面里从菜单打开 xfce4-terminal, 再执行 screen-fit")
+        print("  想一次看清全部问题, 直接跑: music health")
         return 1
     os.environ["DISPLAY"] = disp
 

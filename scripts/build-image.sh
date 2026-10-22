@@ -461,10 +461,50 @@ else
 fi
 
 # shell 语法: 镜像里的这几个脚本是用户的救命工具, 语法错 = 跑起来毫无反应
-for _sc in music net-doctor net-rescue usb-grow.sh screen-fit proxy; do
+for _sc in music net-doctor net-rescue usb-grow.sh screen-fit proxy music-health music-im-fix; do
   bash -n "${ROOTFS}/usr/local/bin/${_sc}" || die "镜像里的 ${_sc} 语法错误"
 done
 log "镜像内脚本语法检查通过"
+
+# 输入法: 光"文件在"不够, Rime 的 Shift 配置写错过一次(把映射写成了字符串),
+# 真机表现是"按 Shift 没反应", 根本看不出是配置问题。所以直接检查内容。
+RIME_CFG="${ROOTFS}/home/${USER_NAME}/.config/fcitx5/rime/default.custom.yaml"
+[[ -f "$RIME_CFG" ]] || die "Rime 配置缺失: ${RIME_CFG}"
+if grep -qE 'ascii_composer/switch_key/(Shift_L|Shift_R)' "$RIME_CFG"; then
+  ok_msg="Rime Shift 切换中英文已用扁平键配置"
+elif grep -q 'ascii_composer/switch_key' "$RIME_CFG"; then
+  die "Rime 的 ascii_composer 写成了字符串而不是 键->动作 映射, Shift 永远不会生效"
+else
+  warn "Rime 没配 Shift 切中英文(按 Shift 不会有反应)"
+fi
+log "${ok_msg:-Rime 配置检查完成}"
+# 输入法的两条"保险"也直接写好, 不依赖 im-config 的钩子链条
+if [[ -n "${USER_NAME}" ]]; then
+  mkdir -p "${ROOTFS}/home/${USER_NAME}/.config/autostart"
+  cat > "${ROOTFS}/home/${USER_NAME}/.config/autostart/fcitx5.desktop" <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=Fcitx 5
+Comment=启动 fcitx5 输入法
+Exec=fcitx5 -d --replace
+Icon=fcitx
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
+EOF
+  cat > "${ROOTFS}/home/${USER_NAME}/.xprofile" <<'EOF'
+# --- fcitx5 ---
+# im-config 靠 Xsession.d 钩子, lightdm 自动登录时经常断链;
+# 直接在 .xprofile 里导出, 两条路都通输入法就一定能起来。
+export GTK_IM_MODULE=fcitx
+export QT_IM_MODULE=fcitx
+export XMODIFIERS=@im=fcitx
+EOF
+  chown "${USER_UID}:${USER_GID}" \
+        "${ROOTFS}/home/${USER_NAME}/.config/autostart/fcitx5.desktop" \
+        "${ROOTFS}/home/${USER_NAME}/.xprofile" 2>/dev/null || true
+  log "已写入 fcitx5 自启项与 ~/.xprofile 环境变量"
+fi
 
 # 对着"即将装进镜像的那份" music 跑一遍命令行回归测试。
 # 这一步放在这里是因为 x86 的 CI runner 没有 loop 设备, 事后没法再从镜像里

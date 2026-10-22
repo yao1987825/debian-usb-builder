@@ -135,10 +135,33 @@ struct_check() {
       warn "没能从根分区取出 /usr/local/bin/music, 跳过回归测试"
     fi
 
+    # 输入法: Rime 的 Shift 切换曾经写成字符串而不是映射, 真机只表现为
+    # "按 Shift 没反应", 极难定位 —— 所以直接查文件内容。
+    local _rime
+    _rime="$($SUDO debugfs -R "cat /home/user/.config/fcitx5/rime/default.custom.yaml" "$p3" 2>/dev/null || true)"
+    if grep -qE 'ascii_composer/switch_key/(Shift_L|Shift_R)' <<<"$_rime"; then
+      ok "Rime 的 Shift 切中英文已用扁平键配置"
+    elif grep -q 'ascii_composer/switch_key' <<<"$_rime"; then
+      die "Rime 的 ascii_composer 写成了字符串而不是 键->动作 映射, Shift 永远不会生效"
+    else
+      warn "Rime 没配 Shift 切中英文(不是致命的, Ctrl+Space 依然能激活输入法)"
+    fi
+    if $SUDO debugfs -R "cat /home/user/.xprofile" "$p3" 2>/dev/null | grep -q "GTK_IM_MODULE=fcitx"; then
+      ok "已写入 ~/.xprofile 的 IM 环境变量(不依赖 im-config 钩子)"
+    else
+      die "缺少 ~/.xprofile 的 IM 环境变量, lightdm 自动登录时输入法起不来"
+    fi
+    if $SUDO debugfs -R "cat /home/user/.config/autostart/fcitx5.desktop" "$p3" 2>/dev/null | grep -q "fcitx5 -d"; then
+      ok "已写入 fcitx5 自启项"
+    else
+      die "缺少 fcitx5 自启项, 输入法开机不会自动启动"
+    fi
+
     # 网络: 没有 NetworkManager 就是一台没有网络的机器, 必须卡住
     local _f
     for _f in /usr/local/bin/net-doctor /usr/local/bin/net-rescue /usr/local/bin/usb-grow.sh \
-              /usr/local/bin/screen-fit /usr/local/bin/proxy /usr/bin/nmcli; do
+              /usr/local/bin/screen-fit /usr/local/bin/proxy \
+              /usr/local/bin/music-health /usr/local/bin/music-im-fix /usr/bin/nmcli; do
       if $SUDO debugfs -R "stat ${_f}" "$p3" 2>/dev/null | grep -q "Inode:"; then
         ok "根分区存在 ${_f}"
       else
@@ -149,7 +172,8 @@ struct_check() {
     # 在真机上表现为"命令跑起来毫无反应", 必须在构建期就卡住。
     local _s _d
     for _s in /usr/local/bin/music /usr/local/bin/net-doctor /usr/local/bin/net-rescue /usr/local/bin/usb-grow.sh \
-               /usr/local/bin/screen-fit /usr/local/bin/proxy; do
+               /usr/local/bin/screen-fit /usr/local/bin/proxy \
+               /usr/local/bin/music-health /usr/local/bin/music-im-fix; do
       _d="$(mktemp -d)"
       if $SUDO debugfs -R "dump ${_s} ${_d}/probe" "$p3" 2>/dev/null && [[ -s "${_d}/probe" ]]; then
         if bash -n "${_d}/probe" 2>/dev/null; then

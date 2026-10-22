@@ -1,0 +1,281 @@
+#!/usr/bin/env bash
+#
+# music-health —— 一次性把"到底哪里不对"全查清楚, 打印成一段可以直接粘贴回来的报告
+#
+# 为什么需要它:
+#   真机上出问题的时候, 最费时间的不是修, 是"不知道到底哪里坏了"。
+#   输入法没反应, 可能是没装、没起、没配、也可能你压根不在图形界面里;
+#   分辨率不对, 可能是没跑 screen-fit, 也可能是 EDID 读不到, 还可能是
+#   你在 TTY 里执行、根本没有 X。这几件事的排查命令散在四个脚本里。
+#
+# 用法:
+#   music-health          只报告, 不改任何东西
+#   music-health --fix    报告 + 自动修能安全修的(重跑 im-config / 打开 screen-fit 自启)
+#
+# 输出末尾会提示你把整段发回来。
+#
+set -uo pipefail
+
+FIX=0
+[[ "${1:-}" == "--fix" ]] && FIX=1
+
+RED=$'\033[1;31m'; GRN=$'\033[1;32m'; YEL=$'\033[1;33m'; BLU=$'\033[1;34m'; DIM=$'\033[2m'; RST=$'\033[0m'
+ok()   { printf '  %s✅%s %s\n' "$GRN" "$RST" "$*"; }
+bad()  { printf '  %s❌%s %s\n' "$RED" "$RST" "$*"; BAD=$((BAD+1)); }
+warn() { printf '  %s⚠️ %s%s\n' "$YEL" "$*" "$RST"; }
+info() { printf '  %s·%s %s\n' "$BLU" "$RST" "$*"; }
+tip()  { printf '     %s→ %s%s\n' "$DIM" "$*" "$RST"; }
+sect() { printf '\n%s========== %s ==========%s\n' "$BLU" "$*" "$RST"; }
+BAD=0
+
+GUESSED_HINTS=""
+
+printf '%s=== 系统体检 ===%s\n' "$BLU" "$RST"
+printf '时间: %s\n' "$(date -Is)"
+printf '主机: %s   内核: %s\n' "$(hostname 2>/dev/null || echo '?')" "$(uname -sr 2>/dev/null || echo '?')"
+
+############################## 0. 会话类型 ##############################
+# 这一段最重要: 输入法和分辨率的问题, 十有八九是因为"你根本不在图形界面里"。
+sect "0. 你现在在图形界面还是终端(TTY)？"
+info "DISPLAY        = ${DISPLAY:-<空>}"
+info "XDG_SESSION_TYPE = ${XDG_SESSION_TYPE:-<空>}"
+info "XDG_CURRENT_DESKTOP = ${XDG_CURRENT_DESKTOP:-<空>}"
+info "SSH_CONNECTION  = ${SSH_CONNECTION:-<空>}"
+info "TERM           = ${TERM:-<空>}"
+if [[ -z "${DISPLAY:-}" ]]; then
+  bad "当前没有 DISPLAY —— 你在纯终端(TTY / SSH)里"
+  tip "输入法(中文/Shift)和分辨率在这里面统统不会有反应, 这是正常的"
+  tip "切回图形桌面: 拔插显示器, 或按 Ctrl+Alt+F2~F6 换到图形会话"
+  tip "在图形界面里打开一个终端(xfce4-terminal), 再跑一次 music-health"
+  GUESSED_HINTS="${GUESSED_HINTS}本次运行没有 DISPLAY, 输入法与分辨率的结论请以图形界面下的运行结果为准\n"
+else
+  ok "有图形会话 (DISPLAY=${DISPLAY})"
+fi
+
+############################## 1. 中文输入法 ##############################
+sect "1. 中文输入法 (fcitx5 + Rime)"
+if ! command -v fcitx5 >/dev/null 2>&1; then
+  bad "fcitx5 没安装"
+  tip "sudo apt-get install -y fcitx5 fcitx5-rime fcitx5-config-qt im-config"
+else
+  ok "fcitx5 已安装 ($(fcitx5 --version 2>/dev/null | head -1))"
+fi
+
+if pgrep -a fcitx5 >/dev/null 2>&1; then
+  ok "fcitx5 进程正在运行: $(pgrep -a fcitx5 | head -1 | cut -c1-120)"
+else
+  bad "fcitx5 进程没有运行 —— 这就是「中文输入法没启用」的直接原因"
+  tip "图形界面里执行: fcitx5 -d   或跑 music im-fix"
+fi
+
+if command -v fcitx5-remote >/dev/null 2>&1; then
+  _im="$(fcitx5-remote -n 2>/dev/null || true)"
+  if [[ -z "$_im" ]]; then
+    bad "fcitx5-remote 报不到当前输入法(fcitx5 没连上 DBus?)"
+    tip "检查 DBUS_SESSION_BUS_ADDRESS 是否为空: ${DBUS_SESSION_BUS_ADDRESS:-<空>}"
+  else
+    ok "当前输入法: ${_im}"
+  fi
+  if fcitx5-remote -q >/dev/null 2>&1; then
+    info "输入法当前处于: 激活"
+  else
+    warn "输入法处于关闭状态 —— 按 Ctrl+Space 激活"
+  fi
+fi
+
+info "环境变量:"
+printf '     GTK_IM_MODULE = %s\n' "${GTK_IM_MODULE:-<空>}"
+printf '     QT_IM_MODULE  = %s\n' "${QT_IM_MODULE:-<空>}"
+printf '     XMODIFIERS    = %s\n' "${XMODIFIERS:-<空>}"
+for v in GTK_IM_MODULE QT_IM_MODULE XMODIFIERS; do
+  if [[ -z "${!v:-}" ]]; then
+    bad "$v 没设置 —— GTK/Qt 程序里根本不会走 fcitx5"
+    GUESSED_HINTS="${GUESSED_HINTS}${v} 没设置, 说明 im-config 没生效\n"
+  fi
+done
+
+HOMEDIR="$(eval echo "~$(id -un)")"
+if [[ -f "${HOMEDIR}/.xinputrc" ]]; then
+  ok "~/.xinputrc 存在"
+  sed 's/^/       /' "${HOMEDIR}/.xinputrc"
+  if ! grep -q "fcitx5" "${HOMEDIR}/.xinputrc" 2>/dev/null; then
+    bad "~/.xinputrc 里没有 fcitx5"
+    tip "im-config -n fcitx5   然后注销重登"
+  fi
+else
+  bad "~/.xinputrc 不存在 —— im-config 从没配过"
+  tip "im-config -n fcitx5   然后注销重登(改完必须重登, 不重登不生效)"
+fi
+
+RIME="${HOMEDIR}/.config/fcitx5/rime"
+if [[ -f "${HOMEDIR}/.config/fcitx5/profile" ]]; then
+  ok "fcitx5 profile 存在"
+  grep -E '^(DefaultIM|Enable)=' "${HOMEDIR}/.config/fcitx5/profile" 2>/dev/null | sed 's/^/       /'
+else
+  bad "fcitx5 profile 不存在"
+fi
+for f in default.custom.yaml user.dict.yaml; do
+  if [[ -f "${RIME}/${f}" ]]; then
+    ok "Rime 配置 ${f} 存在"
+  else
+    warn "Rime 配置 ${f} 不存在"
+  fi
+done
+# Shift 切中英文靠的是 Rime 的 ascii_composer 开关, 这一项最容易被忽略
+if [[ -f "${RIME}/default.custom.yaml" ]]; then
+  # 正确写法是扁平键 "ascii_composer/switch_key/Shift_L": commit_code
+  if grep -qE 'ascii_composer/switch_key/(Shift_L|Shift_R)' "${RIME}/default.custom.yaml"; then
+    ok "Rime 的 Shift 切中英文: 已配置(扁平键写法)"
+  elif grep -q 'ascii_composer/switch_key' "${RIME}/default.custom.yaml"; then
+    bad "Rime 的 ascii_composer 写成了字符串而不是键->动作映射, Shift 永远不会生效"
+    tip '正确写法: "ascii_composer/switch_key/Shift_L": commit_code'
+    GUESSED_HINTS="${GUESSED_HINTS}Rime 的 Shift 切换配置写错了(应该是扁平键 switch_key/Shift_L)\n"
+  else
+    warn "Rime 配置里没有 ascii_composer —— 按 Shift 不会切中英文"
+  fi
+fi
+
+############################## 2. 显示器分辨率 ##############################
+sect "2. 显示器分辨率"
+if ! command -v xrandr >/dev/null 2>&1; then
+  bad "没有 xrandr 命令"
+  tip "sudo apt-get install -y x11-xserver-utils"
+elif [[ -z "${DISPLAY:-}" ]]; then
+  warn "没有 DISPLAY, 读不到显示器信息(必须在图形界面里跑)"
+else
+  if xrandr --query >/dev/null 2>&1; then
+    ok "xrandr 能读到显示服务"
+    xrandr --query 2>/dev/null | grep -E ' connected| disconnected' | sed 's/^/       /'
+    if [[ -f "${HOMEDIR}/.config/screen-fit/enabled" ]]; then
+      ok "screen-fit 开机自动匹配: 已启用"
+    else
+      warn "screen-fit 开机自动匹配: 未启用(运行 screen-fit --enable 打开)"
+      if (( FIX )); then
+        mkdir -p "${HOMEDIR}/.config/screen-fit" && printf '1\n' > "${HOMEDIR}/.config/screen-fit/enabled"
+        ok "已替你打开 screen-fit 开机自启(下次登录生效)"
+      fi
+    fi
+    if [[ -x /usr/local/lib/screentools/fit.py ]]; then
+      info "原生分辨率判定:"
+      python3 /usr/local/lib/screentools/fit.py --list 2>&1 | sed 's/^/       /' || warn "fit.py 跑不起来"
+    fi
+  else
+    bad "xrandr 连不上 X 显示服务"
+    tip "DISPLAY=${DISPLAY:-<空>} 试试从图形界面的终端里执行"
+  fi
+fi
+
+############################## 3. 磁盘与权限 ##############################
+sect "3. 磁盘、分区与权限"
+df -h / /mnt/songdisk 2>/dev/null | sed 's/^/     /' || warn "df 失败"
+
+ROOT_SRC="$(findmnt -no SOURCE / 2>/dev/null || true)"
+ROOT_DISK="$(lsblk -no PKNAME "$ROOT_SRC" 2>/dev/null | head -1 || true)"
+if [[ -n "$ROOT_DISK" ]]; then
+  DISK="/dev/${ROOT_DISK}"
+  info "物理磁盘: ${DISK}  (总扇区 $(cat "/sys/block/${ROOT_DISK}/size" 2>/dev/null || echo '?'))"
+  lsblk -no NAME,PARTN,PARTLABEL,FSTYPE,SIZE "$DISK" 2>/dev/null | sed 's/^/       /' || true
+  ROOT_P="$(lsblk -ln -o PARTN,PARTLABEL "$DISK" 2>/dev/null | awk '$2=="DEBIAN_ROOT"{print $1; exit}')"
+  MUSIC_P="$(lsblk -ln -o PARTN,PARTLABEL "$DISK" 2>/dev/null | awk '$2=="MUSIC"{print $1; exit}')"
+  MUSIC_LAST="$(sgdisk -i "${MUSIC_P:-1}" "$DISK" 2>/dev/null | awk '/Last sector:/{print $3}' || true)"
+  TOTAL="$(cat "/sys/block/${ROOT_DISK}/size" 2>/dev/null || echo 0)"
+  if [[ -n "$MUSIC_LAST" && "$TOTAL" =~ ^[0-9]+$ ]]; then
+    FREE=$(( TOTAL - MUSIC_LAST - 1 ))
+    if (( FREE > 0 )); then
+      warn "还有 $((FREE/2097152)) GiB 没分配(所以 U 盘剩余空间用不上)"
+      tip "sudo usb-grow.sh --check   先看诊断"
+      tip "sudo usb-grow.sh             真正扩容(会自动加 sudo, 你不用自己加)"
+      GUESSED_HINTS="${GUESSED_HINTS}还有 $((FREE/2097152)) GiB 未分配, 需要跑 usb-grow.sh\n"
+    else
+      ok "磁盘空间已经全部分完"
+    fi
+  fi
+else
+  warn "推断不出物理磁盘(findmnt/lsblk 失败)"
+fi
+
+for d in / /mnt/songdisk; do
+  if mountpoint -q "$d" 2>/dev/null; then
+    ok "${d} 已挂载"
+  else
+    bad "${d} 没有挂载"
+    tip "sudo mount ${d}"
+  fi
+  if [[ -w "$d" ]]; then
+    ok "${d} 可写(当前用户 $(id -un))"
+  else
+    bad "${d} 不可写 —— 这是你遇到的权限问题"
+    tip "sudo chown $(id -un):$(id -gn) ${d}"
+  fi
+done
+if command -v sudo >/dev/null 2>&1; then
+  if sudo -n true 2>/dev/null; then
+    ok "sudo 可用且免密(不会问密码)"
+  else
+    warn "sudo 需要输入密码"
+  fi
+fi
+
+############################## 4. 网络与代理 ##############################
+sect "4. 网络与代理"
+info "网卡: $(ip -br -4 addr show scope global 2>/dev/null | awk '{print $1" "$4}' | tr '\n' ' ' || echo '读不到')"
+info "默认路由: $(ip route show default 2>/dev/null | head -1 || echo '没有')"
+if getent hosts www.baidu.com >/dev/null 2>&1; then
+  ok "域名解析正常"
+else
+  bad "域名解析失败"
+fi
+if getent hosts pypi.tuna.tsinghua.edu.cn >/dev/null 2>&1; then
+  ok "能解析清华源(apt 源已换)"
+else
+  warn "解析不了清华源, apt 可能很慢"
+fi
+if [[ -f /etc/apt/sources.list ]]; then
+  info "apt 源: $(grep -m1 '^deb ' /etc/apt/sources.list 2>/dev/null | awk '{print $2}' || echo '?')"
+fi
+if [[ -x /usr/local/bin/proxy ]]; then
+  echo "  代理:"
+  /usr/local/bin/proxy status 2>&1 | sed 's/^/       /' || warn "proxy status 跑失败"
+fi
+
+############################## 5. 夸克 Cookie ##############################
+sect "5. 夸克 Cookie(决定能不能下歌)"
+CFG="/home/user/projects/gequhai-downloader/config.json"
+if [[ -f "$CFG" ]]; then
+  info "配置文件: ${CFG}"
+  COOKIE="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1],encoding="utf-8")).get("quark_cookie",""))' "$CFG" 2>/dev/null || echo '')"
+  if [[ -z "$COOKIE" ]]; then
+    bad "config.json 里没有 quark_cookie —— 转存一定失败"
+    tip "music quark-login   (终端扫码, 不需要浏览器)"
+  else
+    ok "已配置 quark_cookie (${#COOKIE} 字符)"
+    NAMES="$(printf '%s' "$COOKIE" | tr ';' '\n' | sed 's/=.*//' | tr -d ' ' | grep -v '^$' | tr '\n' ' ')"
+    info "包含字段: ${NAMES}"
+    if printf '%s' "$COOKIE" | grep -q '__pus'; then
+      ok "含主凭证 __pus ✅"
+    else
+      bad "缺少主凭证 __pus —— 这会让夸克把请求当游客, 下载必然失败"
+      tip "多半是用 F12 的 document.cookie 取的, 那个拿不到 HttpOnly 的 __pus"
+      tip "正确做法: music quark-login"
+    fi
+  fi
+else
+  bad "找不到 ${CFG}(项目可能没预装, WITH_PROJECTS=0?)"
+fi
+
+############################## 汇总 ##############################
+sect "汇总"
+if (( BAD == 0 )); then
+  printf '%s✅ 没查出问题%s\n' "$GRN" "$RST"
+else
+  printf '%s❌ 查出 %d 处问题%s(上面每条都有对应的 → 修复命令)\n' "$RED" "$BAD" "$RST"
+fi
+if [[ -n "$GUESSED_HINTS" ]]; then
+  echo
+  echo "关键线索:"
+  printf '%s\n' "$GUESSED_HINTS" | sed "s/^/  - /"
+fi
+echo
+printf '%s把上面整段(含这一行)发回给我, 我按线索逐条修:%s\n' "$DIM" "$RST"
+printf '%s一键生成: music-health 2>&1 | tee ~/health.txt%s\n' "$DIM" "$RST"
+exit 0

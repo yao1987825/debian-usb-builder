@@ -14,6 +14,8 @@
 #   music net                       网络自检
 #   music proxy [status|on|off]      代理开关
 #   music screen                    自动匹配显示器原生分辨率
+#   music health                    一键体检(不确定哪里坏了就跑这个)
+#   music im-fix                    修复中文输入法
 #   music doctor                    环境自检
 #   music setup-gui                 补装 PyQt6 (启用图形界面)
 #   music setup-playwright          补装 Playwright Chromium
@@ -44,6 +46,9 @@ usage() {
   music net --fix                 网络自检 + 自动修复
   music proxy [status|on|off]      代理开关 (等同于 proxy 命令)
   music screen [--list]           自动匹配每块显示器的原生分辨率
+  music health                  一键体检: 输入法/分辨率/分区/权限/网络/夸克Cookie
+  music health --fix            体检 + 自动修能安全修的
+  music im-fix                  修复中文输入法(装了但打不出中文/Shift 没反应)
   music setup-proxy [地址]        设置代理 (等同 music proxy on <地址>)
   music setup-proxy off           清空代理 (等同 music proxy off)
   music out                       打印歌曲分区路径
@@ -208,6 +213,23 @@ cmd_screen() {
   exec /usr/local/bin/screen-fit "$@"
 }
 
+# ---------------- 体检 / 修输入法 ----------------
+cmd_health() {
+  if [[ ! -x /usr/local/bin/music-health ]]; then
+    echo "错误: 找不到 /usr/local/bin/music-health" >&2
+    return 1
+  fi
+  exec /usr/local/bin/music-health "$@"
+}
+
+cmd_im_fix() {
+  if [[ ! -x /usr/local/bin/music-im-fix ]]; then
+    echo "错误: 找不到 /usr/local/bin/music-im-fix" >&2
+    return 1
+  fi
+  exec /usr/local/bin/music-im-fix "$@"
+}
+
 # ---------------- 其他 ----------------
 cmd_doctor() {
   echo "=== music 环境自检 ==="
@@ -317,6 +339,8 @@ case "${1:-}" in
   net)                 shift; cmd_net "$@" ;;
   proxy)               shift; cmd_proxy "$@" ;;
   screen|display|res)  shift; cmd_screen "$@" ;;
+  health|check-all)    shift; cmd_health "$@" ;;
+  im-fix|imfix)        shift; cmd_im_fix "$@" ;;
   setup-proxy)         shift; cmd_setup_proxy "$@" ;;
   setup-gui)           cmd_setup_gui ;;
   setup-playwright)    cmd_setup_playwright ;;

@@ -60,12 +60,46 @@ ok()  { printf '  %s✅%s %s\n' "$GRN" "$RST" "$*"; printf '  ✅ %s\n' "$*" >> 
 warn(){ printf '  %s⚠️ %s%s\n' "$YEL" "$*" "$RST"; printf '  ⚠️  %s\n' "$*" >> "$LOG_FILE" 2>/dev/null || true; }
 die() { printf '\n%s❌ 失败: %s%s\n' "$RED" "$*" "$RST"; printf '\n❌ 失败: %s\n' "$*" >> "$LOG_FILE" 2>/dev/null || true; exit 1; }
 
+# ---------------- 绝不静默退出 ----------------
+# 之前这个脚本最大的毛病: set -e + pipefail 下, 任何一个外部命令(lsblk/sgdisk/
+# partprobe)返回非零, 脚本就直接消失, 屏幕上什么都看不到, 看起来就是"跑起来
+# 没有任何反馈"。现在任何一步失败都会明确报出「哪一行、哪条命令、退出码」。
+on_err() {
+  local rc="$1" line="$2" cmd="$3"
+  trap - ERR
+  printf '\n%s❌ 第 %s 行失败(退出码 %s)%s\n' "$RED" "$line" "$rc" "$RST" >&2
+  printf '   失败的命令: %s\n' "$cmd" >&2
+  printf '\n下面是最后 15 行日志(完整日志在 %s):\n' "$LOG_FILE" >&2
+  tail -n 15 "$LOG_FILE" 2>/dev/null | sed 's/^/   | /' >&2
+  printf '\n排查建议:\n' >&2
+  printf '   1) 报错涉及 sgdisk/partprobe: 分区表可能正在被占用, 插到别的电脑重启一次再跑\n' >&2
+  printf '   2) 报错涉及 umount: 关掉正在访问 /mnt/songdisk 的程序(播放器/文件管理器)再重试\n' >&2
+  printf '   3) 先跑 %s --check 看完整诊断(不需要 root)\n' "$(basename "$0")" >&2
+  printf '   4) 上一条命令的真实输出: sudo %s --check 2>&1 | tee /tmp/grow.txt\n' "$(basename "$0")" >&2
+  exit "$rc"
+}
+trap 'on_err "$?" "$LINENO" "$BASH_COMMAND"' ERR
+
+# 跑外部命令并把它的输出原样显示出来, 失败时也不立刻退出, 由调用方决定。
+run() {
+  local label="$1"; shift
+  printf '    $ %s\n' "$*" >&2
+  if ! "$@"; then
+    warn "${label} 返回非零(继续往下走)"
+    return 1
+  fi
+  return 0
+}
+
 # ---------------- 自动提权 ----------------
+# 说清楚"为什么"要 root: 改分区表要往整块磁盘的 GPT 里写, 内核只允许 root 做。
+# 这是 Linux 的硬限制, 没有任何脚本能绕开。
 if [[ "$(id -u)" != "0" ]]; then
   if [[ "$MODE" == "check" ]]; then
-    warn "当前不是 root, 诊断结果可能不完整(挂载点/标签需要权限)"
+    warn "当前不是 root, 诊断结果可能不完整(部分挂载点/标签需要权限才能读)"
   elif command -v sudo >/dev/null 2>&1; then
-    say "需要 root 权限, 正在通过 sudo 重新执行..."
+    say "扩容要重写磁盘的分区表(GPT), 只有 root 有权限 —— 这不是脚本的规矩, 是内核的"
+    say "正在通过 sudo 重新执行(本机的 sudo 免密, 不会问你密码)..."
     # 原样把参数传过去。注意不能写成 ${DRY_RUN:+...} —— DRY_RUN="0" 也是非空,
     # 那样会导致不加 sudo 直接跑也变成 dry-run。
     exec sudo -E bash "$0" ${ORIG_ARGS[@]+"${ORIG_ARGS[@]}"}
@@ -103,8 +137,19 @@ say "磁盘容量    : $(to_gib "$TOTAL_SECTORS") GiB"
 say "分区表      : ${PART_TYPE:-未知}"
 
 say "当前分区表:"
-lsblk -no NAME,PARTN,PARTLABEL,FSTYPE,SIZE "$DISK" 2>/dev/null | sed 's/^/    /' | tee -a "$LOG_FILE" >/dev/null 2>&1 || true
-lsblk -no NAME,PARTN,PARTLABEL,FSTYPE,SIZE "$DISK" 2>/dev/null | sed 's/^/    /'
+# 注意: 这条管道必须包在 || true 里。之前是裸管道, 一旦 lsblk/sed 返回非零,
+# set -e + pipefail 会让整个脚本当场消失 —— 屏幕上就停在"当前分区表:"这一行,
+# 看起来像"跑起来没有任何反馈"。这里顺带把 sgdisk 的分区表也打出来。
+{
+  printf '    ---- lsblk ----\n'
+  lsblk -no NAME,PARTN,PARTLABEL,FSTYPE,SIZE "$DISK" 2>&1 | sed 's/^/    /'
+  printf '    ---- sgdisk -p ----\n'
+  sgdisk -p "$DISK" 2>&1 | sed 's/^/    /'
+} >> "$LOG_FILE" 2>&1 || true
+{
+  lsblk -no NAME,PARTN,PARTLABEL,FSTYPE,SIZE "$DISK" 2>&1 | sed 's/^/    /'
+  sgdisk -p "$DISK" 2>&1 | sed 's/^/    /'
+} || warn "读取分区表明细有出入, 完整内容见 ${LOG_FILE}"
 
 # ---------------- 定位 root / music 分区 ----------------
 part_num_by_label() {
@@ -145,10 +190,12 @@ ROOT_DEV="$(part_path "$ROOT_PART")"
 MUSIC_DEV="$(part_path "$MUSIC_PART")"
 [[ -n "$ROOT_DEV" && -n "$MUSIC_DEV" ]] || die "找不到分区设备节点(p${ROOT_PART}=${ROOT_DEV:-空} p${MUSIC_PART}=${MUSIC_DEV:-空})"
 
-ROOT_START="$(info_field "$ROOT_PART" 'First sector')"
-ROOT_LAST="$(info_field "$ROOT_PART" 'Last sector')"
-MUSIC_START="$(info_field "$MUSIC_PART" 'First sector')"
-MUSIC_LAST="$(info_field "$MUSIC_PART" 'Last sector')"
+# 注意: 每个探测都补 || true —— 命令替换失败在 set -e 下会直接干掉脚本,
+# 而下面本来就有更清楚的 [[ -n ... ]] || die 提示, 不该被抢先退出。
+ROOT_START="$(info_field "$ROOT_PART" 'First sector' || true)"
+ROOT_LAST="$(info_field "$ROOT_PART" 'Last sector' || true)"
+MUSIC_START="$(info_field "$MUSIC_PART" 'First sector' || true)"
+MUSIC_LAST="$(info_field "$MUSIC_PART" 'Last sector' || true)"
 [[ -n "$ROOT_START" && -n "$ROOT_LAST" && -n "$MUSIC_START" && -n "$MUSIC_LAST" ]] \
   || die "用 sgdisk 读取分区扇区范围失败(分区表可能已损坏)。先跑 --check 看完整信息"
 
@@ -185,8 +232,8 @@ NEW_MUSIC_START=$(( NEW_ROOT_LAST + 1 ))
 
 step "扩容方案"
 say "新增可分配: $(to_gib "$FREE_SECTORS") GiB  (root ${ROOT_PERCENT}% / MUSIC $((100-ROOT_PERCENT))%)"
-say "root   : $(to_gib $((ROOT_LAST-ROOT_START+1))) GiB  ->  $(to_gib $((NEW_ROOT_LAST-ROOT_START+1))) GiB"
-say "MUSIC  : $(to_gib $((MUSIC_LAST-MUSIC_START+1))) GiB  ->  $(to_gib $((TOTAL_SECTORS-NEW_MUSIC_START))) GiB"
+say "root   : $(to_gib $((ROOT_LAST-ROOT_START+1))) GiB  ->  $(to_gib $((NEW_ROOT_LAST-ROOT_START+1))) GiB  (+$(to_gib "$ROOT_EXTRA") GiB)"
+say "MUSIC  : $(to_gib $((MUSIC_LAST-MUSIC_START+1))) GiB  ->  $(to_gib $((TOTAL_SECTORS-NEW_MUSIC_START))) GiB  (+$(to_gib "$MUSIC_EXTRA") GiB)"
 
 if (( DRY_RUN )); then
   say "--dry-run: 到此为止, 不做任何修改"
@@ -209,16 +256,30 @@ if mountpoint -q /mnt/songdisk; then
 fi
 
 say "重写分区表 ..."
-sgdisk --delete="$MUSIC_PART" "$DISK" >/dev/null 2>&1 || die "删除旧 MUSIC 分区条目失败"
+printf '    $ sgdisk --delete=%s %s\n' "$MUSIC_PART" "$DISK"
+sgdisk --delete="$MUSIC_PART" "$DISK" || die "删除旧 MUSIC 分区条目失败(退出码 $?)"
+
 say "  扩展 root 到扇区 ${NEW_ROOT_LAST}"
+printf '    $ sgdisk --new=%s:%s:%s ...\n' "$ROOT_PART" "$ROOT_START" "$NEW_ROOT_LAST"
 sgdisk --new="${ROOT_PART}:${ROOT_START}:${NEW_ROOT_LAST}" \
        --typecode="${ROOT_PART}:8300" --change-name="${ROOT_PART}:DEBIAN_ROOT" \
-       "$DISK" >/dev/null 2>&1 || die "重建 root 分区条目失败"
+       "$DISK" || die "重建 root 分区条目失败(退出码 $?)"
+
 say "  在扇区 ${NEW_MUSIC_START} 重建 MUSIC 到磁盘末尾"
+printf '    $ sgdisk --new=%s:%s:+0 ...\n' "$MUSIC_PART" "$NEW_MUSIC_START"
 sgdisk --new="${MUSIC_PART}:${NEW_MUSIC_START}:+0" \
        --typecode="${MUSIC_PART}:8300" --change-name="${MUSIC_PART}:MUSIC" \
-       "$DISK" >/dev/null 2>&1 || die "重建 MUSIC 分区条目失败"
+       "$DISK" || die "重建 MUSIC 分区条目失败(退出码 $?)"
 ok "分区表已更新"
+
+# 备份头被压掉是最危险的后果(插到别的机器上整张盘认不出来), 这里必须验
+if sgdisk -v "$DISK" 2>&1 | grep -qi "no problems found"; then
+  ok "GPT 校验通过 ✅"
+else
+  warn "GPT 校验发现问题, 下面是细节:"
+  sgdisk -v "$DISK" 2>&1 | sed 's/^/         /' || true
+  warn "如果备份 GPT 头被压掉了, 务必重启一次并确认能正常启动"
+fi
 
 say "通知内核重新读取分区表 ..."
 partx -u "$DISK" 2>/dev/null || partprobe "$DISK" 2>/dev/null \
@@ -242,6 +303,22 @@ fi
 mount /mnt/songdisk 2>/dev/null || warn "自动挂载 /mnt/songdisk 失败, 请手动: sudo mount /mnt/songdisk"
 
 step "结果"
-ok "扩容完成 🎉"
-df -h / /mnt/songdisk 2>/dev/null | sed 's/^/    /'
+df -h / /mnt/songdisk 2>/dev/null | sed 's/^/    /' || true
+
+# ---- 后置校验: 脚本说"成功"不算数, 真的变大了才算 ----
+# 不做这一步的话, 分区表改了但内核没接受 / resize2fs 静默失败, 屏幕上照样
+# 打印"扩容完成 🎉", 而 /mnt/songdisk 还是老大小 —— 这正是"没作用"的来源。
+MUSIC_GB_AFTER="$(df -BG --output=size /mnt/songdisk 2>/dev/null | tail -1 | tr -dc '0-9' || true)"
+[[ -n "$MUSIC_GB_AFTER" ]] || MUSIC_GB_AFTER=0
+MUSIC_GB_EXPECT="$(to_gib $((TOTAL_SECTORS-NEW_MUSIC_START)) | cut -d. -f1)"
+
+echo
+if (( MUSIC_GB_AFTER >= MUSIC_GB_EXPECT - 1 )); then
+  ok "扩容完成 🎉 /mnt/songdisk 现在 ${MUSIC_GB_AFTER}G"
+else
+  warn "文件系统实际只有 ${MUSIC_GB_AFTER}G, 达不到预期的 ${MUSIC_GB_EXPECT}G —— 分区表改了但文件系统没跟上"
+  warn "绝大多数情况是内核还没接受新的分区大小。重启一次, 再跑一次 ${0##*/} 即可补齐"
+  warn "或者手动执行: sudo partprobe ${DISK} && sudo resize2fs ${MUSIC_DEV}"
+fi
+ok "root 分区: $(df -h / 2>/dev/null | awk 'NR==2{print $2}' || echo '?')"
 say "完整日志: ${LOG_FILE}"
