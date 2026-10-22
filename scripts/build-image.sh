@@ -94,9 +94,25 @@ OUT_IMG="${OUT_DIR}/debian-usb-${SUITE}.img"
 
 ############################### 工具函数 ###################################
 log()  { printf '\033[1;34m[build]\033[0m %s\n' "$*"; }
+ok()   { printf '\033[1;32m[ ok ]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[warn ]\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m[fatal]\033[0m %s\n' "$*" >&2; exit 1; }
 step() { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
+
+# 数自测"真正通过了几项"。
+#
+# 注意: 直接 `grep -c '✅'` 会把末尾的 "✅ 25/25 项通过" 汇总行也数进去,
+# 于是日志里写"26 项"而实际只有 25 项, 看着像多了项。这里把汇总行剔掉。
+#
+# 必须定义在**第一次被调用之前** —— bash 是先定义后使用, 定义晚了会
+# "selftest_count: command not found"。这函数放在这儿的另一个原因:
+# 放在文件靠后位置很容易踩到这个坑(和之前 ok() 没定义是同一类错误)。
+selftest_count() {
+  local f="$1" n
+  [[ -f "$f" ]] || { echo 0; return 0; }
+  n="$(grep '✅' "$f" 2>/dev/null | grep -cv '项通过' || true)"
+  echo "${n:-0}"
+}
 
 MOUNTS=()
 cleanup() {
@@ -456,7 +472,7 @@ log "已配置开机自动匹配显示器原生分辨率(screen-fit --disable �
 # EDID/xrandr 解析逻辑自测: 这一段纯字符串处理, 不需要 X, 构建期就能验。
 # 解析错了在真机上的表现是"分辨率没变或者整屏拉伸", 很难一眼看出是脚本的锅。
 if python3 "${ROOTFS}/usr/local/lib/screentools/fit.py" --self-test >"${BUILD_DIR}/fit-selftest.log" 2>&1; then
-  log "EDID/xrandr 解析自测通过($(grep -c '✅' "${BUILD_DIR}/fit-selftest.log") 项)"
+  log "EDID/xrandr 解析自测通过($(selftest_count "${BUILD_DIR}/fit-selftest.log") 项)"
 else
   sed 's/^/[screen-fit] /' "${BUILD_DIR}/fit-selftest.log" >&2 || true
   die "EDID/xrandr 解析自测失败, screen-fit 会匹配错分辨率"
@@ -473,7 +489,7 @@ else
   die "quark_login.py 语法错误"
 fi
 if python3 "$QL" --self-test >"${BUILD_DIR}/quark-selftest.log" 2>&1; then
-  log "夸克登录逻辑自测通过($(grep -c '✅' "${BUILD_DIR}/quark-selftest.log") 项)"
+  log "夸克登录逻辑自测通过($(selftest_count "${BUILD_DIR}/quark-selftest.log") 项)"
 else
   sed 's/^/[quark] /' "${BUILD_DIR}/quark-selftest.log" >&2 || true
   die "夸克登录逻辑自测失败, music quark-login 不能用"
@@ -521,13 +537,12 @@ log "镜像内脚本语法检查通过"
 RIME_CFG="${ROOTFS}/home/${USER_NAME}/.config/fcitx5/rime/default.custom.yaml"
 [[ -f "$RIME_CFG" ]] || die "Rime 配置缺失: ${RIME_CFG}"
 if grep -qE 'ascii_composer/switch_key/(Shift_L|Shift_R)' "$RIME_CFG"; then
-  ok_msg="Rime Shift 切换中英文已用扁平键配置"
+  ok "Rime Shift 切换中英文已用扁平键配置"
 elif grep -q 'ascii_composer/switch_key' "$RIME_CFG"; then
   die "Rime 的 ascii_composer 写成了字符串而不是 键->动作 映射, Shift 永远不会生效"
 else
   warn "Rime 没配 Shift 切中英文(按 Shift 不会有反应)"
 fi
-log "${ok_msg:-Rime 配置检查完成}"
 # 输入法的两条"保险"也直接写好, 不依赖 im-config 的钩子链条
 if [[ -n "${USER_NAME}" ]]; then
   mkdir -p "${ROOTFS}/home/${USER_NAME}/.config/autostart"

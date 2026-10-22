@@ -124,6 +124,17 @@ jobs:
       - name: Shell 语法检查
         run: |
           shellcheck -S warning scripts/*.sh overlay/usr/local/bin/* || true
+          # bash -n / shellcheck 都查不出"调用了没定义的函数"。
+          # 之前就因为 build-image.sh 里写了 `ok "..."` 而漏定义 ok(),
+          # 一路跑到第 4/9 步才 "ok: command not found"(exit 127),
+          # 白白浪费一整次 20 分钟的构建。这步是阻塞的: 有问题几秒内就失败。
+          for f in scripts/*.sh overlay/usr/local/bin/* overlay-n1/usr/local/bin/*; do
+            bash -n "$f" || { echo "语法错误: $f"; exit 1; }
+          done
+          bash scripts/lint-helpers.sh
+
+      - name: lint-helpers 自测
+        run: bash scripts/test-lint-helpers.sh
 
       - name: music 命令行回归测试
         run: bash scripts/test-music-cli.sh

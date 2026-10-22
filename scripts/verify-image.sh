@@ -17,6 +17,16 @@ ok()   { printf '\033[1;32m[ ok ]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[warn]\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m[fatal]\033[0m %s\n' "$*" >&2; exit 1; }
 
+# 数自测"真正通过了几项"。
+# 注意: 直接 `grep -c '✅'` 会把末尾的 "✅ 25/25 项通过" 汇总行也算进去,
+# 于是日志里写"26 项"而实际只有 25 项。这里把汇总行剔掉。
+selftest_count() {
+  local f="$1" n
+  [[ -f "$f" ]] || { echo 0; return 0; }
+  n="$(grep '✅' "$f" 2>/dev/null | grep -cv '项通过' || true)"
+  echo "${n:-0}"
+}
+
 SUDO=""
 [[ "$(id -u)" == "0" ]] || SUDO="sudo"
 
@@ -193,7 +203,7 @@ struct_check() {
        && [[ -s "${_d}/fit.py" ]]; then
       ok "根分区存在 /usr/local/lib/screentools/fit.py"
       if python3 "${_d}/fit.py" --self-test >"${_d}/self.log" 2>&1; then
-        ok "EDID/xrandr 解析自测通过($(grep -c '✅' "${_d}/self.log") 项)"
+        ok "EDID/xrandr 解析自测通过($(selftest_count "${_d}/self.log") 项)"
       else
         sed 's/^/[screen-fit] /' "${_d}/self.log" >&2 || true
         die "EDID/xrandr 解析自测失败, screen-fit 会匹配错分辨率"
@@ -264,7 +274,7 @@ struct_check() {
        && [[ -s "${_d}/quark_login.py" ]]; then
       ok "根分区存在 /usr/local/lib/musictools/quark_login.py"
       if python3 "${_d}/quark_login.py" --self-test >"${_d}/q.log" 2>&1; then
-        ok "夸克登录逻辑自测通过($(grep -c '✅' "${_d}/q.log") 项)"
+        ok "夸克登录逻辑自测通过($(selftest_count "${_d}/q.log") 项)"
       else
         sed 's/^/[quark] /' "${_d}/q.log" >&2 || true
         die "夸克登录逻辑自测失败, music quark-login 不能用"
