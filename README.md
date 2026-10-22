@@ -326,7 +326,9 @@ Actions 页面 → **Build Phicomm N1 Armbian Image** → **Run workflow**。
 | `with_pyqt` | `0` | 预装 PyQt6 图形版。N1 的 Mali-450 无 3D 加速，Qt 走软件渲染很慢，默认不装 |
 | `with_playwright` | `0` | 预装 Playwright Chromium。官方没有 arm64 内核包，默认不装 |
 
-产物：`armbian-n1-image-Phicomm-N1-trixie-desktop`，里面有 `*.img.gz`（约 1.5GB）+ `SHA256SUMS-N1.txt`。
+产物：`armbian-n1-image-s905d-trixie-desktop`，里面有 `*.img.gz`（约 1.5GB）+ `SHA256SUMS-N1.txt` + `BUILD-INFO-N1.txt`。
+
+> 镜像里有**两个账号**：Armbian 自带的 `root` / `1234`，以及我们创建的 `user` / `user`（sudo 免密）。
 
 ### 2. 分区布局
 
@@ -369,7 +371,8 @@ adduser user && passwd user
 
 | 坑 | 处理方式 |
 | --- | --- |
-| **改分区表会把盒子改到起不来** | Amlogic 的 u-boot 引导码写在 MBR 的**前 446 字节**。用 `parted`/`sfdisk`/`sgdisk` 改表会冲掉引导码。本仓库改为**手工写 MBR 里 p3 的 16 字节分区条目**，其余字节一个都不碰；改完还会逐字节比对前 446 字节确认引导码完好 |
+| **改分区表会把盒子改到起不来** | Amlogic 的引导链在 MBR 里：前 446 字节是引导区（`u-boot-2015-*.bin` 前 512 字节是空的引导头，所以这块本来就是 0），**真正的 u-boot 本体在扇区 1（偏移 512）**。用 `parted`/`sfdisk`/`sgdisk` 改表会冲掉它们。本仓库改为**手工写 MBR 里 p3 的 16 字节分区条目**，其余字节一个都不碰；改完还会逐字节比对 0..445 与 512..1023 两个区域确认没动过 |
+| 判断"引导码在不在"也会踩坑 | 不能只看 MBR 前 64 字节是不是 0 —— 那样会把正常的镜像误判成"引导码丢失"。正确口径是：**扇区 1（偏移 512）必须有 u-boot 代码** |
 | `n1-grow.sh` 扩容同理 | 只改 MBR 里"分区 3 扇区数"那 **4 个字节**（偏移 490），引导码零改动 |
 | 站点低品质直链 403 | 与 x86 一致：夸克 Cookie 是下载成功的必要条件，`music single` 会给出明确提示 |
 | Playwright 无 arm64 浏览器 | 默认不装浏览器；`playwright` / `imageio-ffmpeg` / `PyQt6` 三个 Python 包本身都有 aarch64 wheel，能正常装上 |
