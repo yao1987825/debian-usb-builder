@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       board:
-        description: 'ophub 板型库里的板型名'
+        description: '板型(ophub 板型库第14列 BOARD 值) | Phicomm-N1 = s905d, DMA-thresh 版 = s905d-n1-thresh'
         required: true
-        default: 'Phicomm-N1'
+        default: 's905d'
         type: string
       distro:
         description: '基线镜像的发行版'
@@ -52,7 +52,7 @@ on:
       board:
         required: false
         type: string
-        default: 'Phicomm-N1'
+        default: 's905d'
       distro:
         required: false
         type: string

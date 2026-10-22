@@ -4,6 +4,11 @@
 `Xfce 轻量桌面 + Fcitx5/Rime 中文输入 + 独立歌曲分区 + 预装两个 Python 下载器`。
 **本地零占用**，构建全程发生在 GitHub 的 runner 上，你只需要下载产物、写入 U 盘。
 
+> 本仓库同时支持两条产线：
+> - **x86_64 通用镜像**（第一～七章）：自建 debootstrap 根文件系统，GPT + GRUB/EFI，写 U 盘。
+> - **Phicomm N1 电视盒子镜像**（第八章）：Amlogic S905D / ARM64，基于 ophub 的
+>   `amlogic-s9xxx-armbian` 板级支持重打包，写 SD 卡 / U 盘。
+
 ---
 
 ## 一、这个镜像是什么
@@ -265,17 +270,25 @@ sudo bash scripts/build-image.sh
 
 ```
 debian-usb-builder/
-├── .github/workflows/build-usb-image.yml   # CI 流水线
+├── .github/workflows/
+│   ├── build-usb-image.yml                   # x86 镜像 CI 流水线
+│   └── build-n1-image.yml                    # Phicomm N1 镜像 CI 流水线(ARM64 runner)
 ├── scripts/
-│   ├── build-image.sh                      # 核心: debootstrap → 分区 → GRUB → 预装
-│   └── verify-image.sh                     # 结构校验 + QEMU 启动冒烟测试
-├── overlay/                                # 直接覆盖到镜像 rootfs 里的文件
+│   ├── build-image.sh                        # x86: debootstrap → 分区 → GRUB → 预装
+│   ├── verify-image.sh                       # x86: 结构校验 + QEMU 启动冒烟测试
+│   ├── build-n1-image.sh                     # N1: ophub rebuild → 追加 MUSIC 分区 → 预装
+│   ├── n1-customize-rootfs.sh                # N1: ARM64 chroot 装软件栈 + 中文输入法
+│   └── verify-n1-image.sh                    # N1: 分区表/引导码/内核/fstab 结构校验
+├── overlay/                                  # x86 与 N1 共用, 直接覆盖到镜像 rootfs 里
 │   ├── usr/local/bin/
-│   │   ├── usb-grow.sh                     # 一键扩展分区到整盘
-│   │   └── music                           # 下载器快捷入口(single/playlist/gui/doctor)
-│   └── usr/local/lib/musictools/
-│       └── single.py                       # 命令行单曲搜索下载(纯 requests, 不用 PyQt6)
-├── .gitattributes                          # 强制 LF 换行(CRLF 会让 Linux 跑不了脚本)
+│   │   ├── usb-grow.sh                       # x86: 一键扩展分区到整盘(GPT)
+│   │   └── music                             # 下载器快捷入口(single/playlist/gui/doctor)
+│   ├── usr/local/lib/musictools/
+│   │   └── single.py                         # 命令行单曲搜索下载(纯 requests, 不用 PyQt6)
+│   └── home/user/.config/fcitx5/rime/        # Rime 简体拼音方案 + 73 条歌名词库
+├── overlay-n1/                               # 仅 N1 使用
+│   └── usr/local/bin/n1-grow.sh              # N1: 把卡的剩余空间扩给歌曲分区(只改 MBR 4 字节)
+├── .gitattributes                            # 强制 LF 换行(CRLF 会让 Linux 跑不了脚本)
 └── README.md
 ```
 
@@ -287,6 +300,92 @@ debian-usb-builder/
 - fstab 与 GRUB 里用到的 UUID 在建文件系统**之前**就生成好，因此不需要事后回填；
 - EFI 分区里的 `grub.cfg` 只做一件事：`search.fs_uuid` 找到根分区 → `configfile` 加载真正的
   `/boot/grub/grub.cfg`，和 Debian 官方安装器的 `--removable` 引导方式完全一致。
+
+---
+
+## 八、Phicomm N1（Amlogic S905D）电视盒子镜像
+
+x86 的 Debian 镜像在 N1 上跑不起来（CPU 架构、引导方式、内核全都不同）。
+N1 这条产线走的是社区成熟方案 **[ophub/amlogic-s9xxx-armbian](https://github.com/ophub/amlogic-s9xxx-armbian)**：
+拿官方发布的 arm64 基线镜像，用它的 `rebuild` 脚本重打包成 N1 板型
+（正确的 dtb `meson-gxl-s905d-phicomm-n1.dtb` + u-boot `u-boot-2015-phicomm-n1.bin`），
+再叠加我们的软件栈与歌曲分区。
+
+### 1. 触发构建
+
+Actions 页面 → **Build Phicomm N1 Armbian Image** → **Run workflow**。
+
+| 参数 | 默认 | 说明 |
+| --- | --- | --- |
+| `board` | `s905d` | ophub 板型库里的 **BOARD 列**（不是型号名）。`Phicomm-N1` = `s905d`；以太网流控关掉时用 `Phicomm-N1(DMA-thresh)` = `s905d-n1-thresh`。填型号名 `Phicomm-N1` 也可以，脚本会自动翻译 |
+| `distro` | `trixie` | 基线发行版：`trixie` / `bookworm` / `noble` / `resolute` |
+| `profile` | `desktop` | `desktop` = Xfce 图形桌面；`cli` = 纯命令行（X11 + xterm，也能用中文输入法） |
+| `rootfs_size_mb` | `4096` | 根分区大小，Xfce + Python 环境建议 ≥ 4096 |
+| `bootfs_size_mb` | `512` | 内核 + dtb 分区，最小 256 |
+| `music_size_mb` | `2048` | 歌曲分区大小，写卡后可用 `n1-grow.sh` 扩到整卡 |
+| `with_pyqt` | `0` | 预装 PyQt6 图形版。N1 的 Mali-450 无 3D 加速，Qt 走软件渲染很慢，默认不装 |
+| `with_playwright` | `0` | 预装 Playwright Chromium。官方没有 arm64 内核包，默认不装 |
+
+产物：`armbian-n1-image-Phicomm-N1-trixie-desktop`，里面有 `*.img.gz`（约 1.5GB）+ `SHA256SUMS-N1.txt`。
+
+### 2. 分区布局
+
+N1 用的是 **MBR(msdos)** 分区表（社区惯例），分区：
+
+```
+p1  BOOT     fat32   512MiB   内核 + dtb + u-boot overload
+p2  ROOTFS   ext4    4096MiB  系统根 /            (标签 ROOTFS)
+p3  MUSIC    ext4    2048MiB  歌曲盘 → /mnt/songdisk (标签 MUSIC)
+```
+
+### 3. 写卡与启动
+
+```bash
+# Linux
+gzip -dc Armbian_*.img.gz | sudo dd of=/dev/sdX bs=4M status=progress conv=fsync
+```
+
+**Windows**：Rufus → 选 SD 卡 / U 盘 → **DD 模式** → 选 `*.img.gz` → 开始。
+
+插好后从盒子的启动菜单（多数 N1 是 U 盘口供电 + 按住遥控器电源键，或短接 eMMC 触点）启动。
+第一次进系统用 `root` / `1234`（Armbian 默认），进去后改密码并建自己的账号。
+
+### 4. 开机后
+
+```bash
+# 把卡的剩余空间全部给歌曲分区
+sudo n1-grow.sh
+sudo n1-grow.sh --dry-run    # 先看计划
+
+# 改完密码后切换到普通用户
+passwd root
+adduser user && passwd user
+```
+
+其余（中文输入法、`music single` / `music playlist` / `music gui`、Rime 词库）跟 x86 镜像完全一样，
+命令见第三章。
+
+### 5. N1 这条产线上的关键坑（都已处理）
+
+| 坑 | 处理方式 |
+| --- | --- |
+| **改分区表会把盒子改到起不来** | Amlogic 的 u-boot 引导码写在 MBR 的**前 446 字节**。用 `parted`/`sfdisk`/`sgdisk` 改表会冲掉引导码。本仓库改为**手工写 MBR 里 p3 的 16 字节分区条目**，其余字节一个都不碰；改完还会逐字节比对前 446 字节确认引导码完好 |
+| `n1-grow.sh` 扩容同理 | 只改 MBR 里"分区 3 扇区数"那 **4 个字节**（偏移 490），引导码零改动 |
+| 站点低品质直链 403 | 与 x86 一致：夸克 Cookie 是下载成功的必要条件，`music single` 会给出明确提示 |
+| Playwright 无 arm64 浏览器 | 默认不装浏览器；`playwright` / `imageio-ffmpeg` / `PyQt6` 三个 Python 包本身都有 aarch64 wheel，能正常装上 |
+| PyQt6 需要 glibc ≥ 2.39 | `PyQt6 6.11.0` 是 `manylinux_2_39_aarch64`，**Debian 13 (trixie) 满足**；Debian 12 (bookworm, glibc 2.36) 装不上，所以 N1 默认用 trixie |
+| ARM runner 磁盘紧张 | 构建过程中基线镜像、内核包、中间产物都用完即删；建议 `rootfs_size_mb` 不要超过 4096 |
+
+### 6. 还没验证的部分
+
+CI 只能保证**镜像结构正确**（分区表、引导码、内核 dtb、fstab、歌曲分区、输入法配置全部校验通过）。
+**真机启动必须烧到实际 N1 上才能确认**，尤其是：
+- 你的盒子是标准 N1 还是魔改版（决定用哪个 dtb / 板型条目）；
+- HDMI 输出在你的固件下是否需要额外的 `video=HDMI:...` 参数；
+- 刷机方式（U 盘启动 / SD 卡启动 / eMMC 写入）因盒子固件而异。
+
+第一次建议先用官方 Armbian N1 镜像验证你的盒子能正常启动，再换成本仓库的定制镜像，
+这样出问题能立刻区分是"板级支持不对"还是"我的定制有问题"。
 
 ---
 

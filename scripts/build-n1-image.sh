@@ -24,7 +24,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 ############################### 可调参数 #################################
-BOARD="${BOARD:-Phicomm-N1}"                    # ophub model_database.conf 里的 MODEL 名
+# BOARD 是 ophub 板型库里第 14 列(BOARD / SOC 族)的取值, 不是第 2 列的型号名。
+#   Phicomm-N1              -> s905d
+#   Phicomm-N1(DMA-thresh)  -> s905d-n1-thresh
+# 直接写板型库里的 BOARD 值也可以。
+BOARD="${BOARD:-s905d}"
 ARM_REPO="${ARM_REPO:-ophub/amlogic-s9xxx-armbian}"
 ARM_REF="${ARM_REF:-main}"
 DISTRO="${DISTRO:-trixie}"                      # 基线镜像的发行版 (trixie/bookworm/noble/resolute)
@@ -74,14 +78,26 @@ log "ophub 源码: $(git -C "$ARM_DIR" rev-parse --short HEAD)"
 MODEL_DB="${ARM_DIR}/build-armbian/armbian-files/common-files/etc/model_database.conf"
 [[ -f "$MODEL_DB" ]] || die "找不到板型库: ${MODEL_DB}"
 
-# 板型必须在 ophub 的板型库里存在
-if ! grep -qE "^[^#]*:${BOARD}[[:space:]]" "$MODEL_DB"; then
-  die "板型 [${BOARD}] 不在 ophub 板型库中。Phicomm N1 常用的是:
-     Phicomm-N1              (S905D, 普通版)
-     Phicomm-N1(DMA-thresh)  (S905D, 以太网流控关闭时用)"
+# 友好的型号名 -> ophub 板型库第 14 列(BOARD)的取值
+case "$BOARD" in
+  "Phicomm-N1")             REBUILD_BOARD="s905d" ;;
+  "Phicomm-N1(DMA-thresh)") REBUILD_BOARD="s905d-n1-thresh" ;;
+  *)                        REBUILD_BOARD="$BOARD" ;;
+esac
+
+# ophub 匹配板型的方式: 去掉 NA/NULL/空格后, 找结尾是 ":<BOARD>:(yes|no)" 的行
+clean_model_conf() {
+  sed -e 's/NA//g' -e 's/NULL//g' -e 's/[ ][ ]*//g' "$MODEL_DB" | grep -E '^[^#].+'
+}
+match_line="$(clean_model_conf | grep -E "^.*:${REBUILD_BOARD}:(yes|no)$" | head -n 1 || true)"
+if [[ -z "$match_line" ]]; then
+  die "板型 [${BOARD} -> ${REBUILD_BOARD}] 不在 ophub 板型库中。Phicomm N1 常用的是:
+     Phicomm-N1              (S905D, 普通版)        -> BOARD=s905d
+     Phicomm-N1(DMA-thresh)  (S905D, 以太网流控关闭) -> BOARD=s905d-n1-thresh"
 fi
 log "板型条目:"
-grep -E "^[^#]*:${BOARD}[[:space:]]" "$MODEL_DB" | sed 's/^/  /'
+echo "  ${match_line}" | sed 's/^/  /'
+log "rebuild -b ${REBUILD_BOARD}"
 
 ############################### 第 2 步: 下载基线镜像 ###################
 step "2/6 下载基线 Armbian 镜像 (trunk/${DISTRO}/arm64)"
@@ -120,7 +136,7 @@ if [[ ! -f "$base_img" ]]; then
 fi
 # 解压后立刻删掉压缩包, ARM runner 磁盘很紧张
 rm -f "$gz_path"
-log "基线 .img: $(du -h "$base_img" | cut -f1)  (实际占用 $(du -h --apparent-size=false "$base_img" | cut -f1))"
+log "基线 .img: $(du -h "$base_img" | cut -f1)"
 disk_usage
 
 # 内核版本: 优先用基线镜像文件名里的精确版本(如 6.18.56),
@@ -138,10 +154,10 @@ fi
 [[ -n "$KERNEL_VER" ]] || die "无法确定内核版本"
 
 ############################### 第 3 步: 用 ophub rebuild 重打包 ###################
-step "3/6 ophub rebuild -b ${BOARD}"
+step "3/6 ophub rebuild -b ${REBUILD_BOARD}"
 cd "$ARM_DIR"
 # -s 语法: BOOTFS/ROOTFS  (MiB);  -t ext4;  -k 内核;  -a 是否自动取最新内核
-./rebuild -b "$BOARD" -k "$KERNEL_VER" -a "$KERNEL_AUTO" -t ext4 \
+./rebuild -b "$REBUILD_BOARD" -k "$KERNEL_VER" -a "$KERNEL_AUTO" -t ext4 \
   -s "${BOOTFS_SIZE_MB}/${ROOTFS_SIZE_MB}" || die "rebuild 失败"
 cd "${REPO_DIR}"
 
@@ -155,7 +171,7 @@ rm -f "${IMAGES_DIR}"/*-trunk_*.img
 rm -rf "${ARM_DIR}/build-armbian/kernel"
 disk_usage
 
-OUT_IMG="${BUILD_DIR}/n1-${BOARD}.img"
+OUT_IMG="${BUILD_DIR}/n1-${REBUILD_BOARD}.img"
 rm -f "$OUT_IMG"
 log "解压 rebuild 产物 ..."
 gunzip -c "$built_gz" > "$OUT_IMG"
@@ -290,7 +306,7 @@ trap - EXIT
 disk_usage
 ############################### 第 6 步: 输出 ###################
 step "6/6 压缩输出"
-OUT_NAME="Armbian_${BOARD}_${DISTRO}_$(echo "$KERNEL_VER" | tr '.' '_')_n1-music_$(date +%Y%m%d)"
+OUT_NAME="Armbian_${REBUILD_BOARD}_${DISTRO}_$(echo "$KERNEL_VER" | tr '.' '_')_n1-music_$(date +%Y%m%d)"
 FINAL_IMG="${OUT_DIR}/${OUT_NAME}.img"
 cp --sparse=always -f "$OUT_IMG" "$FINAL_IMG"
 rm -f "$OUT_IMG"
@@ -309,7 +325,7 @@ chmod 0644 ./*.img.gz 2>/dev/null || true
 chmod 0777 "$OUT_DIR" 2>/dev/null || true
 
 {
-  echo "board        = ${BOARD}"
+  echo "board        = ${REBUILD_BOARD}  (${BOARD})"
   echo "distro       = ${DISTRO}"
   echo "kernel       = ${KERNEL_VER}"
   echo "profile      = ${PROFILE}"
