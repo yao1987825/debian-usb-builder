@@ -121,9 +121,11 @@ struct_check() {
 
     # 把镜像里安装的那份 music 抠出来, 跑一遍命令行回归测试
     # (防止 "关键词被 shift 吃掉" 这类静默 bug 混进产物)
+    # 注意: debugfs 以 root 身份执行, dump 出来的文件属主是 root,
+    #       普通用户改不了它的权限 —— 测试脚本本来就用 `bash <file>` 调用,
+    #       不需要执行位, 所以这里不要 chmod。
     local tmp_music; tmp_music="$(mktemp -d)/music"
     if $SUDO debugfs -R "dump /usr/local/bin/music ${tmp_music}" "$p3" 2>/dev/null && [[ -s "$tmp_music" ]]; then
-      chmod +x "$tmp_music"
       if MUSIC_BIN="$tmp_music" bash "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test-music-cli.sh" >/dev/null 2>&1; then
         ok "镜像里的 music 命令行回归测试通过(参数没有丢失)"
       else
