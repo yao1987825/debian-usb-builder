@@ -94,10 +94,28 @@ sudo dd if=debian-usb-bookworm.img of=/dev/sdX bs=4M status=progress conv=fsync
 镜像默认只有 8GiB。插到 64G / 128G 的 U 盘上后，剩余空间是"未分区"状态，在终端里执行：
 
 ```bash
-sudo usb-grow.sh              # root 拿 30%, MUSIC 拿 70%
-sudo usb-grow.sh --root-percent 50
-sudo usb-grow.sh --dry-run    # 先看计划再执行
+usb-grow.sh --check            # 先看诊断(不需要 root): 磁盘多大、现有分区、剩多少可用
+usb-grow.sh                    # 默认 root 拿 30%, MUSIC 拿 70%
+usb-grow.sh --root-percent 50  # 自己分配比例
+usb-grow.sh --dry-run          # 打印将执行的改动但不动分区表
 ```
+
+不用自己加 `sudo` —— 脚本会自己提权。跑之前它会先把环境全打印出来：
+
+```
+==> 环境诊断
+[grow]   根分区      : /dev/sda3  (挂载点 /)
+[grow]   物理磁盘    : /dev/sda
+[grow]   磁盘容量    : 64.00 GiB
+[grow]   当前分区表: ...
+[grow]   未分配空间: 30.00 GiB
+==> 扩容方案
+[grow] root   : 6.00 GiB  ->  15.00 GiB
+[grow] MUSIC  : 1.50 GiB  ->  25.50 GiB
+```
+
+完整输出同时写到 `/var/log/usb-grow.log`。改分区表前会用 `sgdisk --backup` 备份一份 GPT。
+分区号识别走三级兜底（GPT 标签 → 挂载点 → 磁盘最后一个分区），所以即使标签丢了也能认出来。
 
 扩容后 `df -h` 就能看到 `/mnt/songdisk` 变成几十 G，**不需要重装**。
 
@@ -120,6 +138,24 @@ sudo usb-grow.sh --dry-run    # 先看计划再执行
 
 ### 3. 下载歌曲
 
+**连不上网？先跑这个：**
+
+```bash
+music net          # 逐层诊断：网卡 → IP → 路由 → DNS → 外网
+music net --fix    # 诊断 + 自动修复（重启 NetworkManager / 重建 resolv.conf）
+```
+
+它会指出是哪一层断了，并给出对应的修复命令。最常见的三种：
+
+| 现象 | 原因 | 修复 |
+| --- | --- | --- |
+| `NetworkManager 没在运行` | 服务没起来 | `sudo systemctl enable --now NetworkManager` |
+| `没有任何网卡拿到 IPv4` | 没插网线 / 没连 WiFi / DHCP 没成功 | 插好网线；WiFi 用 `nmcli dev wifi list` 扫描 |
+| `域名解析失败` | systemd-resolved 没运行或 resolv.conf 是坏链接 | `music net --fix` |
+
+> 镜像里已经预装并开机自启了 **NetworkManager**（早期版本漏装，导致开机完全没网），
+> 构建校验里也会断言它在，避免再回归。
+
 ```bash
 # ★ 单曲搜索下载(最常用, 纯命令行, 只需要 requests)
 music single "周杰伦 夜曲"
@@ -137,6 +173,9 @@ music playlist playlist.csv
 
 # 图形界面: 搜索并下载单曲(夸克网盘转存, 需 PyQt6)
 music gui
+
+# 设/清代理(便携 U 盘上通常没跑 Clash, 直接清空)
+music setup-proxy
 
 # 看歌曲目录 / 已下载列表 / 环境自检
 music out
@@ -247,6 +286,25 @@ cd ~/projects/gequhai-playlist-downloader
 站点的搜索对**词序敏感**：`五月天 突然好想你` 搜不到，但 `突然好想你 五月天` 有结果。
 `music single` 已经内置了这个兜底（自动反转词序 / 拆词重试），仍然搜不到时建议只输入歌名。
 
+**Q：开机连不上网**
+先跑 `music net`（或 `net-doctor`），它会逐层告诉你是网卡、IP、路由还是 DNS 的问题，并给出修复命令。
+
+已知的历史坑：早期版本的 x86 镜像**没有安装任何网卡配置服务**（Debian 12 + Xfce 默认不带
+NetworkManager/ifupdown/dhcpcd），开机后没人给网卡做 DHCP，表现为"完全没网络"。
+现已预装并开机自启 NetworkManager，且结构校验里会断言它在。
+
+手动修：
+```bash
+sudo apt-get install -y network-manager wpasupplicant
+sudo systemctl enable --now NetworkManager
+music net --fix
+```
+
+**Q：`usb-grow.sh` 跑起来没反应 / 不知道它做了什么**
+新版脚本会先打印完整的环境诊断再动手，输出同时写 `/var/log/usb-grow.log`。
+先用 `usb-grow.sh --check` 看诊断（不需要 root），确认它认出了正确的磁盘和分区再执行。
+如果分区识别错了，可以手动指定：`ROOT_PART=3 MUSIC_PART=4 usb-grow.sh`。
+
 **Q：QEMU 冒烟测试报"没捕获到 GRUB 输出"**
 这只是警告，不是失败。OVMF 可能没走 UEFI 可移动介质路径，或串口输出没打开；结构校验通过就说明镜像结构没问题。
 
@@ -289,7 +347,8 @@ debian-usb-builder/
 ├── overlay/                                  # x86 与 N1 共用, 直接覆盖到镜像 rootfs 里
 │   ├── usr/local/bin/
 │   │   ├── usb-grow.sh                       # x86: 一键扩展分区到整盘(GPT)
-│   │   └── music                             # 下载器快捷入口(single/playlist/gui/doctor)
+│   │   ├── net-doctor                       # 网络逐层自检 + 自动修复
+│   │   └── music                             # 下载器快捷入口(single/playlist/gui/doctor/net)
 │   ├── usr/local/lib/musictools/
 │   │   └── single.py                         # 命令行单曲搜索下载(纯 requests, 不用 PyQt6)
 │   └── home/user/.config/fcitx5/rime/        # Rime 简体拼音方案 + 73 条歌名词库
