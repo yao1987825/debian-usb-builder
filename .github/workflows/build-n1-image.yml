@@ -1,0 +1,183 @@
+name: Build Phicomm N1 Armbian Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      board:
+        description: 'ophub 板型库里的板型名'
+        required: true
+        default: 'Phicomm-N1'
+        type: string
+      distro:
+        description: '基线镜像的发行版'
+        required: true
+        default: 'trixie'
+        type: choice
+        options: [trixie, bookworm, noble, resolute]
+      profile:
+        description: '镜像形态 | desktop = Xfce 图形桌面, cli = 纯命令行(X11 + xterm, 可用中文输入)'
+        required: true
+        default: 'desktop'
+        type: choice
+        options: ['desktop', 'cli']
+      rootfs_size_mb:
+        description: 'ROOTFS 分区大小 (MiB), 最小 2048'
+        required: true
+        default: '4096'
+        type: string
+      bootfs_size_mb:
+        description: 'BOOT 分区大小 (MiB), 最小 256'
+        required: true
+        default: '512'
+        type: string
+      music_size_mb:
+        description: 'MUSIC(歌曲)分区大小 (MiB), 写卡后可用 n1-grow.sh 继续扩到整卡'
+        required: true
+        default: '2048'
+        type: string
+      with_pyqt:
+        description: '预装 PyQt6 图形版(N1 无 3D 加速, Qt 走软件渲染很慢, 默认不装)'
+        required: true
+        default: '0'
+        type: choice
+        options: ['0', '1']
+      with_playwright:
+        description: '预装 Playwright Chromium(官方无 arm64 内核, 默认不装)'
+        required: true
+        default: '0'
+        type: choice
+        options: ['0', '1']
+  workflow_call:
+    inputs:
+      board:
+        required: false
+        type: string
+        default: 'Phicomm-N1'
+      distro:
+        required: false
+        type: string
+        default: 'trixie'
+      profile:
+        required: false
+        type: string
+        default: 'desktop'
+      rootfs_size_mb:
+        required: false
+        type: string
+        default: '4096'
+      bootfs_size_mb:
+        required: false
+        type: string
+        default: '512'
+      music_size_mb:
+        required: false
+        type: string
+        default: '2048'
+      with_pyqt:
+        required: false
+        type: string
+        default: '0'
+      with_playwright:
+        required: false
+        type: string
+        default: '0'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: n1-image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: 构建 N1 镜像 (${{ github.event.inputs.board || 'Phicomm-N1' }})
+    # 必须是 ARM64 runner: chroot 进 ARM rootfs 装软件是原生的, 不用 qemu 模拟
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
+    env:
+      BOARD: ${{ github.event.inputs.board || 'Phicomm-N1' }}
+      DISTRO: ${{ github.event.inputs.distro || 'trixie' }}
+      PROFILE: ${{ github.event.inputs.profile || 'desktop' }}
+      ROOTFS_SIZE_MB: ${{ github.event.inputs.rootfs_size_mb || '4096' }}
+      BOOTFS_SIZE_MB: ${{ github.event.inputs.bootfs_size_mb || '512' }}
+      MUSIC_SIZE_MB: ${{ github.event.inputs.music_size_mb || '2048' }}
+      WITH_PYQT: ${{ github.event.inputs.with_pyqt || '0' }}
+      WITH_PLAYWRIGHT: ${{ github.event.inputs.with_playwright || '0' }}
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v5
+
+      - name: 磁盘清理与依赖安装
+        run: |
+          set -e
+          echo "== 磁盘初始状态 =="
+          df -h / /home 2>/dev/null || df -h /
+          # ARM runner 预装的东西基本用不上, 清掉换空间
+          sudo apt-get -y purge azure-cli ghc\* zulu\* llvm\* firefox google-chrome\* \
+            dotnet\* powershell openjdk\* mongodb\* moby\* docker\* containerd\* || true
+          sudo apt-get -y autoremove --purge || true
+          sudo apt-get -y clean
+          sudo rm -rf /var/lib/apt/lists/* || true
+          sudo apt-get -y update
+          sudo apt-get -y install --no-install-recommends \
+            parted dosfstools e2fsprogs util-linux mount \
+            curl wget git gzip pigz xz-utils python3 rsync \
+            jq less file
+          echo "== 磁盘清理后 =="
+          df -h / /home 2>/dev/null || df -h /
+
+      - name: Shell 语法检查
+        run: |
+          shellcheck -S warning scripts/n1-*.sh overlay-n1/usr/local/bin/* || true
+          bash -n scripts/build-n1-image.sh
+          bash -n scripts/n1-customize-rootfs.sh
+          bash -n scripts/verify-n1-image.sh
+
+      - name: 构建镜像
+        run: |
+          sudo -E env \
+            BOARD="$BOARD" \
+            DISTRO="$DISTRO" \
+            PROFILE="$PROFILE" \
+            ROOTFS_SIZE_MB="$ROOTFS_SIZE_MB" \
+            BOOTFS_SIZE_MB="$BOOTFS_SIZE_MB" \
+            MUSIC_SIZE_MB="$MUSIC_SIZE_MB" \
+            WITH_PYQT="$WITH_PYQT" \
+            WITH_PLAYWRIGHT="$WITH_PLAYWRIGHT" \
+            bash scripts/build-n1-image.sh
+
+      - name: 结构校验
+        run: |
+          sudo bash scripts/verify-n1-image.sh "$(ls -1 out/*.img.gz | head -1)"
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: armbian-n1-image-${{ env.BOARD }}-${{ env.DISTRO }}-${{ env.PROFILE }}
+          path: |
+            out/*.img.gz
+            out/SHA256SUMS-N1.txt
+            out/BUILD-INFO-N1.txt
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: 构建摘要
+        run: |
+          {
+            echo "### N1 镜像构建完成 ✅"
+            echo
+            echo '```'
+            cat out/BUILD-INFO-N1.txt
+            echo '```'
+            echo
+            echo "产物: \`$(ls -1 out/*.img.gz | xargs -n1 basename)\`"
+            echo
+            echo "写卡(SD 卡 / U 盘):"
+            echo '```bash'
+            echo "xzcat Armbian_*.img.gz | sudo dd of=/dev/sdX bs=4M status=progress conv=fsync"
+            echo '```'
+            echo
+            echo "写完后在盒子上执行 \`sudo n1-grow.sh\` 可把卡的剩余空间全部给歌曲分区。"
+          } >> "$GITHUB_STEP_SUMMARY"
