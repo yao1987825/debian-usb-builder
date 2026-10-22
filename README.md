@@ -45,8 +45,8 @@ git remote add origin https://github.com/<你的用户名>/debian-usb-builder.gi
 git push -u origin main
 ```
 
-> 建议把仓库设为 **Public**：公开仓库的 GitHub Actions 免费额度无限；
-> 私有仓库免费额度是每月 2000 分钟，也够用，但要注意额度。
+> **关于仓库可见性**：本仓库是 **Public**，公开仓库的 GitHub Actions 免费额度不限，
+> 构建多少次都不消耗私有仓库那 2000 分钟/月的配额（私有仓库其实也够用，只是要注意额度）。
 
 ### 2. 触发构建
 
