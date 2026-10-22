@@ -382,7 +382,7 @@ gzip -dc Armbian_*.img.gz | sudo dd of=/dev/sdX bs=4M status=progress conv=fsync
 **Windows**：Rufus → 选 SD 卡 / U 盘 → **DD 模式** → 选 `*.img.gz` → 开始。
 
 插好后从盒子的启动菜单（多数 N1 是 U 盘口供电 + 按住遥控器电源键，或短接 eMMC 触点）启动。
-第一次进系统用 `root` / `1234`（Armbian 默认），进去后改密码并建自己的账号。
+第一次进系统用 `root` / `1234`（Armbian 默认，个别版本是 `root` / `armbian`），进去后改密码并建自己的账号。
 
 ### 4. 开机后
 
@@ -411,16 +411,49 @@ adduser user && passwd user
 | PyQt6 需要 glibc ≥ 2.39 | `PyQt6 6.11.0` 是 `manylinux_2_39_aarch64`，**Debian 13 (trixie) 满足**；Debian 12 (bookworm, glibc 2.36) 装不上，所以 N1 默认用 trixie |
 | ARM runner 磁盘紧张 | 构建过程中基线镜像、内核包、中间产物都用完即删；建议 `rootfs_size_mb` 不要超过 4096 |
 
-### 6. 还没验证的部分
+### 6. 真机测试清单（交付前必须过一遍）
 
-CI 只能保证**镜像结构正确**（分区表、引导码、内核 dtb、fstab、歌曲分区、输入法配置全部校验通过）。
-**真机启动必须烧到实际 N1 上才能确认**，尤其是：
-- 你的盒子是标准 N1 还是魔改版（决定用哪个 dtb / 板型条目）；
-- HDMI 输出在你的固件下是否需要额外的 `video=HDMI:...` 参数；
-- 刷机方式（U 盘启动 / SD 卡启动 / eMMC 写入）因盒子固件而异。
+CI 只能保证镜像结构正确，**能不能在真 N1 上跑起来只能靠实机**。烧完卡后按下面逐项过：
 
-第一次建议先用官方 Armbian N1 镜像验证你的盒子能正常启动，再换成本仓库的定制镜像，
-这样出问题能立刻区分是"板级支持不对"还是"我的定制有问题"。
+**A. 烧录与引导**
+- [ ] `dd` / Rufus(DD 模式) 写卡完成，重插后能被识别
+- [ ] 盒子能启动：HDMI 有画面，或串口 `ttyAML0` 能看到内核日志
+- [ ] 用 `root` / `1234` 登录（个别 Armbian 版本是 `root` / `armbian`）
+- [ ] `cat /proc/cmdline` 里能看到 `root=UUID=...` 和 `meson-gxl-s905d-phicomm-n1.dtb`
+- [ ] 重启 3 次，每次都能正常引导（u-boot 引导链是最容易出问题的地方）
+
+**B. 分区与挂载**
+- [ ] `df -h` 能看到 `/` (ROOTFS) 和 `/mnt/songdisk` (MUSIC) 两块，容量与预期一致
+- [ ] `mount | grep songdisk` 正常，`touch /mnt/songdisk/x` 能建文件
+- [ ] `sudo n1-grow.sh --dry-run` 显示的扩容计划正确，再 `sudo n1-grow.sh` 实跑一次
+
+**C. 中文输入**
+- [ ] `fcitx5 -v` 有版本号；`im-config -m` 显示 `fcitx5`
+- [ ] 图形界面里 `Ctrl+Space` 能切出输入法，拼音 `zhoujielun` 出「周杰伦」
+- [ ] `~/.config/fcitx5/rime/user.dict.yaml` 里 73 条词库生效（随便挑一个冷门歌手试试）
+- [ ] 纯命令行模式下 `startx` 进 xterm，输入法同样能用
+
+**D. 下载器**
+- [ ] `music doctor` 各项状态正常
+- [ ] `music single "周杰伦 夜曲" --list` 能列出候选（**这一步专门验参数没被吃掉**）
+- [ ] `music single "夜曲" --index 2` 能下载到 `/mnt/songdisk`
+- [ ] `music playlist playlist.csv` 能跑完整批次
+- [ ] 配了夸克 Cookie 后能下到真正的音频文件（而不是 `.link.txt`）
+
+**E. 性能与稳定性**
+- [ ] `free -h` 看内存余量（N1 只有 2GB，Xfce + 浏览器比较吃紧）
+- [ ] `music gui` 能不能起来（默认没装 PyQt6，要 `music setup-gui` 补装）
+- [ ] 连续下载 10 首歌不崩
+
+### 7. 还没验证 / 可能需要另行处理的部分
+
+| 项目 | 现状 |
+| --- | --- |
+| 板型是否匹配 | 板型库只有 **S905D** 的 N1 条目。如果你的盒子是 S905X 或魔改版，dtb 不对会黑屏，需要另找 dtb |
+| HDMI 输出 | ophub 的 uEnv.txt 默认 `video=HDMI-A-1:1920x1080@60e`。你的显示器/线材如果不同步，改这个参数 |
+| WiFi | 板型描述里写的是 `brcm43455-wifi`。主线内核用 `brcmfmac`，固件由 ophub 的 firmware 仓库提供，需在设备上实测能否出热点 |
+| eMMC 写入 | 镜像只做到"从卡启动"。装进 eMMC 要另外跑 `armbian-install`（脚本已把该命令删掉，需要时从官方镜像里取） |
+| 遥控器 | N1 靠红外遥控开机，USB 键盘鼠标只能进系统后用 |
 
 ---
 
