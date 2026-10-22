@@ -259,6 +259,20 @@ struct_check() {
       die "根分区缺少 /etc/profile.d/99-proxy.sh"
     fi
 
+    _d="$(mktemp -d)"
+    if $SUDO debugfs -R "dump /usr/local/lib/musictools/quark_login.py ${_d}/quark_login.py" "$p3" 2>/dev/null \
+       && [[ -s "${_d}/quark_login.py" ]]; then
+      ok "根分区存在 /usr/local/lib/musictools/quark_login.py"
+      if python3 "${_d}/quark_login.py" --self-test >"${_d}/q.log" 2>&1; then
+        ok "夸克登录逻辑自测通过($(grep -c '✅' "${_d}/q.log") 项)"
+      else
+        sed 's/^/[quark] /' "${_d}/q.log" >&2 || true
+        die "夸克登录逻辑自测失败, music quark-login 不能用"
+      fi
+    else
+      die "根分区缺少 quark_login.py, 无法扫码登录夸克"
+    fi
+
     if $SUDO debugfs -R "ls /etc/systemd/system/multi-user.target.wants" "$p3" 2>/dev/null | grep -q "NetworkManager.service"; then
       ok "NetworkManager 已设为开机自启"
     else

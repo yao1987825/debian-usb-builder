@@ -359,8 +359,9 @@ if [[ "${WITH_PROJECTS}" == "1" ]]; then
   #    这三个模块只依赖 requests, 所以轻量档也能用, 不需要 PyQt6。
   chroot_run su - "$USER_NAME" -c "python3 -m venv /home/${USER_NAME}/.venvs/music"
   # pysocks 必装: requests 默认不支持 socks5:// 代理, 不装的话设了代理反而直接报错
-  chroot_run su - "$USER_NAME" -c "/home/${USER_NAME}/.venvs/music/bin/pip install --disable-pip-version-check --no-cache-dir -q requests pysocks" \
-    || warn "requests/pysocks 安装失败(single 命令不可用)"
+  # qrcode 是可选增强: 装了才能把夸克登录二维码画在终端里, 没装会退化成打印 URL
+  chroot_run su - "$USER_NAME" -c "/home/${USER_NAME}/.venvs/music/bin/pip install --disable-pip-version-check --no-cache-dir -q requests pysocks qrcode" \
+    || warn "requests/pysocks/qrcode 安装失败(single 命令或扫码二维码不可用)"
 
   # ② 图形版(PyQt6): slim 档跳过, 需要时用 music setup-gui 补装
   if [[ "$WITH_PYQT" == "1" ]]; then
@@ -396,6 +397,7 @@ fi
 # Windows 上 git 可能没记录执行位, 这里统一补上
 find "${ROOTFS}/usr/local/bin" -type f -exec chmod 0755 {} + 2>/dev/null || true
 chmod 0755 "${ROOTFS}/usr/local/lib/musictools/single.py" 2>/dev/null || true
+chmod 0755 "${ROOTFS}/usr/local/lib/musictools/quark_login.py" 2>/dev/null || true
 chmod 0755 "${ROOTFS}/usr/local/lib/screentools/fit.py" 2>/dev/null || true
 chown -R "${USER_UID}:${USER_GID}" "${ROOTFS}/home/${USER_NAME}"
 
@@ -458,6 +460,29 @@ if python3 "${ROOTFS}/usr/local/lib/screentools/fit.py" --self-test >"${BUILD_DI
 else
   sed 's/^/[screen-fit] /' "${BUILD_DIR}/fit-selftest.log" >&2 || true
   die "EDID/xrandr 解析自测失败, screen-fit 会匹配错分辨率"
+fi
+
+# 夸克扫码登录: URL 拼接 / 状态码解析 / cookie 提取与打码 / 配置写回
+# 全部是纯逻辑, 不联网就能测。真实接口在开发期人工实测过(拿到真 token、
+# 轮询返回 50004001、假 ticket 被服务端以 AUTH_ERROR:50051 拒绝)。
+QL="${ROOTFS}/usr/local/lib/musictools/quark_login.py"
+[[ -f "$QL" ]] || die "overlay 里缺 quark_login.py"
+if python3 -m py_compile "$QL"; then
+  ok_q="语法检查通过"
+else
+  die "quark_login.py 语法错误"
+fi
+if python3 "$QL" --self-test >"${BUILD_DIR}/quark-selftest.log" 2>&1; then
+  log "夸克登录逻辑自测通过($(grep -c '✅' "${BUILD_DIR}/quark-selftest.log") 项)"
+else
+  sed 's/^/[quark] /' "${BUILD_DIR}/quark-selftest.log" >&2 || true
+  die "夸克登录逻辑自测失败, music quark-login 不能用"
+fi
+# qrcode 是可选的: 没装只会退化成"打印链接", 不该因此卡构建
+if "${ROOTFS}/home/${USER_NAME}/.venvs/music/bin/python" -c "import qrcode" 2>/dev/null; then
+  log "qrcode 已装, 夸克登录二维码可以直接画在终端里"
+else
+  warn "venv 里没有 qrcode, 扫码登录会退化成只打印链接(仍可用)"
 fi
 
 # shell 语法: 镜像里的这几个脚本是用户的救命工具, 语法错 = 跑起来毫无反应
