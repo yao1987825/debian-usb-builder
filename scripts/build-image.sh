@@ -131,10 +131,12 @@ done
 rm -rf "$ROOTFS" "$ROOT_IMG" "$ESP_IMG" "$MUSIC_IMG"
 
 # ---------- 生成 UUID (先于文件系统创建, 便于直接写进 fstab / grub.cfg) ----------
+# 注意: 必须保留标准带横线格式, mke2fs -U 只认这种写法
 gen_uuid() { cat /proc/sys/kernel/random/uuid; }
-ROOT_UUID="$(gen_uuid)"; ROOT_UUID="${ROOT_UUID//-/}"
-MUSIC_UUID="$(gen_uuid)"; MUSIC_UUID="${MUSIC_UUID//-/}"
-log "root UUID=${ROOT_UUID:0:8}-${ROOT_UUID:8:4}-${ROOT_UUID:12:4}-${ROOT_UUID:16:4}-${ROOT_UUID:20:12}"
+ROOT_UUID="$(gen_uuid)"
+MUSIC_UUID="$(gen_uuid)"
+log "root UUID=${ROOT_UUID}"
+log "music UUID=${MUSIC_UUID}"
 
 ####################### 第 1 步: debootstrap 生成 rootfs ###################
 step "1/9 debootstrap ${SUITE} → rootfs 目录"
@@ -409,9 +411,9 @@ step "5/9 写入 fstab / GRUB 配置"
 
 cat > "${ROOTFS}/etc/fstab" <<EOF
 # <file system>                <mount point>  <type>  <options>                                   <dump>  <pass>
-UUID=${ROOT_UUID:0:8}-${ROOT_UUID:8:4}-${ROOT_UUID:12:4}-${ROOT_UUID:16:4}-${ROOT_UUID:20:12}  /              ext4   defaults,noatime,errors=remount-ro        0       1
+UUID=${ROOT_UUID}  /              ext4   defaults,noatime,errors=remount-ro        0       1
 LABEL=EFI                       /boot/efi     vfat   umask=0077,utf8=1                          0       1
-UUID=${MUSIC_UUID:0:8}-${MUSIC_UUID:8:4}-${MUSIC_UUID:12:4}-${MUSIC_UUID:16:4}-${MUSIC_UUID:20:12}  /mnt/songdisk ext4 defaults,noatime,nofail,x-systemd.device-timeout=15  0       2
+UUID=${MUSIC_UUID} /mnt/songdisk ext4 defaults,noatime,nofail,x-systemd.device-timeout=15  0       2
 tmpfs                           /tmp           tmpfs  defaults,nosuid,nodev,size=1G              0       0
 EOF
 
@@ -438,37 +440,44 @@ mkdir -p "${ROOTFS}/boot/grub"
   fi
   echo ""
   echo "menuentry 'Debian GNU/Linux 12 (USB · Xfce + Fcitx5/Rime) —— 图形/中文输入' {"
-  echo "    search --no-floppy --fs-uuid --set=root ${ROOT_UUID:0:8}-${ROOT_UUID:8:4}-${ROOT_UUID:12:4}-${ROOT_UUID:16:4}-${ROOT_UUID:20:12}"
+  echo "    search --no-floppy --fs-uuid --set=root ${ROOT_UUID}"
   if [[ "${SERIAL_CONSOLE}" == "1" ]]; then
-    echo "    linux /boot/vmlinuz-${KVER} root=UUID=${ROOT_UUID:0:8}-${ROOT_UUID:8:4}-${ROOT_UUID:12:4}-${ROOT_UUID:16:4}-${ROOT_UUID:20:12} ro quiet splash loglevel=3 console=ttyS0,115200n8"
+    echo "    linux /boot/vmlinuz-${KVER} root=UUID=${ROOT_UUID} ro quiet splash loglevel=3 console=ttyS0,115200n8"
   else
-    echo "    linux /boot/vmlinuz-${KVER} root=UUID=${ROOT_UUID:0:8}-${ROOT_UUID:8:4}-${ROOT_UUID:12:4}-${ROOT_UUID:16:4}-${ROOT_UUID:20:12} ro quiet splash loglevel=3"
+    echo "    linux /boot/vmlinuz-${KVER} root=UUID=${ROOT_UUID} ro quiet splash loglevel=3"
   fi
   echo "    initrd /boot/initrd.img-${KVER}"
   echo "}"
   echo ""
   echo "menuentry 'Debian GNU/Linux 12 (USB · 详细启动日志, 无图形 splash)' {"
-  echo "    search --no-floppy --fs-uuid --set=root ${ROOT_UUID:0:8}-${ROOT_UUID:8:4}-${ROOT_UUID:12:4}-${ROOT_UUID:16:4}-${ROOT_UUID:20:12}"
-  echo "    linux /boot/vmlinuz-${KVER} root=UUID=${ROOT_UUID:0:8}-${ROOT_UUID:8:4}-${ROOT_UUID:12:4}-${ROOT_UUID:16:4}-${ROOT_UUID:20:12} ro console=tty1 loglevel=7"
+  echo "    search --no-floppy --fs-uuid --set=root ${ROOT_UUID}"
+  echo "    linux /boot/vmlinuz-${KVER} root=UUID=${ROOT_UUID} ro console=tty1 loglevel=7"
   echo "    initrd /boot/initrd.img-${KVER}"
   echo "}"
   echo ""
   echo "menuentry 'Debian GNU/Linux 12 (USB · 恢复模式 / 单用户)' {"
-  echo "    search --no-floppy --fs-uuid --set=root ${ROOT_UUID:0:8}-${ROOT_UUID:8:4}-${ROOT_UUID:12:4}-${ROOT_UUID:16:4}-${ROOT_UUID:20:12}"
-  echo "    linux /boot/vmlinuz-${KVER} root=UUID=${ROOT_UUID:0:8}-${ROOT_UUID:8:4}-${ROOT_UUID:12:4}-${ROOT_UUID:16:4}-${ROOT_UUID:20:12} ro single"
+  echo "    search --no-floppy --fs-uuid --set=root ${ROOT_UUID}"
+  echo "    linux /boot/vmlinuz-${KVER} root=UUID=${ROOT_UUID} ro single"
   echo "    initrd /boot/initrd.img-${KVER}"
   echo "}"
 } > "${ROOTFS}/boot/grub/grub.cfg"
 
 # EFI 分区里的引导链配置: 找到根分区 -> 读真正的 grub.cfg
 cat > "${BUILD_DIR}/esp-grub.cfg" <<EOF
-search.fs_uuid ${ROOT_UUID:0:8}-${ROOT_UUID:8:4}-${ROOT_UUID:12:4}-${ROOT_UUID:16:4}-${ROOT_UUID:20:12} root
+search.fs_uuid ${ROOT_UUID} root
 set prefix=(\$root)/boot/grub
 configfile \$prefix/grub.cfg
 EOF
 
 ####################### 第 6 步: 生成三个分区镜像 #######################
 step "6/9 生成 ext4 / vfat 分区镜像"
+
+# 清理 apt 缓存与包索引(能省 250MB 左右, 也让镜像干净些)
+chroot_run apt-get clean || true
+rm -rf "${ROOTFS}"/var/lib/apt/lists/* 2>/dev/null || true
+rm -f  "${ROOTFS}"/var/cache/apt/archives/*.deb 2>/dev/null || true
+rm -rf "${ROOTFS}"/var/log/journal/* 2>/dev/null || true
+rm -f  "${ROOTFS}"/var/log/*.log 2>/dev/null || true
 
 # 关键: 必须先卸载 chroot 的 bind mount。
 # 否则 mke2fs -d 会把 /proc、/sys、/dev 的运行时内容一起灌进 ext4 镜像里。
@@ -488,6 +497,38 @@ truncate -s "${ROOT_SIZE_MB}M" "$ROOT_IMG"
 mke2fs -q -t ext4 -L DEBIAN_ROOT -U "$ROOT_UUID" -d "$ROOTFS" "$ROOT_IMG"
 log "根分区镜像: ${ROOT_SIZE_MB}MB (内容 $(du -sm "$ROOTFS" | cut -f1)MB)"
 
+# --- 先把 EFI 引导文件从 rootfs 里取出来(必须在删除 rootfs 之前!) ---
+EFI_FILES="${BUILD_DIR}/efi-files"
+mkdir -p "$EFI_FILES"
+shim_bin=""; grub_signed=""; grub_plain=""; mok_bin=""
+if [[ -d "${ROOTFS}/usr/lib/shim" ]]; then
+  f="$(find "${ROOTFS}/usr/lib/shim" -name 'shimx64.efi*' 2>/dev/null | head -1 || true)"
+  [[ -n "$f" ]] && { cp -a "$f" "${EFI_FILES}/BOOTX64.EFI"; shim_bin="${EFI_FILES}/BOOTX64.EFI"; }
+  f="$(find "${ROOTFS}/usr/lib/shim" -name 'MokManager.efi' 2>/dev/null | head -1 || true)"
+  [[ -n "$f" ]] && { cp -a "$f" "${EFI_FILES}/MokManager.efi"; mok_bin="${EFI_FILES}/MokManager.efi"; }
+fi
+if [[ -d "${ROOTFS}/usr/lib/grub" ]]; then
+  f="$(find "${ROOTFS}/usr/lib/grub" -name 'grubx64.efi.signed' 2>/dev/null | head -1 || true)"
+  if [[ -n "$f" ]]; then
+    cp -a "$f" "${EFI_FILES}/grubx64.efi"; grub_signed="${EFI_FILES}/grubx64.efi"
+  else
+    f="$(find "${ROOTFS}/usr/lib/grub" -name 'grubx64.efi' -not -name '*.signed' 2>/dev/null | head -1 || true)"
+    if [[ -n "$f" ]]; then
+      cp -a "$f" "${EFI_FILES}/grubx64.efi"; grub_plain="${EFI_FILES}/grubx64.efi"
+    fi
+  fi
+fi
+[[ -n "$shim_bin" ]] && log "找到 shim: $(basename "$shim_bin")"
+[[ -n "$grub_signed" ]] && log "找到签名 grubx64.efi"
+[[ -n "$grub_plain" ]] && log "找到未签名 grubx64.efi"
+
+# 提早删除 rootfs 目录, 把 runner 的磁盘峰值压下来(runner 只有约 14GB 可用)。
+# BIOS GRUB 模式例外: 它还需要 rootfs 里的 /boot 目录。
+if [[ "${WITH_BIOS_GRUB}" != "1" ]]; then
+  rm -rf "$ROOTFS"
+  log "已删除 rootfs 目录, 释放磁盘空间"
+fi
+
 # --- 歌曲分区 ---
 mkdir -p "${BUILD_DIR}/empty"
 truncate -s "${MUSIC_SIZE_MB}M" "$MUSIC_IMG"
@@ -496,11 +537,6 @@ mke2fs -q -t ext4 -L MUSIC -U "$MUSIC_UUID" -d "${BUILD_DIR}/empty" "$MUSIC_IMG"
 # --- EFI 分区 ---
 truncate -s "${ESP_SIZE_MB}M" "$ESP_IMG"
 mkfs.vfat -F 32 -n EFI "$ESP_IMG"
-
-shim_bin="$(find "${ROOTFS}/usr/lib/shim" -name 'shimx64.efi*' 2>/dev/null | head -1 || true)"
-grub_signed="$(find "${ROOTFS}/usr/lib/grub" -name 'grubx64.efi.signed' 2>/dev/null | head -1 || true)"
-grub_plain="$(find "${ROOTFS}/usr/lib/grub" -name 'grubx64.efi' -not -name '*.signed' 2>/dev/null | head -1 || true)"
-mok_bin="$(find "${ROOTFS}/usr/lib/shim" -name 'MokManager.efi' 2>/dev/null | head -1 || true)"
 
 mmd -i "$ESP_IMG" ::EFI ::EFI/BOOT ::EFI/debian || true
 if [[ -n "$shim_bin" ]]; then
@@ -540,7 +576,9 @@ sector_of() { sgdisk -i "$1" "$OUT_IMG" | awk '/First sector:/ {print $3}'; }
 p2_start="$(sector_of 2)"; p3_start="$(sector_of 3)"; p4_start="$(sector_of 4)"
 dd if="$ESP_IMG"   of="$OUT_IMG" bs=1M seek=$(( p2_start * 512 / 1048576 )) conv=notrunc status=none
 dd if="$ROOT_IMG"  of="$OUT_IMG" bs=1M seek=$(( p3_start * 512 / 1048576 )) conv=notrunc status=none
+rm -f "$ROOT_IMG"      # 已并入整盘镜像, 立刻释放 3~6GB
 dd if="$MUSIC_IMG" of="$OUT_IMG" bs=1M seek=$(( p4_start * 512 / 1048576 )) conv=notrunc status=none
+rm -f "$MUSIC_IMG" "$ESP_IMG"
 log "分区起始: EFI@p2=${p2_start} root@p3=${p3_start} music@p4=${p4_start}"
 
 # 传统 BIOS 的 GRUB (可选, 实验性): 需要 loop 设备
@@ -560,8 +598,9 @@ fi
 
 ####################### 第 8 步: 清理与自检 #######################
 step "8/9 清理中间文件并自检"
-rm -rf "$ROOTFS" "${BUILD_DIR}/empty"
-rm -f "$ROOT_IMG" "$MUSIC_IMG"
+[[ -d "$ROOTFS" ]] && rm -rf "$ROOTFS"
+rm -rf "${BUILD_DIR}/empty" "${BUILD_DIR}/efi-files"
+rm -f "$ROOT_IMG" "$MUSIC_IMG" "$ESP_IMG"
 
 sgdisk -v "$OUT_IMG" | sed 's/^/[sgdisk] /'
 log "镜像大小: $(du -h "$OUT_IMG" | cut -f1) (实际占用), $(stat -c%s "$OUT_IMG") 字节"
@@ -570,6 +609,12 @@ sgdisk -p "$OUT_IMG" | sed 's/^/[sgdisk] /'
 
 ####################### 第 9 步: 压缩 + 校验和 #######################
 step "9/9 压缩与校验和"
+
+avail_mb="$(df -m --output=avail "$OUT_DIR" 2>/dev/null | tail -1 | tr -d ' ')"
+if [[ "$avail_mb" =~ ^[0-9]+$ ]] && (( avail_mb < 4096 )); then
+  warn "剩余磁盘仅 ${avail_mb}MB, 压缩可能失败(可把 img_size_mb 调小后重试)"
+fi
+
 case "$COMPRESS" in
   xz)    xz -T0 -6 -k -f "$OUT_IMG" ;;
   gzip)  gzip -6 -k -f "$OUT_IMG" ;;
@@ -584,7 +629,7 @@ Debian     : ${SUITE}
 镜像       : $(basename "$OUT_IMG")
 镜像大小   : ${IMG_SIZE_MB} MiB (压缩前)
 分区       : p1 BIOS-BOOT(${BIOS_SIZE_MB}MiB) / p2 EFI(${ESP_SIZE_MB}MiB) / p3 root(${ROOT_SIZE_MB}MiB ext4) / p4 MUSIC(${MUSIC_SIZE_MB}MiB ext4)
-root UUID  : ${ROOT_UUID:0:8}-${ROOT_UUID:8:4}-${ROOT_UUID:12:4}-${ROOT_UUID:16:4}-${ROOT_UUID:20:12}
+root UUID  : ${ROOT_UUID}
 歌曲挂载点 : /mnt/songdisk
 登录用户   : ${USER_NAME} / 密码 ${USER_PASS}
 预装项目   : $( [[ "${WITH_PROJECTS}" == "1" ]] && echo "是" || echo "否" )
@@ -597,7 +642,7 @@ Secure Boot: 需要 shim 签名(已随镜像写入); 若无法启动请在固件
 EOF
 cat "${OUT_DIR}/BUILD-INFO.txt"
 
-( cd "$OUT_DIR" && sha256sum ./*.img* > SHA256SUMS.txt )
+( cd "$OUT_DIR" && sha256sum ./*.img.xz > SHA256SUMS.txt 2>/dev/null || true )
 log "产物:"
 ls -lh "$OUT_DIR" | sed 's/^/[out]   /'
 log "完成 ✅"
