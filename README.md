@@ -300,6 +300,20 @@ sudo systemctl enable --now NetworkManager
 music net --fix
 ```
 
+**Q：连上网都做不到（连 `apt-get install` 都跑不了）**
+用 `net-rescue`。它不需要联网、不需要 iproute2，只用 systemd 自带的能力：
+```bash
+sudo net-rescue
+```
+流程是：先启用 `systemd-networkd` 做自动 DHCP（这个二进制就在 systemd 包里，一定存在），
+20 秒内拿不到 IP 再退回手工配静态地址。老版本镜像没有 NetworkManager 时，这是唯一能救的路。
+联网之后补装长期方案：
+```bash
+sudo apt-get install -y network-manager
+sudo systemctl enable --now NetworkManager
+sudo systemctl disable --now systemd-networkd   # 别让两个一起管网卡
+```
+
 **Q：`usb-grow.sh` 跑起来没反应 / 不知道它做了什么**
 新版脚本会先打印完整的环境诊断再动手，输出同时写 `/var/log/usb-grow.log`。
 先用 `usb-grow.sh --check` 看诊断（不需要 root），确认它认出了正确的磁盘和分区再执行。
@@ -348,6 +362,7 @@ debian-usb-builder/
 │   ├── usr/local/bin/
 │   │   ├── usb-grow.sh                       # x86: 一键扩展分区到整盘(GPT)
 │   │   ├── net-doctor                       # 网络逐层自检 + 自动修复
+│   │   ├── net-rescue                       # 没网时的应急联网(只用 systemd 自带能力)
 │   │   └── music                             # 下载器快捷入口(single/playlist/gui/doctor/net)
 │   ├── usr/local/lib/musictools/
 │   │   └── single.py                         # 命令行单曲搜索下载(纯 requests, 不用 PyQt6)

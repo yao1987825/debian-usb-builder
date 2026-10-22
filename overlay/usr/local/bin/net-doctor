@@ -198,5 +198,9 @@ if (( BAD == 0 )); then
 else
   printf '%s❌ 发现 %d 项问题%s(每项上面都给了对应的修复命令)\n' "$RED" "$BAD" "$RST"
   info "还连不上就重跑: net-doctor --fix"
+  if ! command -v nmcli >/dev/null 2>&1; then
+    info "连 nmcli 都没有(装不上也联不上网) —— 用应急脚本, 它只需要 systemd 自带的能力:"
+    info "  sudo net-rescue"
+  fi
   exit 1
 fi

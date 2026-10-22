@@ -137,13 +137,29 @@ struct_check() {
 
     # 网络: 没有 NetworkManager 就是一台没有网络的机器, 必须卡住
     local _f
-    for _f in /usr/local/bin/net-doctor /usr/local/bin/usb-grow.sh /usr/bin/nmcli; do
+    for _f in /usr/local/bin/net-doctor /usr/local/bin/net-rescue /usr/local/bin/usb-grow.sh /usr/bin/nmcli; do
       if $SUDO debugfs -R "stat ${_f}" "$p3" 2>/dev/null | grep -q "Inode:"; then
         ok "根分区存在 ${_f}"
       else
         die "根分区缺少 ${_f} —— 没有它开机就没有网络 / 无法扩容"
       fi
     done
+    # 光"文件在"不够, 还得能被 bash 解析 —— 语法错/函数定义顺序错这种问题
+    # 在真机上表现为"命令跑起来毫无反应", 必须在构建期就卡住。
+    local _s _d
+    for _s in /usr/local/bin/music /usr/local/bin/net-doctor /usr/local/bin/net-rescue /usr/local/bin/usb-grow.sh; do
+      _d="$(mktemp -d)"
+      if $SUDO debugfs -R "dump ${_s} ${_d}/probe" "$p3" 2>/dev/null && [[ -s "${_d}/probe" ]]; then
+        if bash -n "${_d}/probe" 2>/dev/null; then
+          ok "${_s} 语法检查通过"
+        else
+          die "${_s} 语法错误, bash -n 解析不过"
+        fi
+      else
+        die "没能从根分区取出 ${_s}, 无法做语法检查"
+      fi
+    done
+
     if $SUDO debugfs -R "ls /etc/systemd/system/multi-user.target.wants" "$p3" 2>/dev/null | grep -q "NetworkManager.service"; then
       ok "NetworkManager 已设为开机自启"
     else

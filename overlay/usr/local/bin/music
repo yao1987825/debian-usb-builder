@@ -284,6 +284,9 @@ cmd_doctor() {
   fi
   printf '%-22s %s\n' "  代理" "$(env | grep -qiE '^(http|https)_proxy=' && echo '⚠️  当前 shell 设了代理' || echo '无')"
   echo "  详细诊断: music net   自动修复: music net --fix"
+  if ! command -v nmcli >/dev/null 2>&1; then
+    echo "  连不上网且装不了 NetworkManager 时: sudo net-rescue"
+  fi
   echo
 }
 

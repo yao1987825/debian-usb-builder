@@ -1,0 +1,242 @@
+#!/usr/bin/env bash
+#
+# net-rescue —— 应急联网脚本(网卡完全没被配置时的救命稻草)
+#
+# 适用场景: 系统里没有 NetworkManager / ifupdown / dhcpcd,
+#           开机拿不到 IP, 又没法联网去装 NetworkManager。
+#           本脚本只用 systemd 自带的能力, 不需要下载任何东西。
+#
+# 用法(需要 root):
+#   net-rescue                     # 先试 systemd-network 自动 DHCP, 不行再手工配静态 IP
+#   net-rescue --dhcp              # 只走 systemd-networkd 自动 DHCP 这一条路
+#   net-rescue -i enp3s0           # 指定网卡(只影响静态 IP 那一段)
+#   net-rescue -a 192.168.1.50 -n 24 -g 192.168.1.1 -d 223.5.5.5
+#                                  # 直接手工配一个静态地址
+#
+# 优先走 systemd-networkd 的原因: Debian/Ubuntu 上它就在 systemd 包里,
+# 只要有 systemd 就一定跑得起来, 不像 iproute2 那样可能压根没装。
+#
+set -uo pipefail
+
+IFACE=""
+ADDR=""
+PREFIX=""
+GATEWAY=""
+DNS="223.5.5.5,119.29.29.29"
+FORCE_STATIC=0
+FORCE_DHCP=0
+
+usage() {
+  sed -n '3,18p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -i) IFACE="${2:?}"; shift 2 ;;
+    -a) ADDR="${2:?}"; shift 2 ;;
+    -n) PREFIX="${2:?}"; shift 2 ;;
+    -g) GATEWAY="${2:?}"; shift 2 ;;
+    -d) DNS="${2:?}"; shift 2 ;;
+    --dhcp)   FORCE_DHCP=1; shift ;;
+    --static) FORCE_STATIC=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "未知参数: $1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+R=$'\033[1;31m'; G=$'\033[1;32m'; B=$'\033[1;34m'; Y=$'\033[1;33m'; N=$'\033[0m'
+say()  { printf '%s[net-rescue]%s %s\n' "$B" "$N" "$*"; }
+ok()   { printf '  %s✅%s %s\n' "$G" "$N" "$*"; }
+warn() { printf '  %s⚠️ %s%s\n' "$Y" "$*" "$N"; }
+die()  { printf '  %s❌ %s%s\n' "$R" "$*" "$N" >&2; exit 1; }
+info() { printf '  %s· %s%s\n' "$B" "$*" "$N"; }
+
+############################### 公共函数 ###############################
+
+have_global_ip() {
+  command -v ip >/dev/null 2>&1 || return 1
+  ip -o -4 addr show scope global 2>/dev/null | grep -q .
+}
+
+detect_iface() {
+  if [[ -n "$IFACE" ]]; then return 0; fi
+  command -v ip >/dev/null 2>&1 || return 1
+  IFACE="$(ip -br link show 2>/dev/null | awk '
+    $1 != "lo" && $1 != "" {
+      name = $1; sub(/@.*$/, "", name)
+      if (name ~ /^(en|eth|enp|ens|eno|enx)/) { print name; exit }
+    }')"
+  [[ -n "$IFACE" ]]
+}
+
+ensure_dns() {
+  # DNS: 有 systemd-resolved 就交给它, 否则直接写 resolv.conf
+  if command -v systemctl >/dev/null 2>&1 \
+     && systemctl is-active --quiet systemd-resolved 2>/dev/null; then
+    ok "systemd-resolved 正在运行, DNS 交给它"
+    return 0
+  fi
+  if command -v systemctl >/dev/null 2>&1; then
+    warn "systemd-resolved 没运行, 尝试拉起来"
+    systemctl enable --now systemd-resolved >/dev/null 2>&1 || true
+    if systemctl is-active --quiet systemd-resolved 2>/dev/null; then
+      ok "systemd-resolved 已启动"
+      return 0
+    fi
+  fi
+  warn "拉不起来, 直接写 /etc/resolv.conf"
+  # resolv.conf 可能是软链接, 直接重定向会写到宿主机/运行时目录, 先删再写
+  [[ -L /etc/resolv.conf ]] && rm -f /etc/resolv.conf
+  printf 'nameserver %s\n' "${DNS//,/$'\n'nameserver }" > /etc/resolv.conf
+  ok "已写入 /etc/resolv.conf"
+}
+
+finish() {
+  local net_ok=1 dns_ok=1
+  echo
+  say "验证 ..."
+  if command -v ping >/dev/null 2>&1; then
+    if ping -c 2 -W 3 223.5.5.5 >/dev/null 2>&1; then ok "能 ping 通公网 IP"; else warn "ping 不通公网 IP"; net_ok=0; fi
+  else
+    info "没有 ping 命令, 跳过 ping 验证"
+    net_ok=0
+  fi
+  if command -v getent >/dev/null 2>&1; then
+    if getent hosts www.baidu.com >/dev/null 2>&1; then ok "域名解析正常"; else warn "域名解析失败"; dns_ok=0; fi
+  fi
+
+  echo
+  if (( net_ok == 1 && dns_ok == 1 )); then
+    say "联网成功 🎉 可以开始下载歌曲了: music single \"周杰伦 夜曲\""
+    say "这是临时配置, 重启会丢。联网之后装长期方案:"
+    say "  sudo apt-get install -y network-manager && sudo systemctl enable --now NetworkManager"
+    say "  sudo systemctl disable --now systemd-networkd   # 别让两个一起管网卡"
+    exit 0
+  fi
+  say "还没通。把上面整段输出发出来, 继续排查。"
+  exit 1
+}
+
+############################### 主体 ###############################
+
+[[ "$(id -u)" == "0" ]] || die "需要 root: sudo net-rescue"
+
+say "=== 应急联网 ==="
+say "内核: $(uname -r)"
+if command -v systemctl >/dev/null 2>&1; then
+  say "systemd 在位, 可以走自带网络栈"
+else
+  warn "没有 systemctl —— 这个系统不是 systemd 启动的, 只能手工配静态 IP"
+fi
+
+NETD_UNIT_OK=0
+if command -v systemctl >/dev/null 2>&1 \
+   && { systemctl list-unit-files systemd-networkd.service >/dev/null 2>&1 \
+        || [[ -x /lib/systemd/systemd-networkd || -x /usr/lib/systemd/systemd-networkd ]]; }; then
+  NETD_UNIT_OK=1
+fi
+
+######################## 路线 A: systemd-networkd 自动 DHCP ########################
+if (( NETD_UNIT_OK == 1 )) && (( FORCE_STATIC == 0 )); then
+  say "路线 A: 用 systemd 自带的 networkd 做自动 DHCP"
+  info "配置文件: /etc/systemd/network/20-net-rescue.network"
+
+  if [[ -n "$IFACE" ]]; then
+    MATCH="Name=${IFACE}"
+  else
+    MATCH="Name=en* eth*"
+  fi
+  mkdir -p /etc/systemd/network
+  cat > /etc/systemd/network/20-net-rescue.network <<EOF
+# 由 net-rescue 生成: 有线网卡自动 DHCP
+[Match]
+${MATCH}
+
+[Network]
+DHCP=yes
+IPv6AcceptRA=no
+EOF
+  ok "已写入 networkd 配置"
+
+  systemctl enable --now systemd-networkd >/dev/null 2>&1 || warn "systemctl enable --now 报了错, 继续等 DHCP"
+
+  say "等待 DHCP 分配地址(最多 20 秒)..."
+  for _ in $(seq 1 20); do
+    sleep 1
+    have_global_ip && break
+  done
+
+  if have_global_ip; then
+    ok "拿到地址了, DHCP 成功 🎉"
+    if command -v ip >/dev/null 2>&1; then
+      ip -br -4 addr show scope global 2>/dev/null | sed 's/^/      /'
+      ip route show default 2>/dev/null | sed 's/^/      /'
+    else
+      info "没有 ip 命令, 看不到具体地址(不影响联网)"
+    fi
+    ensure_dns
+    finish
+  fi
+
+  warn "20 秒内没拿到地址, 换路线 B"
+  systemctl disable --now systemd-networkd >/dev/null 2>&1 || true
+  warn "已把 networkd 停掉, 免得和下面的手工配置打架"
+elif (( NETD_UNIT_OK == 0 )); then
+  warn "这个系统没有 systemd-networkd, 只能手工配静态 IP(路线 B)"
+fi
+
+if (( FORCE_DHCP == 1 )); then
+  die "你要求了 --dhcp, 但 DHCP 没成功。把上面的输出发出来继续排查。"
+fi
+
+######################## 路线 B: 手工静态 IP(需要 iproute2) ########################
+say "路线 B: 手工配一个静态地址"
+
+if ! command -v ip >/dev/null 2>&1; then
+  if (( NETD_UNIT_OK == 1 )); then
+    die "没有 ip 命令(iproute2 未安装), 静态配置这条路走不通; 而 networkd 的 DHCP 也没成功。请把上面输出发出来。"
+  fi
+  die "没有 ip 命令(iproute2 未安装), 也没有 systemd-networkd。这台机器没法自动联网。"
+fi
+
+if ! detect_iface; then
+  say "没认出有线网卡, 现有网卡:"
+  ip -br link show | sed 's/^/    /'
+  die "请用 -i 指定网卡名, 例如: net-rescue -i enp3s0"
+fi
+ok "网卡: ${IFACE}"
+
+CANDIDATES=("${GATEWAY}" 192.168.1.1 192.168.0.1 192.168.31.1 10.0.0.1 10.0.0.138 172.16.0.1)
+if [[ -z "$GATEWAY" ]]; then
+  say "启动网卡以探测网关 ..."
+  ip link set "$IFACE" up 2>/dev/null || true
+  for gw in "${CANDIDATES[@]}"; do
+    [[ -z "$gw" ]] && continue
+    if ping -c 1 -W 1 "$gw" >/dev/null 2>&1; then
+      GATEWAY="$gw"
+      ok "找到网关: ${GATEWAY}"
+      break
+    fi
+  done
+  if [[ -z "$GATEWAY" ]]; then
+    GATEWAY=192.168.1.1
+    warn "没探测到常见网关, 先按 ${GATEWAY} 试; 不对就用 -g 明确指定(看你的路由器管理页)"
+  fi
+fi
+
+if [[ -z "$ADDR" ]]; then
+  ADDR="$(echo "$GATEWAY" | cut -d. -f1-3).100"
+fi
+[[ -n "$PREFIX" ]] || PREFIX=24
+ok "将配置: ${ADDR}/${PREFIX}, 网关 ${GATEWAY}, DNS ${DNS}"
+
+say "配置中 ..."
+ip link set "$IFACE" up
+ip addr flush dev "$IFACE" 2>/dev/null || true
+ip addr add "${ADDR}/${PREFIX}" dev "$IFACE"
+ip route replace default via "$GATEWAY" dev "$IFACE" 2>/dev/null \
+  || warn "加默认路由失败(可能网关写错了), 至少同网段能通"
+ok "地址/路由已配置"
+
+ensure_dns
+finish
