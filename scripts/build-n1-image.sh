@@ -262,7 +262,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
-LOOP="$(losetup --show -P "$OUT_IMG")"
+# 注意: 必须带 -f, 否则 losetup 只会"查询"文件已有的关联设备, 不会新建,
+# 报 "failed to use device: No such device"。
+LOOP="$(losetup -P -f --show "$OUT_IMG")"
 [[ -n "$LOOP" ]] || die "losetup 失败"
 
 # 等内核把分区节点建出来(udev 可能慢一拍)

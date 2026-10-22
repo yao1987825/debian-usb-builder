@@ -78,7 +78,8 @@ print("  ✅ 前 446 字节存在 u-boot 引导码 (前 4 字节: %s)"
 PY
 
 ####################### 3~5. 挂载检查 #######################
-LOOP="$(losetup --show -P "$RAW")"
+# 注意: 必须带 -f, 否则 losetup 只会查询已有关联, 不会新建 loop 设备
+LOOP="$(losetup -P -f --show "$RAW")"
 [[ -n "$LOOP" ]] || { echo "losetup 失败" >&2; exit 1; }
 for _ in $(seq 1 30); do
   [[ -b "${LOOP}p3" ]] && break

@@ -92,10 +92,11 @@ deb ${APT_MIRROR} ${OS_CODENAME} main contrib non-free non-free-firmware
 deb ${APT_UPDATES} ${OS_CODENAME}-updates main contrib non-free non-free-firmware
 deb ${APT_SECURITY} ${OS_CODENAME}-security main contrib non-free non-free-firmware
 EOF
-# Armbian 自带的 apt 源指向 armbian 镜像站, 构建期偶尔会超时, 先停用
-for f in "${ROOTFS_MOUNT}"/etc/apt/sources.list.d/armbian.list*; do
+# Armbian 自带的 apt 源指向 armbian 镜像站 / 其它发行版, 构建期经常超时甚至 404,
+# 全部停用, 只留上面这份官方源(否则 apt-get update 失败会导致后面装不上包)。
+for f in "${ROOTFS_MOUNT}"/etc/apt/sources.list.d/*.list "${ROOTFS_MOUNT}"/etc/apt/sources.list.d/*.sources; do
   [[ -e "$f" ]] || continue
-  mv -f "$f" "${f}.disabled" 2>/dev/null || true
+  mv -f "$f" "${f}.disabled" 2>/dev/null || rm -f "$f" 2>/dev/null || true
 done
 
 mkdir -p "${ROOTFS_MOUNT}/dev/pts" "${ROOTFS_MOUNT}/proc" "${ROOTFS_MOUNT}/sys" "${ROOTFS_MOUNT}/run"
@@ -115,6 +116,10 @@ chmod 0755 "${ROOTFS_MOUNT}/usr/sbin/policy-rc.d"
 chroot_run() { chroot "$ROOTFS_MOUNT" /usr/bin/env DEBIAN_FRONTEND=noninteractive LC_ALL=C "$@"; }
 
 chroot_run apt-get update -qq || warn "apt-get update 有告警, 继续"
+# 确认主仓库索引真的拿到了, 否则后面的 install 会莫名其妙地"找不到包"
+if ! chroot_run apt-get install -y --no-install-recommends --print-uris locales >/dev/null 2>&1; then
+  die "apt 源不可用, 无法安装软件包(检查 ${OS_CODENAME} 的软件源)"
+fi
 
 ############################### 第 2 步: 装软件栈 #######################
 step "2/8 安装软件栈 (PROFILE=${PROFILE})"
