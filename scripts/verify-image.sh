@@ -189,8 +189,9 @@ struct_check() {
     fi
 
     # 软件源: 用户明确要求换清华源, 换不成就等于没做
-    local _want="${APT_MIRROR-https://mirrors.tuna.tsinghua.edu.cn/debian}" _sl
-    [[ "$_want" == "off" || -z "$_want" ]] && _want=""
+    local _sl
+    local _want="${APT_MIRROR:-https://mirrors.tuna.tsinghua.edu.cn/debian}"
+    case "$_want" in off|none|"") _want="" ;; esac
     _sl="$($SUDO debugfs -R "cat /etc/apt/sources.list" "$p3" 2>/dev/null || true)"
     if [[ -n "$_want" ]]; then
       local _host="${_want#*://}"; _host="${_host%%/*}"
@@ -203,13 +204,16 @@ struct_check() {
     else
       ok "apt 源保持官方源(未指定 APT_MIRROR)"
     fi
-    if [[ -n "${PIP_INDEX_URL-}" ]]; then
-      local _phost="${PIP_INDEX_URL#*://}"; _phost="${_phost%%/*}"
-      [[ "$_phost" == "off" || "$_phost" == "none" ]] && _phost=""
-      if $SUDO debugfs -R "cat /etc/pip.conf" "$p3" 2>/dev/null | grep -q "$_phost"; then
-        ok "pip 源已换成 ${_phost}"
-      else
-        warn "pip 源不是 ${_phost}"
+    if [[ -n "${PIP_INDEX_URL:-}" ]]; then
+      local _phost="${PIP_INDEX_URL}"
+      case "$_phost" in off|none|"") _phost="" ;; esac
+      if [[ -n "$_phost" ]]; then
+        _phost="${_phost#*://}"; _phost="${_phost%%/*}"
+        if $SUDO debugfs -R "cat /etc/pip.conf" "$p3" 2>/dev/null | grep -q "$_phost"; then
+          ok "pip 源已换成 ${_phost}"
+        else
+          warn "pip 源不是 ${_phost}"
+        fi
       fi
     fi
 

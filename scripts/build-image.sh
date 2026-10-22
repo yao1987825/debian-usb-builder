@@ -433,6 +433,8 @@ log "预置代理: ${PROXY_URL_DEFAULT}(proxy status / proxy on / proxy off)"
 [[ -x "${ROOTFS}/usr/bin/xrandr" ]] || die "xrandr 没装上, screen-fit 无法工作(x11-xserver-utils)"
 [[ -f "${ROOTFS}/usr/local/bin/screen-fit" ]] || die "overlay 里缺 screen-fit"
 [[ -f "${ROOTFS}/usr/local/lib/screentools/fit.py" ]] || die "overlay 里缺 fit.py"
+# debootstrap 的 minbase 不保证有 /etc/xdg/autostart, 直接 cat 会 "No such file or directory"
+mkdir -p "${ROOTFS}/etc/xdg/autostart"
 cat > "${ROOTFS}/etc/xdg/autostart/screen-fit.desktop" <<'EOF'
 [Desktop Entry]
 Type=Application
@@ -451,10 +453,10 @@ log "已配置开机自动匹配显示器原生分辨率(screen-fit --disable �
 
 # EDID/xrandr 解析逻辑自测: 这一段纯字符串处理, 不需要 X, 构建期就能验。
 # 解析错了在真机上的表现是"分辨率没变或者整屏拉伸", 很难一眼看出是脚本的锅。
-if python3 "${ROOTFS}/usr/local/lib/screentools/fit.py" --self-test >/tmp/fit-selftest.log 2>&1; then
-  log "EDID/xrandr 解析自测通过"
+if python3 "${ROOTFS}/usr/local/lib/screentools/fit.py" --self-test >"${BUILD_DIR}/fit-selftest.log" 2>&1; then
+  log "EDID/xrandr 解析自测通过($(grep -c '✅' "${BUILD_DIR}/fit-selftest.log") 项)"
 else
-  sed 's/^/[screen-fit] /' /tmp/fit-selftest.log >&2 || true
+  sed 's/^/[screen-fit] /' "${BUILD_DIR}/fit-selftest.log" >&2 || true
   die "EDID/xrandr 解析自测失败, screen-fit 会匹配错分辨率"
 fi
 
