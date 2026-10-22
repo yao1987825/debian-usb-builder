@@ -158,6 +158,14 @@ IPv6AcceptRA=no
 EOF
   ok "已写入 networkd 配置"
 
+  # NetworkManager 和 networkd 同时管一块网卡会互相打架, 先把它停下来。
+  if systemctl is-active --quiet NetworkManager 2>/dev/null; then
+    warn "NetworkManager 正在运行, 两套不能同时管网卡 —— 先把它停掉"
+    systemctl disable --now NetworkManager >/dev/null 2>&1 \
+      || warn "停 NetworkManager 失败, 下面可能拿不到地址"
+    ok "NetworkManager 已停用(联网之后记得按最后的提示装回来)"
+  fi
+
   systemctl enable --now systemd-networkd >/dev/null 2>&1 || warn "systemctl enable --now 报了错, 继续等 DHCP"
 
   say "等待 DHCP 分配地址(最多 20 秒)..."
