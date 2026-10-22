@@ -176,7 +176,6 @@ music gui
 
 # 设/清代理(便携 U 盘上通常没跑 Clash, 直接清空)
 music setup-proxy
-
 # 看歌曲目录 / 已下载列表 / 环境自检
 music out
 music ls
@@ -201,6 +200,41 @@ cd ~/projects/gequhai-playlist-downloader
 > `gequhai-downloader` 里的 `gequhai.py` / `quark.py` / `utils.py` 只依赖 `requests`，
 > 只有 `manager.py` / `gui.py` 依赖 PyQt6（那是给图形界面用的）。
 > 所以命令行单曲下载是独立的一条轻量链路，**slim 档镜像照样能用**。
+
+### 3.1 夸克网盘扫码登录（下载前必做一次）
+
+站点的低品质直链接口目前被限流（403），**夸克网盘转存是唯一能拿到完整音频的路**，
+而转存必须带自己账号的 cookie。镜像里已经内置了扫码登录：
+
+```bash
+music quark-login     # 终端里显示二维码 → 用夸克 App 扫码 → 自动写好 cookie
+music quark-status    # 检查这个 cookie 还能不能用 / 缺不缺主凭证
+music quark-clear     # 清掉
+```
+
+**不需要浏览器，也不需要 Playwright/Chromium。** 走的是夸克网页端同一套纯 HTTP 接口：
+
+```
+GET https://uop.quark.cn/cas/ajax/getTokenForQrcodeLogin   → 二维码 token
+扫码
+GET https://uop.quark.cn/cas/ajax/getServiceTicketByQrcodeToken → service_ticket
+GET https://pan.quark.cn/account/info?st=<ticket>&lw=scan   → 写入 cookie
+```
+
+这个做法来自 `quark-tool` 与 `quark-drive` 两个项目，它们各自独立实现了同一套流程、
+端点完全一致。选它而不是 Playwright 的原因很实际：一台只有 U 盘 + 图形界面的机器，
+少几百 MB 依赖、少一个容易坏掉的浏览器。
+
+**⚠️ 千万别再用浏览器 F12 的 `document.cookie` 取 cookie。**
+主凭证 `__pus` 是 **HttpOnly** 的，JavaScript 读不到，浏览器控制台拿到的 cookie 缺这一项，
+夸克会把请求当游客，转存一定失败。`music quark-login` 走 HTTP 层，字段是全的。
+`music quark-status` 会直接告诉你缺没缺 `__pus`。
+
+其他细节：
+- cookie 落盘前会**在线验签**（真打一次网盘接口），失败会明说，不会假装成功
+- 写 `config.json` 前自动备份旧的，写完 `chmod 600`（cookie 是凭据）
+- 终端上打印一律**打码**，只显示前 4 个字符和长度
+- `qrcode` 没装也能用，只是二维码会退化成打印链接（终端太窄时用 `--url-only` 也行）
 
 ### 4. 两个下载器的分工（注意差别）
 
@@ -411,7 +445,8 @@ debian-usb-builder/
 │   │   ├── proxy                            # 代理开关(status/on/off/test)
 │   │   └── music                             # 下载器快捷入口(single/playlist/gui/doctor/net/screen/proxy)
 │   ├── usr/local/lib/musictools/
-│   │   └── single.py                         # 命令行单曲搜索下载(纯 requests, 不用 PyQt6)
+│   │   ├── single.py                         # 命令行单曲搜索下载(纯 requests, 不用 PyQt6)
+│   │   └── quark_login.py                    # 夸克网盘纯 HTTP 扫码登录(不需要浏览器)
 │   ├── usr/local/lib/screentools/
 │   │   └── fit.py                            # EDID/xrandr 解析 + 分辨率方案(support --self-test)
 │   └── home/user/.config/fcitx5/rime/        # Rime 简体拼音方案 + 73 条歌名词库
