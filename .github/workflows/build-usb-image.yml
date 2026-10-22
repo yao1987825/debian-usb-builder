@@ -59,10 +59,21 @@ on:
 
 permissions:
   contents: read
+  actions: write          # 用来主动取消同一分支上更早的构建(见下面的步骤)
 
+# 并发组必须按 run 唯一, 不能按分支。
+#
+# 踩过的坑: 原来用 group: usb-image-${{ github.ref }} + cancel-in-progress: true,
+# 想着"新构建自动把旧的取消掉"。但 GitHub 的并发槽位是**到 run 进入终态才释放**的,
+# 而被取消的 run 偶尔会卡在 in_progress 永远不落定(job 已经是 cancelled, 但
+# run 状态不更新, 连 cancel 接口都返回 409 "not in progress")。
+# 那个僵尸 run 就一直占着 usb-image-refs/heads/main 这个槽位,
+# 后面所有新构建全部卡在 queued, 一个都跑不起来。
+#
+# 现在改成每个 run 一个独立的组, 互相不可能阻塞; "取消更早的构建"改成显式步骤做。
 concurrency:
-  group: usb-image-${{ github.ref }}
-  cancel-in-progress: true
+  group: usb-image-${{ github.ref }}-${{ github.run_id }}
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -81,6 +92,23 @@ jobs:
       PROXY_URL_DEFAULT: ${{ github.event.inputs.proxy_url }}
 
     steps:
+      - name: 取消同一分支上更早的构建
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # 以前靠 concurrency: cancel-in-progress 自动取消, 现在并发组按 run 唯一,
+          # 这里显式做同样的事: 同一分支上只留最新的一次构建在跑。
+          # 取消失败(zombie run)不影响本次构建, 一律忽略。
+          gh run list --repo "${{ github.repository }}" --workflow build-usb-image.yml \
+            --status in_progress --json databaseId --jq '.[].databaseId' |
+          while read -r id; do
+            if [ "$id" != "${{ github.run_id }}" ]; then
+              echo "取消更早的构建 $id"
+              gh run cancel "$id" --repo "${{ github.repository }}" || true
+            fi
+          done
+
       - name: 检出代码
         uses: actions/checkout@v5
 
