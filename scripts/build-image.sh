@@ -44,6 +44,24 @@ TIMEZONE_NAME="${TIMEZONE_NAME:-Asia/Shanghai}"
 
 WITH_BIOS_GRUB="${WITH_BIOS_GRUB:-0}"            # 1=额外安装传统 BIOS 的 GRUB(实验性, 需 loop 设备)
 WITH_PROJECTS="${WITH_PROJECTS:-1}"              # 1=把两个下载器项目预装进镜像
+
+# 镜像档位:
+#   full = 图形下载器(PyQt6) + Playwright Chromium + Noto CJK 字体  (~4.2GB 内容)
+#   slim = 纯命令行: 不装 PyQt6 / Chromium / Noto CJK              (~2.9GB 内容, 省约 1.3GB)
+# 注意: 命令行单曲下载(music single)只依赖 requests, slim 档完全可用。
+PROFILE="${PROFILE:-full}"
+WITH_PYQT=1
+WITH_PLAYWRIGHT_BROWSER=1
+WITH_NOTO_CJK=1
+case "$PROFILE" in
+  full) ;;
+  slim)
+    WITH_PYQT=0
+    WITH_PLAYWRIGHT_BROWSER=0
+    WITH_NOTO_CJK=0
+    ;;
+  *) die "未知 PROFILE: ${PROFILE} (可选 full|slim)" ;;
+esac
 SERIAL_CONSOLE="${SERIAL_CONSOLE:-1}"            # 1=GRUB 内核加串口控制台(便于 QEMU 冒烟测试)
 
 REPO_GEQUHAI="${REPO_GEQUHAI:-https://github.com/Yannick-Mo/gequhai-downloader.git}"
@@ -163,6 +181,10 @@ chroot_run() { chroot "$ROOTFS" /usr/bin/env DEBIAN_FRONTEND=noninteractive LC_A
 
 chroot_run apt-get update -qq
 
+# 字体: slim 档只留文泉驿(15MB), full 档额外装 Noto CJK(约 200MB)
+FONT_PKGS="fonts-wqy-zenhei"
+[[ "$WITH_NOTO_CJK" == "1" ]] && FONT_PKGS="${FONT_PKGS} fonts-noto-cjk"
+
 # ---- 必需组件 ----
 chroot_run apt-get install -y --no-install-recommends \
   linux-image-amd64 \
@@ -171,7 +193,7 @@ chroot_run apt-get install -y --no-install-recommends \
   xfce4 xfce4-terminal \
   lightdm \
   fcitx5 fcitx5-rime fcitx5-config-qt im-config \
-  fonts-wqy-zenhei fonts-noto-cjk \
+  ${FONT_PKGS} \
   python3 python3-venv python3-pip \
   git curl wget ca-certificates \
   ffmpeg aria2 vim tmux htop \
@@ -238,6 +260,11 @@ done
 printf '%s ALL=(ALL) NOPASSWD:ALL\n' "$USER_NAME" > "${ROOTFS}/etc/sudoers.d/90-${USER_NAME}"
 chmod 0440 "${ROOTFS}/etc/sudoers.d/90-${USER_NAME}"
 
+# 该账号只存在于 chroot 里, 宿主机没有同名用户, 所以必须用数字 UID/GID 做 chown
+USER_UID="$(chroot_run id -u "$USER_NAME")"
+USER_GID="$(chroot_run id -g "$USER_NAME")"
+log "用户 ${USER_NAME} uid=${USER_UID} gid=${USER_GID}"
+
 # lightdm 自动登录
 mkdir -p "${ROOTFS}/etc/lightdm"
 cat > "${ROOTFS}/etc/lightdm/lightdm.conf" <<EOF
@@ -257,10 +284,21 @@ if [[ "${WITH_PROJECTS}" == "1" ]]; then
   git clone --depth 1 "$REPO_GEQUHAI"  "${ROOTFS}/home/${USER_NAME}/projects/gequhai-downloader"  || warn "clone ${REPO_GEQUHAI} 失败"
   git clone --depth 1 "$REPO_PLAYLIST" "${ROOTFS}/home/${USER_NAME}/projects/gequhai-playlist-downloader" || warn "clone ${REPO_PLAYLIST} 失败"
 
-  # 图形版(PyQt6)
-  chroot_run su - "$USER_NAME" -c "python3 -m venv /home/${USER_NAME}/.venvs/gequhai-gui"
-  chroot_run su - "$USER_NAME" -c "/home/${USER_NAME}/.venvs/gequhai-gui/bin/pip install --disable-pip-version-check --no-cache-dir -q PyQt6 requests" \
-    || warn "PyQt6 安装失败"
+  # ① 单曲下载 venv: 只依赖 requests。
+  #    命令行单曲下载(music single)复用 gequhai-downloader 里的 gequhai/quark/utils,
+  #    这三个模块只依赖 requests, 所以轻量档也能用, 不需要 PyQt6。
+  chroot_run su - "$USER_NAME" -c "python3 -m venv /home/${USER_NAME}/.venvs/music"
+  chroot_run su - "$USER_NAME" -c "/home/${USER_NAME}/.venvs/music/bin/pip install --disable-pip-version-check --no-cache-dir -q requests" \
+    || warn "requests 安装失败(single 命令不可用)"
+
+  # ② 图形版(PyQt6): slim 档跳过, 需要时用 music setup-gui 补装
+  if [[ "$WITH_PYQT" == "1" ]]; then
+    chroot_run su - "$USER_NAME" -c "python3 -m venv /home/${USER_NAME}/.venvs/gequhai-gui"
+    chroot_run su - "$USER_NAME" -c "/home/${USER_NAME}/.venvs/gequhai-gui/bin/pip install --disable-pip-version-check --no-cache-dir -q PyQt6 requests" \
+      || warn "PyQt6 安装失败"
+  else
+    log "slim 档: 跳过 PyQt6 图形界面 (启动后可用 music setup-gui 补装)"
+  fi
 
   # 歌单批量版(playwright + Chromium)
   chroot_run su - "$USER_NAME" -c "python3 -m venv /home/${USER_NAME}/.venvs/playlist"
@@ -268,9 +306,13 @@ if [[ "${WITH_PROJECTS}" == "1" ]]; then
     || warn "playlist 依赖安装失败"
   # Playwright Chromium: 以 root 跑, 这样 --with-deps 的 apt 依赖能装上;
   # 浏览器文件落到用户目录下, 之后统一 chown 回普通用户。
-  chroot_run env "PLAYWRIGHT_BROWSERS_PATH=/home/${USER_NAME}/.cache/ms-playwright" \
-    "/home/${USER_NAME}/.venvs/playlist/bin/python" -m playwright install --with-deps chromium \
-    || warn "Playwright Chromium 安装失败"
+  if [[ "$WITH_PLAYWRIGHT_BROWSER" == "1" ]]; then
+    chroot_run env "PLAYWRIGHT_BROWSERS_PATH=/home/${USER_NAME}/.cache/ms-playwright" \
+      "/home/${USER_NAME}/.venvs/playlist/bin/python" -m playwright install --with-deps chromium \
+      || warn "Playwright Chromium 安装失败"
+  else
+    log "slim 档: 跳过 Playwright Chromium (歌单走静态搜索; 启动后可用 music setup-playwright 补装)"
+  fi
 else
   step "3/9 跳过项目预装 (WITH_PROJECTS=0)"
 fi
@@ -282,7 +324,8 @@ if [[ -d "${REPO_DIR}/overlay" ]]; then
 fi
 # Windows 上 git 可能没记录执行位, 这里统一补上
 find "${ROOTFS}/usr/local/bin" -type f -exec chmod 0755 {} + 2>/dev/null || true
-chown -R "${USER_NAME}:${USER_NAME}" "${ROOTFS}/home/${USER_NAME}"
+chmod 0755 "${ROOTFS}/usr/local/lib/musictools/single.py" 2>/dev/null || true
+chown -R "${USER_UID}:${USER_GID}" "${ROOTFS}/home/${USER_NAME}"
 
 # 所有联网步骤已结束, 现在把 DNS 交给 systemd-resolved
 rm -f "${ROOTFS}/etc/resolv.conf"
@@ -373,7 +416,7 @@ tmpfs                           /tmp           tmpfs  defaults,nosuid,nodev,size
 EOF
 
 mkdir -p "${ROOTFS}/mnt/songdisk"
-chown "${USER_NAME}:${USER_NAME}" "${ROOTFS}/mnt/songdisk"
+chown "${USER_UID}:${USER_GID}" "${ROOTFS}/mnt/songdisk"
 
 KVER="$(ls "${ROOTFS}/lib/modules" 2>/dev/null | sort -V | tail -1)"
 [[ -n "$KVER" ]] || die "内核没有安装成功, 找不到 /lib/modules/*"
@@ -545,6 +588,11 @@ root UUID  : ${ROOT_UUID:0:8}-${ROOT_UUID:8:4}-${ROOT_UUID:12:4}-${ROOT_UUID:16:
 歌曲挂载点 : /mnt/songdisk
 登录用户   : ${USER_NAME} / 密码 ${USER_PASS}
 预装项目   : $( [[ "${WITH_PROJECTS}" == "1" ]] && echo "是" || echo "否" )
+镜像档位   : ${PROFILE}
+  PyQt6 图形界面   : $( [[ "${WITH_PYQT}" == "1" ]] && echo "已安装" || echo "未安装(用 music setup-gui 补装)" )
+  Playwright Chromium: $( [[ "${WITH_PLAYWRIGHT_BROWSER}" == "1" ]] && echo "已安装" || echo "未安装(用 music setup-playwright 补装)" )
+  Noto CJK 字体    : $( [[ "${WITH_NOTO_CJK}" == "1" ]] && echo "已安装" || echo "未安装" )
+单曲下载    : music single "<歌名>"   (只依赖 requests, 任何档位都可用)
 Secure Boot: 需要 shim 签名(已随镜像写入); 若无法启动请在固件里关闭 Secure Boot
 EOF
 cat "${OUT_DIR}/BUILD-INFO.txt"

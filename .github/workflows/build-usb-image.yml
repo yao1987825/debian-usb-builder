@@ -31,6 +31,12 @@ on:
         default: '1'
         type: choice
         options: ['1', '0']
+      profile:
+        description: '镜像档位 | slim = 纯命令行(不装 PyQt6/Chromium/Noto CJK, 省约 1.3GB)'
+        required: true
+        default: 'full'
+        type: choice
+        options: ['full', 'slim']
   push:
     tags:
       - 'v*'
@@ -54,6 +60,7 @@ jobs:
       ROOT_SIZE_MB: ${{ github.event.inputs.root_size_mb || '6144' }}
       WITH_BIOS_GRUB: ${{ github.event.inputs.with_bios_grub || '0' }}
       WITH_PROJECTS: ${{ github.event.inputs.with_projects || '1' }}
+      PROFILE: ${{ github.event.inputs.profile || 'full' }}
 
     steps:
       - name: 检出代码
@@ -80,6 +87,7 @@ jobs:
             ROOT_SIZE_MB="$ROOT_SIZE_MB" \
             WITH_BIOS_GRUB="$WITH_BIOS_GRUB" \
             WITH_PROJECTS="$WITH_PROJECTS" \
+            PROFILE="$PROFILE" \
             bash scripts/build-image.sh
 
       - name: 结构校验

@@ -116,36 +116,63 @@ sudo usb-grow.sh --dry-run    # 先看计划再执行
 ### 3. 下载歌曲
 
 ```bash
+# ★ 单曲搜索下载(最常用, 纯命令行, 只需要 requests)
+music single "周杰伦 夜曲"
+music single "五月天 突然好想你"
+
+# 只看候选不下载
+music search "夜曲"
+music single "夜曲" --list
+
+# 指定下载第 N 条候选
+music single "夜曲" --index 2
+
 # 歌单批量下载(CSV 放 ~/projects/gequhai-playlist-downloader/playlist.csv)
 music playlist playlist.csv
 
-# 图形界面: 搜索并下载单曲(夸克网盘转存)
+# 图形界面: 搜索并下载单曲(夸克网盘转存, 需 PyQt6)
 music gui
 
-# 看歌曲目录 / 已下载列表
+# 看歌曲目录 / 已下载列表 / 环境自检
 music out
 music ls
+music doctor
 ```
+
+所有下载默认写到歌曲分区 `/mnt/songdisk`。下载前会自动检查该分区是否已挂载、是否可写，
+没挂载会尝试自动挂载并给出明确提示，而不是直接报错。
 
 也可以直接用原生命令：
 
 ```bash
+cd ~/projects/gequhai-downloader
+~/.venvs/music/bin/python /usr/local/lib/musictools/single.py "夜曲" --out /mnt/songdisk
+
 cd ~/projects/gequhai-playlist-downloader
 ~/.venvs/playlist/bin/python gequhai_downloader.py --csv playlist.csv --out /mnt/songdisk
 ~/.venvs/playlist/bin/python convert_aac_to_mp3.py --dir /mnt/songdisk
 ```
 
+> **为什么 `music single` 不需要 PyQt6？**
+> `gequhai-downloader` 里的 `gequhai.py` / `quark.py` / `utils.py` 只依赖 `requests`，
+> 只有 `manager.py` / `gui.py` 依赖 PyQt6（那是给图形界面用的）。
+> 所以命令行单曲下载是独立的一条轻量链路，**slim 档镜像照样能用**。
+
 ### 4. 两个下载器的分工（注意差别）
 
 | | `gequhai-downloader` | `gequhai-playlist-downloader` |
 | --- | --- | --- |
-| 形态 | PyQt6 **图形界面**（`music gui`） | **纯命令行**（`music playlist`） |
-| 输入 | 搜索框里打字（可用中文） | 歌单 CSV（歌名+歌手） |
+| 形态 | PyQt6 **图形界面**（`music gui`）+ 我们封装的**命令行单曲下载**（`music single`） | **纯命令行**（`music playlist`） |
+| 输入 | 搜索框里打字 / 命令行传中文关键词 | 歌单 CSV（歌名+歌手） |
 | 输出 | 直接下音频 + 歌词 + 封面 | 音频；**夸克网盘链接只存成 `.link.txt`，不会自动下载** |
-| 额外依赖 | 夸克 Cookie、默认走 Clash 代理 `127.0.0.1:7897` | Playwright Chromium（已离线装好） |
+| 额外依赖 | 图形界面需 PyQt6；命令行单曲下载只需 requests | Playwright Chromium（slim 档可选） |
+
+`music single` 的下载链路和图形界面完全一致（夸克高品质 → 失败降级低品质直链 → 存歌词封面，
+文件名 `标题-歌手.ext`），只是把 Qt 信号换成了终端输出。
 
 图形版默认代理指向 Clash，但 U 盘机器上通常没跑 Clash → 直接在图形界面里把代理清空即可
 （配置文件 `~/projects/gequhai-downloader/config.json`，镜像预置的是空代理版本）。
+`music single` 读的是同一份 config，所以夸克 Cookie 配一次两边都能用。
 
 ---
 
@@ -156,10 +183,27 @@ cd ~/projects/gequhai-playlist-downloader
 | 参数 | 默认 | 说明 |
 | --- | --- | --- |
 | `suite` | `bookworm` | `bookworm`=Debian12，`trixie`=Debian13 |
+| `profile` | `full` | **`slim` = 纯命令行档**：不装 PyQt6 / Playwright Chromium / Noto CJK，**省约 1.3GB**。`music single` 与 `music playlist`（静态搜索）照常可用，图形界面和浏览器回退启动后按需补装 |
 | `img_size_mb` | `8192` | 镜像总大小。**填大只是让压缩包变大**，真正的大小写盘后用 `usb-grow.sh` 扩 |
 | `root_size_mb` | `6144` | 根分区大小，装大量 Python 包时可以调大 |
 | `with_bios_grub` | `0` | 传统 BIOS 的 GRUB（现代 UEFI 机器不需要） |
 | `with_projects` | `1` | 是否预装两个下载器 + Playwright Chromium |
+
+### 两个档位差在哪
+
+| 组件 | `full` | `slim` | 缺失后怎么办 |
+| --- | --- | --- | --- |
+| `music single`（命令行单曲下载） | ✅ | ✅ | 只依赖 requests，两档都可用 |
+| `music playlist`（歌单批量） | ✅ | ✅ | slim 档只有静态搜索，搜不到时 `music setup-playwright` |
+| `music gui`（图形界面） | ✅ | ❌ | `music setup-gui`（约 250MB） |
+| Chromium 浏览器回退 | ✅ | ❌ | `music setup-playwright`（约 500MB） |
+| Noto CJK 字体 | ✅ | ❌ | slim 档只保留文泉驿正黑（15MB），字形少一些 |
+
+镜像大小写盘后用 `usb-grow.sh` 扩，**填大 `img_size_mb` 只是让压缩包变大**，不划算。
+
+> `slim` 档仍然保留 **Xfce + Fcitx5/Rime**：纯 TTY 下中文输入法没法工作，
+> 这是你"要中文输入"和"不要大桌面"之间唯一可行的折中。Xfce 本身（`--no-install-recommends`）
+> 只占约 300MB，远小于完整桌面。
 
 镜像越大，GitHub Actions 的磁盘占用和压缩耗时也越大（runner 只有约 14G 临时空间，
 `img_size_mb` 建议不超过 `12288`）。
@@ -184,6 +228,19 @@ cd ~/projects/gequhai-playlist-downloader
 
 **Q：下载下来的歌是 `.link.txt` 而不是音频**
 说明站点只给了夸克网盘分享链接，CLI 版不会自动转存。用图形版（`music gui`）配合夸克 Cookie 才会真正下载。
+
+**Q：命令行下载提示"夸克转存与低品质直链都不可用"**
+2026-10 实测：站点的低品质直链接口 `/api/music` 已返回 `{"code":403,"msg":"访问异常"}`
+（加 Referer / session 均无效），**所以夸克 Cookie 目前是下载成功的必要条件**，图形版也一样。
+配置一次即可，图形界面和命令行共用同一份 `~/projects/gequhai-downloader/config.json`：
+
+```json
+{ "proxy": "", "quark_cookie": "这里粘贴 F12 Console 里 document.cookie 的值" }
+```
+
+**Q：搜某个歌名提示"没有搜到"**
+站点的搜索对**词序敏感**：`五月天 突然好想你` 搜不到，但 `突然好想你 五月天` 有结果。
+`music single` 已经内置了这个兜底（自动反转词序 / 拆词重试），仍然搜不到时建议只输入歌名。
 
 **Q：QEMU 冒烟测试报"没捕获到 GRUB 输出"**
 这只是警告，不是失败。OVMF 可能没走 UEFI 可移动介质路径，或串口输出没打开；结构校验通过就说明镜像结构没问题。
@@ -213,9 +270,12 @@ debian-usb-builder/
 │   ├── build-image.sh                      # 核心: debootstrap → 分区 → GRUB → 预装
 │   └── verify-image.sh                     # 结构校验 + QEMU 启动冒烟测试
 ├── overlay/                                # 直接覆盖到镜像 rootfs 里的文件
-│   └── usr/local/bin/
-│       ├── usb-grow.sh                     # 一键扩展分区到整盘
-│       └── music                           # 下载器快捷入口
+│   ├── usr/local/bin/
+│   │   ├── usb-grow.sh                     # 一键扩展分区到整盘
+│   │   └── music                           # 下载器快捷入口(single/playlist/gui/doctor)
+│   └── usr/local/lib/musictools/
+│       └── single.py                       # 命令行单曲搜索下载(纯 requests, 不用 PyQt6)
+├── .gitattributes                          # 强制 LF 换行(CRLF 会让 Linux 跑不了脚本)
 └── README.md
 ```
 

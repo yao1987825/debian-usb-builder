@@ -1,13 +1,19 @@
 #!/usr/bin/env bash
 #
-# music —— 歌曲下载快捷入口
+# music —— 歌曲下载快捷入口 (命令行优先)
 #
-#   music gui [关键词]        图形界面搜索/下载(PyQt6, 支持夸克网盘转存)
-#   music playlist <csv>      按歌单 CSV 批量下载到歌曲分区
-#   music playlist <csv> --dry-run --top 3
-#   music out                 打印歌曲目录位置
-#   music ls                  列出已下载的歌曲
-#   music which               打印各项目/虚拟环境路径
+#   music single "周杰伦 夜曲"      搜索并下载单曲到歌曲分区   ★最常用
+#   music single "夜曲" --list      只看候选, 不下载
+#   music single "夜曲" --index 2   下载第 2 条候选
+#   music search "夜曲"             等同 single --list
+#   music playlist playlist.csv     按歌单 CSV 批量下载
+#   music gui                       图形界面 (需 PyQt6, 轻量镜像未装)
+#   music out                       打印歌曲分区路径
+#   music ls                        列出已下载的歌曲
+#   music which                     打印各组件路径
+#   music doctor                    环境自检
+#   music setup-gui                 补装 PyQt6 (启用图形界面)
+#   music setup-playwright          补装 Playwright Chromium
 #
 set -Eeuo pipefail
 
@@ -15,53 +21,181 @@ SONG_DIR="${SONG_DIR:-/mnt/songdisk}"
 HOME_DIR="${HOME:-/home/user}"
 PROJ_GUI="${PROJ_GUI:-${HOME_DIR}/projects/gequhai-downloader}"
 PROJ_LIST="${PROJ_LIST:-${HOME_DIR}/projects/gequhai-playlist-downloader}"
+VENV_MUSIC="${VENV_MUSIC:-${HOME_DIR}/.venvs/music}"
 VENV_GUI="${VENV_GUI:-${HOME_DIR}/.venvs/gequhai-gui}"
 VENV_LIST="${VENV_LIST:-${HOME_DIR}/.venvs/playlist}"
+SINGLE_PY="${SINGLE_PY:-/usr/local/lib/musictools/single.py}"
 export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-${HOME_DIR}/.cache/ms-playwright}"
 
-usage() { sed -n '3,12p' "$0"; }
+usage() { sed -n '3,20p' "$0"; }
 
-cmd_gui() {
-  local keyword="${1:-}"
-  cd "$PROJ_GUI" || { echo "找不到项目目录: $PROJ_GUI" >&2; exit 1; }
-  if [[ -n "$keyword" ]]; then
-    echo "提示: 图形界面里请在搜索框输入「${keyword}」并回车"
+# ---------------- 歌曲分区预检 ----------------
+songdisk_check() {
+  local dir="${SONG_DIR}"
+  if [[ ! -d "$dir" ]]; then
+    echo "错误: 歌曲分区目录不存在: ${dir}" >&2
+    echo "      请确认 U 盘已正确写入镜像 (Rufus 需选 DD 模式)" >&2
+    return 1
   fi
-  exec "$VENV_GUI/bin/python" main.py
+  if ! mountpoint -q "$dir" 2>/dev/null; then
+    echo "警告: ${dir} 当前不是挂载点" >&2
+    if command -v mount >/dev/null 2>&1; then
+      if sudo -n mount "$dir" 2>/dev/null; then
+        echo "      已自动挂载" >&2
+      else
+        echo "      自动挂载失败, 请手动执行: sudo mount ${dir}" >&2
+        return 1
+      fi
+    fi
+  fi
+  if [[ ! -w "$dir" ]]; then
+    echo "错误: 歌曲分区不可写: ${dir}" >&2
+    return 1
+  fi
+  return 0
 }
 
+# ---------------- 单曲下载 ----------------
+cmd_single() {
+  [[ $# -ge 1 ]] || { echo "用法: music single <关键词> [--list] [--index N]" >&2; return 2; }
+  songdisk_check || return 1
+  if [[ ! -x "${VENV_MUSIC}/bin/python" ]]; then
+    echo "错误: 缺少 ${VENV_MUSIC} (单曲下载只依赖 requests)" >&2
+    echo "      修复: python3 -m venv ${VENV_MUSIC} && ${VENV_MUSIC}/bin/pip install requests" >&2
+    return 1
+  fi
+  shift
+  exec "${VENV_MUSIC}/bin/python" "${SINGLE_PY}" "$@"
+}
+
+cmd_search() {
+  [[ $# -ge 1 ]] || { echo "用法: music search <关键词>" >&2; return 2; }
+  shift
+  cmd_single "$@" --list
+}
+
+# ---------------- 歌单批量 ----------------
 cmd_playlist() {
   local csv="${1:-playlist.csv}"
   [[ $# -gt 0 ]] && shift || true
-  cd "$PROJ_LIST" || { echo "找不到项目目录: $PROJ_LIST" >&2; exit 1; }
-  [[ -f "$csv" ]] || { echo "找不到歌单 CSV: $csv" >&2; exit 1; }
-  echo "[music] 歌单: $csv"
-  echo "[music] 输出: $SONG_DIR"
-  "$VENV_LIST/bin/python" gequhai_downloader.py --csv "$csv" --out "$SONG_DIR" "$@"
+  songdisk_check || return 1
+  cd "$PROJ_LIST" 2>/dev/null || { echo "错误: 找不到项目目录: $PROJ_LIST" >&2; return 1; }
+  [[ -f "$csv" ]] || { echo "错误: 找不到歌单 CSV: $csv" >&2; return 1; }
+  if [[ ! -x "${VENV_LIST}/bin/python" ]]; then
+    echo "错误: 缺少 ${VENV_LIST}" >&2
+    echo "      修复: python3 -m venv ${VENV_LIST} && ${VENV_LIST}/bin/pip install -r ${PROJ_LIST}/requirements.txt" >&2
+    return 1
+  fi
+  echo "[music] 歌单: ${csv}"
+  echo "[music] 输出: ${SONG_DIR}"
+  "${VENV_LIST}/bin/python" gequhai_downloader.py --csv "$csv" --out "$SONG_DIR" "$@"
   local rc=$?
   if [[ $rc -eq 0 ]]; then
     echo "[music] 转码 aac/acc → mp3 ..."
-    "$VENV_LIST/bin/python" convert_aac_to_mp3.py --dir "$SONG_DIR" || true
+    "${VENV_LIST}/bin/python" convert_aac_to_mp3.py --dir "$SONG_DIR" || true
   fi
   return $rc
 }
 
-cmd_ls() {
-  ls -lh "$SONG_DIR" 2>/dev/null | head -50 || echo "歌曲目录为空或未挂载: $SONG_DIR"
+# ---------------- 图形界面 ----------------
+cmd_gui() {
+  if [[ ! -x "${VENV_GUI}/bin/python" ]]; then
+    echo "图形界面未安装 (轻量镜像默认不含 PyQt6)" >&2
+    echo "启用方法: music setup-gui" >&2
+    return 1
+  fi
+  if ! "${VENV_GUI}/bin/python" -c "import PyQt6" 2>/dev/null; then
+    echo "PyQt6 未安装, 无法启动图形界面" >&2
+    echo "启用方法: music setup-gui" >&2
+    return 1
+  fi
+  cd "$PROJ_GUI" 2>/dev/null || { echo "错误: 找不到项目目录: $PROJ_GUI" >&2; return 1; }
+  echo "[music] 图形界面已启动, 搜索框里可直接输入中文歌名"
+  exec "${VENV_GUI}/bin/python" main.py
+}
+
+cmd_setup_gui() {
+  echo "[music] 创建图形界面虚拟环境 ${VENV_GUI} ..."
+  python3 -m venv "$VENV_GUI"
+  "${VENV_GUI}/bin/pip" install --disable-pip-version-check --no-cache-dir -q PyQt6 requests
+  echo "[music] 完成, 现在可以运行: music gui"
+}
+
+cmd_setup_playwright() {
+  echo "[music] 安装 Playwright Chromium (约 500MB, 需要联网) ..."
+  "${VENV_LIST}/bin/python" -m playwright install --with-deps chromium
+  echo "[music] 完成"
+}
+
+# ---------------- 其他 ----------------
+cmd_doctor() {
+  echo "=== music 环境自检 ==="
+  printf '%-22s %s\n' "歌曲分区" "${SONG_DIR}"
+  if [[ -d "$SONG_DIR" ]]; then
+    if mountpoint -q "$SONG_DIR" 2>/dev/null; then
+      printf '%-22s %s\n' "  挂载状态" "✅ 已挂载"
+    else
+      printf '%-22s %s\n' "  挂载状态" "⚠️  未挂载"
+    fi
+    if [[ -w "$SONG_DIR" ]]; then
+      printf '%-22s %s\n' "  可写" "✅"
+    else
+      printf '%-22s %s\n' "  可写" "❌ 不可写"
+    fi
+    df -h "$SONG_DIR" 2>/dev/null | tail -1 | sed 's/^/  /'
+  else
+    printf '%-22s %s\n' "  状态" "❌ 目录不存在"
+  fi
+
+  printf '%-22s %s\n' "单曲下载 venv" "$VENV_MUSIC"
+  if [[ -x "${VENV_MUSIC}/bin/python" ]]; then
+    printf '%-22s %s\n' "  状态" "✅ 可用 (music single)"
+  else
+    printf '%-22s %s\n' "  状态" "⚠️  缺失, 单曲下载不可用"
+  fi
+
+  printf '%-22s %s\n' "歌单 venv" "$VENV_LIST"
+  if [[ -x "${VENV_LIST}/bin/python" ]]; then
+    printf '%-22s %s\n' "  状态" "✅ 可用 (music playlist)"
+    if [[ -d "${PLAYWRIGHT_BROWSERS_PATH}" ]]; then
+      printf '%-22s %s\n' "  Chromium" "✅ 已安装"
+    else
+      printf '%-22s %s\n' "  Chromium" "⚠️  未安装(仅静态搜索), music setup-playwright"
+    fi
+  else
+    printf '%-22s %s\n' "  状态" "⚠️  缺失, 批量下载不可用"
+  fi
+
+  printf '%-22s %s\n' "图形界面 venv" "$VENV_GUI"
+  if [[ -x "${VENV_GUI}/bin/python" ]] && "${VENV_GUI}/bin/python" -c "import PyQt6" 2>/dev/null; then
+    printf '%-22s %s\n' "  状态" "✅ 可用 (music gui)"
+  else
+    printf '%-22s %s\n' "  状态" "ℹ️  未安装(轻量镜像), music setup-gui"
+  fi
+
+  printf '%-22s %s\n' "输入法" "$(command -v fcitx5 >/dev/null 2>&1 && echo '✅ fcitx5 已安装' || echo '❌ 未安装')"
+  printf '%-22s %s\n' "ffmpeg" "$(command -v ffmpeg >/dev/null 2>&1 && echo '✅ 已安装' || echo '⚠️  未安装(无法转码 mp3)')"
+  echo
 }
 
 case "${1:-}" in
-  gui|search)  shift; cmd_gui "${1:-}" ;;
-  playlist|batch) shift; cmd_playlist "$@" ;;
-  out)         echo "$SONG_DIR" ;;
-  ls)          cmd_ls ;;
+  single|download|dl)  shift; cmd_single "$@" ;;
+  search|find)         shift; cmd_search "$@" ;;
+  playlist|batch)      shift; cmd_playlist "$@" ;;
+  gui)                 shift; cmd_gui "$@" ;;
+  out)                 echo "$SONG_DIR" ;;
+  ls|list)             songdisk_check && ls -lh "$SONG_DIR" 2>/dev/null | head -60 ;;
   which)
-    printf '图形版项目 : %s\n' "$PROJ_GUI"
-    printf '图形版 venv : %s\n' "$VENV_GUI"
-    printf '歌单版项目 : %s\n' "$PROJ_LIST"
-    printf '歌单版 venv : %s\n' "$VENV_LIST"
-    printf '歌曲目录   : %s\n' "$SONG_DIR"
+    printf '单曲 venv   : %s\n' "$VENV_MUSIC"
+    printf '图形 venv   : %s\n' "$VENV_GUI"
+    printf '歌单 venv   : %s\n' "$VENV_LIST"
+    printf '图形项目    : %s\n' "$PROJ_GUI"
+    printf '歌单项目    : %s\n' "$PROJ_LIST"
+    printf '歌曲目录    : %s\n' "$SONG_DIR"
     ;;
-  ""|-h|--help|help) usage ;;
+  doctor)              cmd_doctor ;;
+  setup-gui)           cmd_setup_gui ;;
+  setup-playwright)    cmd_setup_playwright ;;
+  ""|-h|--help|help)   usage ;;
   *) echo "未知命令: $1" >&2; echo >&2; usage >&2; exit 2 ;;
 esac
