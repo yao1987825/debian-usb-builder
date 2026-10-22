@@ -111,6 +111,10 @@ jobs:
 
       - name: 检出代码
         uses: actions/checkout@v5
+        with:
+          # 拉全历史: lint-helpers 的自测要用历史上真正炸掉过的那份 build-image.sh
+          # 做回归用例。浅克隆拿不到, 那条用例会跳过。
+          fetch-depth: 0
 
       - name: 安装构建依赖
         run: |

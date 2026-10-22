@@ -21,6 +21,7 @@ bad() { printf '  \033[1;31m❌\033[0m %s\n' "$*"; FAIL=$((FAIL + 1)); }
 
 LINT="scripts/lint-helpers.sh"
 FIXTURE="scripts/tests/lint-fixture-bad.sh"
+OK_FIXTURE="scripts/tests/lint-fixture-ok-missing.sh"
 
 echo "== lint-helpers.sh 自测 =="
 
@@ -74,12 +75,27 @@ else
   printf '%s\n' "$out2"
 fi
 
-# 6) 回归: 真正炸掉过的那份 build-image.sh 必须被报出来
-#    (2026-10-22 的构建事故: 第 496 行 ok 未定义, 跑到第 4/9 步才 exit 127)
+# 6) 事故复现夹具: ok 没定义, linter 必须报出来
+#    这条不依赖 git 历史, 所以 CI 的浅克隆也能跑到。
+if [[ -f "$OK_FIXTURE" ]]; then
+  out6="$(bash "$LINT" "$OK_FIXTURE" 2>&1)"
+  if grep -q 'ok' <<<"$out6"; then
+    ok "事故复现夹具被检出(ok 未定义)"
+  else
+    bad "事故复现夹具没被检出, linter 对真实事故不灵"
+    printf '%s\n' "$out6"
+  fi
+else
+  bad "找不到夹具 $OK_FIXTURE"
+fi
+
+# 7) 回归: 用历史上真正炸掉的那份 build-image.sh 再验一遍
+#    需要完整 git 历史; CI 是浅克隆(fetch-depth=1)时拿不到, 这时跳过而不是失败。
 BUGGY="${TMPDIR:-/tmp}/lint-regression-build-image.sh"
-if git show c443e65:scripts/build-image.sh > "$BUGGY" 2>/dev/null; then
+if git cat-file -e c443e65:scripts/build-image.sh 2>/dev/null; then
+  git show c443e65:scripts/build-image.sh > "$BUGGY" 2>/dev/null
   out3="$(bash "$LINT" "$BUGGY" 2>&1)"
-  if grep -q '第 496 行' <<<"$out3" && grep -q '\bok\b' <<<"$out3"; then
+  if grep -q '第 496 行' <<<"$out3" && grep -q 'ok' <<<"$out3"; then
     ok "回归用例: 报出了历史事故那一行(第 496 行 ok 未定义)"
   else
     bad "回归用例没通过, linter 对真实事故不灵"
@@ -87,7 +103,7 @@ if git show c443e65:scripts/build-image.sh > "$BUGGY" 2>/dev/null; then
   fi
   rm -f "$BUGGY"
 else
-  bad "拿不到历史版本的 build-image.sh 做回归用例"
+  printf '  \033[1;33m⏭\033[0m 跳过: 拿不到 c443e65 的历史版本(浅克隆), 用第 6 项的固定夹具覆盖\n'
 fi
 
 printf '\n'
