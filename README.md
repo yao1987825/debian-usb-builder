@@ -6,7 +6,7 @@
 
 > 本仓库同时支持两条产线：
 > - **x86_64 通用镜像**（第一～七章）：自建 debootstrap 根文件系统，GPT + GRUB/EFI，写 U 盘。
-> - **Phicomm N1 电视盒子镜像**（第八章）：Amlogic S905D / ARM64，基于 ophub 的
+> - **Phicomm N1 电视盒子镜像**（第九章）：Amlogic S905D / ARM64，基于 ophub 的
 >   `amlogic-s9xxx-armbian` 板级支持重打包，写 SD 卡 / U 盘。
 
 ---
@@ -258,31 +258,6 @@ cd ~/projects/gequhai-playlist-downloader
 
 ---
 
-## 七之二、命令行回归测试
-
-`music` 这层壳子（子命令分发 + 参数透传）出过一次很隐蔽的 bug：
-`case` 分支已经 `shift` 掉子命令名，`cmd_single` 内部又 `shift` 了一次，
-结果 `music single "周杰伦 夜曲" --list` 变成 `music single --list` ——
-**关键词被吃掉，而且不报任何错**，只是搜不到东西。
-
-所以加了一个不依赖网络、不依赖真实站点的回归测试：
-
-```bash
-bash scripts/test-music-cli.sh
-```
-
-它用假的 `mountpoint` 和假的 venv python 拦住真实下载，只检查参数有没有原样传下去，
-覆盖 `single` / `search` / `download` / `--index` / 缺关键词 / `doctor` / `out` / `which`。
-
-这个测试在 CI 里跑两道：
-- 流水线开始时对仓库里的脚本跑一遍；
-- 结构校验阶段，对**镜像里安装的那份** `music` 再跑一遍
-  （x86 用 `debugfs` 把 `/usr/local/bin/music` 抠出来跑，N1 直接在挂载的 rootfs 里跑）。
-
-也就是说，**参数透传类的 bug 没法再混进产物**。
-
----
-
 ## 六、也可以不用 GitHub Actions，在本地 Linux 上直接构建
 
 任何有 root 的 Linux（虚拟机 / 容器 + `--privileged`）都行：
@@ -335,7 +310,32 @@ debian-usb-builder/
 
 ---
 
-## 八、Phicomm N1（Amlogic S905D）电视盒子镜像
+## 八、命令行回归测试
+
+`music` 这层壳子（子命令分发 + 参数透传）出过一次很隐蔽的 bug：
+`case` 分支已经 `shift` 掉子命令名，`cmd_single` 内部又 `shift` 了一次，
+结果 `music single "周杰伦 夜曲" --list` 变成 `music single --list` ——
+**关键词被吃掉，而且不报任何错**，只是搜不到东西。
+
+所以加了一个不依赖网络、不依赖真实站点的回归测试：
+
+```bash
+bash scripts/test-music-cli.sh
+```
+
+它用假的 `mountpoint` 和假的 venv python 拦住真实下载，只检查参数有没有原样传下去，
+覆盖 `single` / `search` / `download` / `--index` / 缺关键词 / `doctor` / `out` / `which`。
+
+这个测试在 CI 里跑两道：
+- 流水线开始时对仓库里的脚本跑一遍；
+- 结构校验阶段，对**镜像里安装的那份** `music` 再跑一遍
+  （x86 用 `debugfs` 把 `/usr/local/bin/music` 抠出来跑，N1 直接在挂载的 rootfs 里跑）。
+
+也就是说，**参数透传类的 bug 没法再混进产物**。
+
+---
+
+## 九、Phicomm N1（Amlogic S905D）电视盒子镜像
 
 x86 的 Debian 镜像在 N1 上跑不起来（CPU 架构、引导方式、内核全都不同）。
 N1 这条产线走的是社区成熟方案 **[ophub/amlogic-s9xxx-armbian](https://github.com/ophub/amlogic-s9xxx-armbian)**：
