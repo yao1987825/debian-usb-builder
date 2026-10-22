@@ -435,7 +435,11 @@ debian-usb-builder/
 │   ├── build-n1-image.sh                     # N1: ophub rebuild → 追加 MUSIC 分区 → 预装
 │   ├── n1-customize-rootfs.sh                # N1: ARM64 chroot 装软件栈 + 中文输入法
 │   ├── verify-n1-image.sh                    # N1: 分区表/引导码/内核/fstab 结构校验
-│   └── test-music-cli.sh                     # music 命令行回归测试(见下)
+│   ├── lint-helpers.sh                       # 静态扫描: 未定义的函数 / 定义晚于调用(见下)
+│   ├── test-lint-helpers.sh                  # 上一个的自测(8 项)
+│   ├── test-music-cli.sh                     # music 命令行回归测试(见下)
+│   └── tests/                                # lint 的**故意写错**的测试夹具
+│       └── lint-fixture-bad.sh
 ├── overlay/                                  # x86 与 N1 共用, 直接覆盖到镜像 rootfs 里
 │   ├── usr/local/bin/
 │   │   ├── usb-grow.sh                       # x86: 一键扩展分区到整盘(GPT)
@@ -443,6 +447,8 @@ debian-usb-builder/
 │   │   ├── net-rescue                       # 没网时的应急联网(只用 systemd 自带能力)
 │   │   ├── screen-fit                       # 按 EDID 自动匹配每块显示器的原生分辨率
 │   │   ├── proxy                            # 代理开关(status/on/off/test)
+│   │   ├── music-health                     # 一次性体检(会话/输入法/分辨率/分区/网络/夸克)
+│   │   ├── music-im-fix                     # 输入法一条命令修好(装包→im-config→自启→拉起)
 │   │   └── music                             # 下载器快捷入口(single/playlist/gui/doctor/net/screen/proxy)
 │   ├── usr/local/lib/musictools/
 │   │   ├── single.py                         # 命令行单曲搜索下载(纯 requests, 不用 PyQt6)
@@ -489,6 +495,42 @@ bash scripts/test-music-cli.sh
   （x86 用 `debugfs` 把 `/usr/local/bin/music` 抠出来跑，N1 直接在挂载的 rootfs 里跑）。
 
 也就是说，**参数透传类的 bug 没法再混进产物**。
+
+---
+
+## 八之二、构建脚本的静态检查（lint-helpers）
+
+2026-10-22 有一次构建在第 4/9 步失败：
+
+```
+scripts/build-image.sh: line 496: ok: command not found
+```
+
+原因是 `build-image.sh` 定义了 `log/warn/die/step`，却直接调用了 `ok`。
+**`bash -n` 和 shellcheck 都查不出这类错误**（语法完全合法），
+而 `set -e` 要等运行到那一行才炸 —— 也就是白白浪费一次 20 分钟的构建。
+
+同类错误还有第二个形态：**函数定义写在调用后面**。bash 是先定义后使用，
+`selftest_count` 定义在第 495 行、第 460 行就在用它，同样是 `command not found`。
+
+所以加了 `scripts/lint-helpers.sh`，专门抓这两类：
+
+```bash
+bash scripts/lint-helpers.sh        # 扫全仓库(约 1 秒)
+bash scripts/test-lint-helpers.sh    # linter 自己的自测(8 项)
+```
+
+判定「命令位置」的规则很保守：只认**行首缩进**和**紧跟在 `&&` `||` `;` `|`
+`(` `{` `!` 之后**的调用；整行注释和 heredoc 正文整段跳过，中文提示语里的
+英文单词不会被误判。常见外部命令走白名单。
+
+linter 自己也有自测（`test-lint-helpers.sh`），因为 linter 一旦坏了是
+**静默失效**——它会报「一切正常」，真正的错误又得等 20 分钟才炸。
+自测里有一条用**历史上真正炸掉过的那份 `build-image.sh`** 做回归用例，
+必须报出第 496 行；CI 是浅克隆拿不到历史版本，所以另有一份等价的固定夹具
+（`scripts/tests/lint-fixture-ok-missing.sh`）保证任何环境下都能跑到。
+
+CI 里这两步是**阻塞**的：有问题几秒内就失败，不会再浪费构建机。
 
 ---
 
