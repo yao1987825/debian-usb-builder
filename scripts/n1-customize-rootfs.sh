@@ -77,6 +77,13 @@ log "发行版: ${OS_ID:-unknown} ${OS_CODENAME}  镜像源: ${APT_MIRROR}"
 step "1/8 配置 DNS 与 apt 源"
 
 # 宿主机常是 systemd-resolved 的 127.0.0.53, 在 chroot 里不可达, 必须过滤掉
+# 注意: Armbian 镜像里的 /etc/resolv.conf 可能是指向 /run/systemd/resolve/... 的软链接,
+# 而 /run 是从宿主机 bind mount 进来的 —— 直接写会把宿主机的 DNS 配置改掉。
+# 所以先删掉软链接, 再写普通文件。
+if [[ -L "${ROOTFS_MOUNT}/etc/resolv.conf" ]]; then
+  log "移除 rootfs 里指向 /run 的 resolv.conf 软链接(避免改到宿主机 DNS)"
+  rm -f "${ROOTFS_MOUNT}/etc/resolv.conf"
+fi
 : > "${ROOTFS_MOUNT}/etc/resolv.conf"
 if [[ -f /etc/resolv.conf ]]; then
   grep -E '^nameserver' /etc/resolv.conf 2>/dev/null | awk '{print $2}' \
