@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+#
+# music —— 歌曲下载快捷入口
+#
+#   music gui [关键词]        图形界面搜索/下载(PyQt6, 支持夸克网盘转存)
+#   music playlist <csv>      按歌单 CSV 批量下载到歌曲分区
+#   music playlist <csv> --dry-run --top 3
+#   music out                 打印歌曲目录位置
+#   music ls                  列出已下载的歌曲
+#   music which               打印各项目/虚拟环境路径
+#
+set -Eeuo pipefail
+
+SONG_DIR="${SONG_DIR:-/mnt/songdisk}"
+HOME_DIR="${HOME:-/home/user}"
+PROJ_GUI="${PROJ_GUI:-${HOME_DIR}/projects/gequhai-downloader}"
+PROJ_LIST="${PROJ_LIST:-${HOME_DIR}/projects/gequhai-playlist-downloader}"
+VENV_GUI="${VENV_GUI:-${HOME_DIR}/.venvs/gequhai-gui}"
+VENV_LIST="${VENV_LIST:-${HOME_DIR}/.venvs/playlist}"
+export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-${HOME_DIR}/.cache/ms-playwright}"
+
+usage() { sed -n '3,12p' "$0"; }
+
+cmd_gui() {
+  local keyword="${1:-}"
+  cd "$PROJ_GUI" || { echo "找不到项目目录: $PROJ_GUI" >&2; exit 1; }
+  if [[ -n "$keyword" ]]; then
+    echo "提示: 图形界面里请在搜索框输入「${keyword}」并回车"
+  fi
+  exec "$VENV_GUI/bin/python" main.py
+}
+
+cmd_playlist() {
+  local csv="${1:-playlist.csv}"
+  [[ $# -gt 0 ]] && shift || true
+  cd "$PROJ_LIST" || { echo "找不到项目目录: $PROJ_LIST" >&2; exit 1; }
+  [[ -f "$csv" ]] || { echo "找不到歌单 CSV: $csv" >&2; exit 1; }
+  echo "[music] 歌单: $csv"
+  echo "[music] 输出: $SONG_DIR"
+  "$VENV_LIST/bin/python" gequhai_downloader.py --csv "$csv" --out "$SONG_DIR" "$@"
+  local rc=$?
+  if [[ $rc -eq 0 ]]; then
+    echo "[music] 转码 aac/acc → mp3 ..."
+    "$VENV_LIST/bin/python" convert_aac_to_mp3.py --dir "$SONG_DIR" || true
+  fi
+  return $rc
+}
+
+cmd_ls() {
+  ls -lh "$SONG_DIR" 2>/dev/null | head -50 || echo "歌曲目录为空或未挂载: $SONG_DIR"
+}
+
+case "${1:-}" in
+  gui|search)  shift; cmd_gui "${1:-}" ;;
+  playlist|batch) shift; cmd_playlist "$@" ;;
+  out)         echo "$SONG_DIR" ;;
+  ls)          cmd_ls ;;
+  which)
+    printf '图形版项目 : %s\n' "$PROJ_GUI"
+    printf '图形版 venv : %s\n' "$VENV_GUI"
+    printf '歌单版项目 : %s\n' "$PROJ_LIST"
+    printf '歌单版 venv : %s\n' "$VENV_LIST"
+    printf '歌曲目录   : %s\n' "$SONG_DIR"
+    ;;
+  ""|-h|--help|help) usage ;;
+  *) echo "未知命令: $1" >&2; echo >&2; usage >&2; exit 2 ;;
+esac

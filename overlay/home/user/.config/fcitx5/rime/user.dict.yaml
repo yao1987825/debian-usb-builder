@@ -1,0 +1,86 @@
+# Rime 自定义词库
+#
+# 格式: 每行 "词语<TAB>拼音编码"   (编码用空格分音节)
+# 例:  周杰伦	zhou jie lun
+#
+# 改完直接保存即可 —— Fcitx5 的 Rime 插件会检测到配置目录变化并自动重新部署;
+# 若想手动触发: rime_deployer --build
+#
+name: user
+version: "0.1"
+sort: by_weight
+use_preset_vocabulary: true
+entries:
+  - 周杰伦	zhou jie lun
+  - 五月天	wu yue tian
+  - 陈奕迅	chen yi xun
+  - 林俊杰	lin jun jie
+  - 薛之谦	xue zhi qian
+  - 毛不易	mao bu yi
+  - 张惠妹	zhang hui mei
+  - 王菲	wang fei
+  - 邓丽君	deng li jun
+  - 蔡依林	cai yi lin
+  - 林忆莲	lin yi lian
+  - 朴树	pu shu
+  - 李荣浩	li rong hao
+  - 张学友	zhang xue you
+  - 刘德华	liu de hua
+  - 胡歌	hu ge
+  - 周深	zhou shen
+  - 蔡健雅	cai jian ya
+  - 张韶涵	zhang shao han
+  - 田馥甄	tian fu zhen
+  - 陈粒	chen li
+  - 赵雷	zhao lei
+  - 宋冬野	song dong ye
+  - 许巍	xu wei
+  - 痛仰	tong yang
+  - 新裤子	xin ku zi
+  - 苏打绿	su da lv
+  - 房东的猫	fang dong de mao
+  - 陈鸿宇	chen hong yu
+  - 逃跑计划	tao pao ji hua
+  - 告五人	gao wu ren
+  - 落日飞车	luo ri fei che
+  - 茄子蛋	qie zi dan
+  - 橘子海	ju zi hai
+  - 夜曲	ye qu
+  - 七里香	qi li xiang
+  - 晴天	qing tian
+  - 稻香	dao xiang
+  - 青花瓷	qing hua ci
+  - 东风破	dong feng po
+  - 以父之名	yi fu zhi ming
+  - 平凡之路	ping fan zhi lu
+  - 说好不哭	shuo hao bu ku
+  - 起风了	qi feng le
+  - 红玫瑰	hong mei gui
+  - 孤勇者	gu yong zhe
+  - 成都	cheng du
+  - 董小姐	dong xiao jie
+  - 斑马斑马	ban ma ban ma
+  - 海阔天空	hai kuo tian kong
+  - 光辉岁月	gui huang sui yue
+  - 后来	hou lai
+  - 十年	shi nian
+  - 夜空中最亮的星	ye kong zhong zui liang de xing
+  - 突然的自我	tu ran de zi wo
+  - 体面	ti mian
+  - 演员	yan yuan
+  - 大鱼	dai yu
+  - 光年之外	guang nian zhi wai
+  - 奇妙能力歌	qi miao neng li ge
+  - 漠河舞厅	mo he wu ting
+  - 等你下课	deng ni xia ke
+  - 山丘	shan qiu
+  - Lemon	le mon
+  - 孤勇者	gu yong zhe
+  - 错位时空	cuo wei shi kong
+  - 诺言	nuo yan
+  - 吻别	wen bie
+  - 一路向北	yi lu xiang bei
+  - 布拉格广场	bu la ge guang chang
+  - 富士山下	fu shi shan xia
+  - 浮夸	fu kua
+  - 海阔天空	hai kuo tian kong

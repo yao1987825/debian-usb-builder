@@ -1,0 +1,15 @@
+# Rime 全局配置补丁: 简体拼音 + 界面习惯
+#
+# 需要覆盖默认值时, 在这个文件里写 "patch" 即可, 不要直接改 default.yaml
+# (升级 Rime 后会被覆盖)。
+#
+patch:
+  # 候选词数量
+  "menu/page_size": 7
+  # 上屏第一个候选
+  "switcher/select_first": true
+  # 左 Shift 切换中英文
+  "ascii_composer/switch_key": "Shift_L"
+  # 默认使用简体中文方案
+  "schema_list":
+    - schema: luna_pinyin_simp

@@ -1,0 +1,125 @@
+name: Build Debian USB Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: 'Debian 版本'
+        required: true
+        default: 'bookworm'
+        type: choice
+        options: [bookworm, trixie]
+      img_size_mb:
+        description: '镜像总大小 (MiB), 写进 U 盘后可运行 usb-grow.sh 扩展到整盘'
+        required: true
+        default: '8192'
+        type: string
+      root_size_mb:
+        description: '根分区大小 (MiB)'
+        required: true
+        default: '6144'
+        type: string
+      with_bios_grub:
+        description: '同时安装传统 BIOS 的 GRUB (实验性, 多数现代机器不需要)'
+        required: true
+        default: '0'
+        type: choice
+        options: ['0', '1']
+      with_projects:
+        description: '预装两个 Python 下载器项目 + Playwright Chromium'
+        required: true
+        default: '1'
+        type: choice
+        options: ['1', '0']
+  push:
+    tags:
+      - 'v*'
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: usb-image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: 构建 U 盘镜像
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      SUITE: ${{ github.event.inputs.suite || 'bookworm' }}
+      IMG_SIZE_MB: ${{ github.event.inputs.img_size_mb || '8192' }}
+      ROOT_SIZE_MB: ${{ github.event.inputs.root_size_mb || '6144' }}
+      WITH_BIOS_GRUB: ${{ github.event.inputs.with_bios_grub || '0' }}
+      WITH_PROJECTS: ${{ github.event.inputs.with_projects || '1' }}
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装构建依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            debootstrap e2fsprogs dosfstools mtools gdisk parted util-linux \
+            rsync xz-utils ca-certificates gnupg git \
+            grub-pc-bin grub-common \
+            qemu-system-x86 ovmf shellcheck
+
+      - name: Shell 语法检查
+        run: |
+          shellcheck -S warning scripts/*.sh overlay/usr/local/bin/* || true
+
+      - name: 构建镜像
+        run: |
+          sudo -E env \
+            SUITE="$SUITE" \
+            IMG_SIZE_MB="$IMG_SIZE_MB" \
+            ROOT_SIZE_MB="$ROOT_SIZE_MB" \
+            WITH_BIOS_GRUB="$WITH_BIOS_GRUB" \
+            WITH_PROJECTS="$WITH_PROJECTS" \
+            bash scripts/build-image.sh
+
+      - name: 结构校验
+        run: bash scripts/verify-image.sh --struct out/debian-usb-${{ env.SUITE }}.img
+
+      - name: QEMU 启动冒烟测试
+        continue-on-error: true
+        run: bash scripts/verify-image.sh --boot out/debian-usb-${{ env.SUITE }}.img
+
+      - name: 压缩产物
+        run: |
+          cd out
+          xz -T0 -6 -k -f "debian-usb-${SUITE}.img"
+          sha256sum ./*.img.xz > SHA256SUMS.txt
+          ls -lh
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: debian-usb-image-${{ env.SUITE }}
+          path: |
+            out/*.img.xz
+            out/SHA256SUMS.txt
+            out/BUILD-INFO.txt
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: 构建摘要
+        run: |
+          {
+            echo "### 镜像构建完成 ✅"
+            echo
+            echo '```'
+            cat out/BUILD-INFO.txt
+            echo '```'
+            echo
+            echo "产物: \`debian-usb-${{ env.SUITE }}.img.xz\`"
+            echo
+            echo "写盘(在 Windows 上推荐 Rufus / balenaEtcher, Linux 下可直接 dd):"
+            echo '```bash'
+            echo "sudo dd if=debian-usb-${{ env.SUITE }}.img.xz of=/dev/sdX bs=4M status=progress conv=fsync"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

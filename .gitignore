@@ -1,0 +1,9 @@
+# 构建产物
+build/
+out/
+
+# 编辑器
+.idea/
+.vscode/
+*.swp
+.DS_Store

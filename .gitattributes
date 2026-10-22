@@ -1,0 +1,6 @@
+# 保证 shell 脚本在 Linux 上以 LF 结尾(CRLF 会导致 "/usr/bin/env bash^M: bad interpreter")
+*.sh   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.desktop text eol=lf
+*.cfg  text eol=lf
