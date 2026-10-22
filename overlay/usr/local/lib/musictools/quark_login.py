@@ -173,6 +173,23 @@ def read_config(path: str) -> dict:
         return {}
 
 
+def fix_owner(path: str) -> None:
+    """以 root 跑时, 写出来的文件属主会变成 root, 而 config.json 权限是 600 ——
+    那普通用户(user)就读不到 cookie 了, 表现是"明明登录过了却还是提示没 Cookie"。
+    所以按目标目录的属主把文件改回去。
+    """
+    try:
+        st = os.stat(os.path.dirname(path))
+    except OSError:
+        return
+    if st.st_uid == 0 and st.st_gid == 0:
+        return
+    try:
+        os.chown(path, st.st_uid, st.st_gid)
+    except (OSError, AttributeError):
+        pass
+
+
 def write_config(path: str, cookie: str) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     data = read_config(path)
@@ -192,6 +209,7 @@ def write_config(path: str, cookie: str) -> None:
         json.dump(data, f, ensure_ascii=False, indent=2)
     os.replace(tmp, path)
     os.chmod(path, 0o600)          # cookie 是凭据, 别让同机其他用户读到
+    fix_owner(path)
 
 
 def get_proxies(config_path: str):
@@ -325,7 +343,13 @@ def cmd_login(args) -> int:
         say("请求二维码 token ...")
         token = fetch_qr_token(s, proxies)
     except Exception as e:
-        die(f"连不上夸克接口: {type(e).__name__}: {e}")
+        bad(f"连不上夸克接口: {type(e).__name__}: {e}")
+        if proxies:
+            warn(f"当前走的是代理 {proxies['http']} —— 代理没开/地址不对也会这样")
+            say("检查一下: proxy status")
+        else:
+            warn("没配代理。如果是网络不通, 先跑: music net")
+        die("拿不到二维码 token, 登录没法开始", 3)
 
     url = build_qr_url(token)
     say("二维码链接(拿手机扫下面这个也行):")
@@ -338,6 +362,11 @@ def cmd_login(args) -> int:
     def tick(n):
         if n % 5 == 0:
             print(f"    {DIM}…还在等扫码(已等约 {n * 2} 秒){RST}", flush=True)
+        if n * 2 >= 60 and n % 15 == 0:
+            # 夸克的二维码有效期很短, 过期之后接口会一直返回"Query result is empty",
+            # 和"还没扫"长得一模一样。所以到时间就提醒一句, 免得干等。
+            print(f"    {YEL}如果扫不上, 多半是二维码过期了 —— 直接重跑一次 music quark-login{RST}",
+                  flush=True)
 
     ticket = poll_service_ticket(s, token, proxies, timeout=args.timeout, on_tick=tick)
     if not ticket:
@@ -483,6 +512,18 @@ def self_test() -> int:
         write_config(p, "__pus=C")
         check("二次写入覆盖旧值", read_config(p).get("quark_cookie") == "__pus=C", read_config(p))
         check("不存在的配置读成空字典", read_config(os.path.join(td, "nope.json")) == {}, None)
+        # 属主修复: 目录属主不是 root 时, 写出的文件要跟着它, 否则普通用户读不到 cookie
+        try:
+            fix_owner(p)
+            check("fix_owner 不会抛异常", True)
+        except Exception as e:
+            check("fix_owner 不会抛异常", False, e)
+        # 目录不存在时也要安静返回
+        try:
+            fix_owner(os.path.join(td, "no", "such", "config.json"))
+            check("fix_owner 对不存在的目录安静返回", True)
+        except Exception as e:
+            check("fix_owner 对不存在的目录安静返回", False, e)
 
     check("代理优先级: config 里的 proxy 优先",
           get_proxies.__doc__ is not None, None)
