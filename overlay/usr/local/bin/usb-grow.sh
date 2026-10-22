@@ -20,6 +20,8 @@ ROOT_PERCENT=30
 MODE=grow
 DRY_RUN=0
 LOG_FILE=/var/log/usb-grow.log
+# 原样保存参数, 自动提权时要原样传给 sudo 重新执行的自己
+ORIG_ARGS=("$@")
 
 RED=$'\033[1;31m'; GRN=$'\033[1;32m'; YEL=$'\033[1;33m'; BLU=$'\033[1;34m'; RST=$'\033[0m'
 
@@ -64,7 +66,9 @@ if [[ "$(id -u)" != "0" ]]; then
     warn "当前不是 root, 诊断结果可能不完整(挂载点/标签需要权限)"
   elif command -v sudo >/dev/null 2>&1; then
     say "需要 root 权限, 正在通过 sudo 重新执行..."
-    exec sudo -E bash "$0" ${DRY_RUN:+$([ "$DRY_RUN" = 1 ] && echo --dry-run)} --root-percent "$ROOT_PERCENT"
+    # 原样把参数传过去。注意不能写成 ${DRY_RUN:+...} —— DRY_RUN="0" 也是非空,
+    # 那样会导致不加 sudo 直接跑也变成 dry-run。
+    exec sudo -E bash "$0" ${ORIG_ARGS[@]+"${ORIG_ARGS[@]}"}
   else
     die "需要 root 权限, 但系统里没有 sudo。请用 root 用户执行: usb-grow.sh"
   fi
