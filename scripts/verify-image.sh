@@ -273,6 +273,27 @@ struct_check() {
       die "根分区缺少 quark_login.py, 无法扫码登录夸克"
     fi
 
+    # music 虚拟环境里的包: music single 的可用性全靠 requests。
+    # 注意只能读 site-packages 目录列表, 不能直接跑镜像里的 python ——
+    # venv 的 bin/python 是指向 /usr/bin/python3 的绝对路径软链, 在宿主机上
+    # 执行会解析到宿主的解释器, 什么包都测不出来。
+    local _pyv _sp _pkg
+    _pyv="$($SUDO debugfs -R "ls /home/user/.venvs/music/lib" "$p3" 2>/dev/null | tr -s ' ' '\n' | grep -E '^python3\.[0-9]+$' | head -1 || true)"
+    if [[ -n "$_pyv" ]]; then
+      _sp="$($SUDO debugfs -R "ls /home/user/.venvs/music/lib/${_pyv}/site-packages" "$p3" 2>/dev/null || true)"
+      for _pkg in requests socks qrcode; do
+        if grep -qE "(^| )${_pkg}([.-]|$)" <<<"$_sp"; then
+          ok "music 虚拟环境里有 ${_pkg}"
+        elif [[ "$_pkg" == "qrcode" ]]; then
+          warn "music 虚拟环境里没有 qrcode —— 扫码登录会退化成只打印链接(仍可用)"
+        else
+          die "music 虚拟环境里没有 ${_pkg} —— music single / 代理会直接不可用"
+        fi
+      done
+    else
+      die "根分区里找不到 music 虚拟环境(/home/user/.venvs/music), music single 不可用"
+    fi
+
     if $SUDO debugfs -R "ls /etc/systemd/system/multi-user.target.wants" "$p3" 2>/dev/null | grep -q "NetworkManager.service"; then
       ok "NetworkManager 已设为开机自启"
     else

@@ -478,8 +478,33 @@ else
   sed 's/^/[quark] /' "${BUILD_DIR}/quark-selftest.log" >&2 || true
   die "夸克登录逻辑自测失败, music quark-login 不能用"
 fi
+# venv 里的包检查。
+#
+# 关键: 必须在 chroot 里面跑, 不能用 "${ROOTFS}/home/.../bin/python" 直接执行。
+# 因为 venv 的 bin/python 是指向 /usr/bin/python3 的**绝对路径**软链, 在宿主机上
+# 执行会解析到**宿主机**的 python3 —— 既不是 venv, 也没有 venv 的 site-packages,
+# 于是 import 什么都失败。之前就因为这个误报了"没装 qrcode"。
+# 正确做法: chroot_run + su, 让解释器在 chroot 里按 venv 的路径解析。
+venv_has() {
+  local mod="$1"
+  chroot_run su - "$USER_NAME" -c \
+    "/home/${USER_NAME}/.venvs/music/bin/python -c 'import ${mod}'" >/dev/null 2>&1
+}
+
+# requests 是 music single 的命根子, 缺了整条命令行下载链路直接废掉
+if venv_has requests; then
+  ok "music 虚拟环境: requests 可用(music single 能用)"
+else
+  die "music 虚拟环境里没有 requests —— music single / music quark-login 全都不可用"
+fi
+# pysocks: requests 走 socks5 代理必需, 没有它设了代理反而直接报错
+if venv_has socks; then
+  ok "music 虚拟环境: PySocks 可用(能走 socks5 代理)"
+else
+  warn "music 虚拟环境里没有 PySocks —— 走 socks5 代理会报 ProxySchemeUnknown"
+fi
 # qrcode 是可选的: 没装只会退化成"打印链接", 不该因此卡构建
-if "${ROOTFS}/home/${USER_NAME}/.venvs/music/bin/python" -c "import qrcode" 2>/dev/null; then
+if venv_has qrcode; then
   log "qrcode 已装, 夸克登录二维码可以直接画在终端里"
 else
   warn "venv 里没有 qrcode, 扫码登录会退化成只打印链接(仍可用)"
