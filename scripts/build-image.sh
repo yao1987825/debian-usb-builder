@@ -226,7 +226,15 @@ chroot_run systemctl enable systemd-resolved
 # 账户
 chroot_run useradd --create-home --shell /bin/bash --comment "USB User" "$USER_NAME"
 echo "${USER_NAME}:${USER_PASS}" | chroot_run chpasswd
-chroot_run usermod -aG sudo,audio,video,plugdev,netdev,cdrom "$USER_NAME"
+# 只添加系统里真实存在的组(不同 Debian 版本提供的组不一样, 如 netdev 可能不存在)
+existing_groups="$(chroot_run getent group | cut -d: -f1)"
+for g in sudo audio video plugdev netdev cdrom; do
+  if grep -qx "$g" <<<"$existing_groups"; then
+    chroot_run usermod -aG "$g" "$USER_NAME"
+  else
+    warn "组 ${g} 在本系统不存在, 跳过"
+  fi
+done
 printf '%s ALL=(ALL) NOPASSWD:ALL\n' "$USER_NAME" > "${ROOTFS}/etc/sudoers.d/90-${USER_NAME}"
 chmod 0440 "${ROOTFS}/etc/sudoers.d/90-${USER_NAME}"
 
