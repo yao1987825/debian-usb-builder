@@ -124,31 +124,71 @@ fi
 ############################### 第 2 步: 装软件栈 #######################
 step "2/8 安装软件栈 (PROFILE=${PROFILE})"
 
-BASE_PKGS="locales tzdata sudo ca-certificates curl wget git rsync \
-python3 python3-venv python3-pip ffmpeg aria2 vim tmux htop pciutils usbutils \
-fcitx5 fcitx5-rime fcitx5-config-qt im-config fonts-wqy-zenhei \
-xinit x11-xserver-utils dbus-x11 policykit-1"
+BASE_PKGS=(
+  locales tzdata sudo ca-certificates curl wget git rsync
+  python3 python3-venv python3-pip ffmpeg aria2 vim tmux htop pciutils usbutils
+  fcitx5 fcitx5-rime fcitx5-config-qt im-config fonts-wqy-zenhei
+  xinit x11-xserver-utils dbus-x11
+  polkitd policykit-1
+)
 
 if [[ "$PROFILE" == "desktop" ]]; then
-  DESKTOP_PKGS="xorg xdg-utils xfce4 xfce4-terminal lightdm lightdm-gtk-greeter \
-fonts-noto-cjk x11-apps"
+  DESKTOP_PKGS=(xorg xdg-utils xfce4 xfce4-terminal lightdm lightdm-gtk-greeter fonts-noto-cjk x11-apps)
 else
-  DESKTOP_PKGS="xterm"
+  DESKTOP_PKGS=(xterm)
 fi
 
-chroot_run apt-get install -y --no-install-recommends ${BASE_PKGS} ${DESKTOP_PKGS} \
+ALL_PKGS=("${BASE_PKGS[@]}" "${DESKTOP_PKGS[@]}")
+
+# 过滤掉本发行版里不存在的包。
+# 不同 Debian 版本的包名会变, 例如 trixie 把 policykit-1 拆成了 polkitd + pkexec,
+# 直接整批 install 会因为一个包找不到而全部失败。
+avail_pkgs() {
+  local policy="" line="" cur="" cand=""
+  local -a out=()
+  policy="$(chroot_run apt-cache policy "$@" 2>/dev/null || true)"
+  while IFS= read -r line; do
+    if [[ "$line" =~ ^([A-Za-z0-9][A-Za-z0-9+._-]*):$ ]]; then
+      if [[ -n "$cur" && -n "$cand" && "$cand" != "(none)" ]]; then out+=("$cur"); fi
+      cur="${BASH_REMATCH[1]}"; cand=""
+    elif [[ "$line" =~ ^[[:space:]]+Candidate:[[:space:]]*(.+)$ ]]; then
+      cand="${BASH_REMATCH[1]}"
+    fi
+  done <<< "$policy"
+  if [[ -n "$cur" && -n "$cand" && "$cand" != "(none)" ]]; then out+=("$cur"); fi
+  [[ "${#out[@]}" -eq 0 ]] && return 0
+  printf '%s\n' "${out[@]}"
+}
+
+mapfile -t PKGS < <(avail_pkgs "${ALL_PKGS[@]}")
+[[ "${#PKGS[@]}" -gt 0 ]] || die "没有任何可安装的软件包, apt 源可能不可用"
+log "可安装的核心包 (${#PKGS[@]}/${#ALL_PKGS[@]}): ${PKGS[*]}"
+
+chroot_run apt-get install -y --no-install-recommends "${PKGS[@]}" \
   || die "基础软件包安装失败"
+
+# 关键组件必须真的装上了, 否则镜像是个空壳
+for p in python3 python3-venv fcitx5 xinit; do
+  chroot_run dpkg -s "$p" >/dev/null 2>&1 || die "关键包 ${p} 没有装上"
+done
+if [[ "$PROFILE" == "desktop" ]]; then
+  chroot_run dpkg -s xfce4 >/dev/null 2>&1 || die "关键包 xfce4 没有装上"
+  chroot_run dpkg -s lightdm >/dev/null 2>&1 || die "关键包 lightdm 没有装上"
+fi
 
 # 可选组件: 装不上不影响系统, 但少了会影响输入法在 GTK/Qt 程序里的表现
 apt_optional() {
-  local p
-  for p in "$@"; do
-    if chroot_run apt-get install -y --no-install-recommends "$p"; then
-      log "可选包已安装: ${p}"
-    else
-      warn "可选包安装失败(忽略): ${p}"
-    fi
-  done
+  local -a pkgs=()
+  mapfile -t pkgs < <(avail_pkgs "$@")
+  if [[ "${#pkgs[@]}" -eq 0 ]]; then
+    warn "可选包在本发行版里都不存在, 跳过: $*"
+    return 0
+  fi
+  if chroot_run apt-get install -y --no-install-recommends "${pkgs[@]}"; then
+    log "可选包已安装: ${pkgs[*]}"
+  else
+    warn "可选包安装失败(忽略): ${pkgs[*]}"
+  fi
 }
 apt_optional \
   fcitx5-frontend-gtk3 fcitx5-frontend-gtk4 \
