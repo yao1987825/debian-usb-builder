@@ -137,7 +137,8 @@ struct_check() {
 
     # 网络: 没有 NetworkManager 就是一台没有网络的机器, 必须卡住
     local _f
-    for _f in /usr/local/bin/net-doctor /usr/local/bin/net-rescue /usr/local/bin/usb-grow.sh /usr/bin/nmcli; do
+    for _f in /usr/local/bin/net-doctor /usr/local/bin/net-rescue /usr/local/bin/usb-grow.sh \
+              /usr/local/bin/screen-fit /usr/local/bin/proxy /usr/bin/nmcli; do
       if $SUDO debugfs -R "stat ${_f}" "$p3" 2>/dev/null | grep -q "Inode:"; then
         ok "根分区存在 ${_f}"
       else
@@ -147,7 +148,8 @@ struct_check() {
     # 光"文件在"不够, 还得能被 bash 解析 —— 语法错/函数定义顺序错这种问题
     # 在真机上表现为"命令跑起来毫无反应", 必须在构建期就卡住。
     local _s _d
-    for _s in /usr/local/bin/music /usr/local/bin/net-doctor /usr/local/bin/net-rescue /usr/local/bin/usb-grow.sh; do
+    for _s in /usr/local/bin/music /usr/local/bin/net-doctor /usr/local/bin/net-rescue /usr/local/bin/usb-grow.sh \
+               /usr/local/bin/screen-fit /usr/local/bin/proxy; do
       _d="$(mktemp -d)"
       if $SUDO debugfs -R "dump ${_s} ${_d}/probe" "$p3" 2>/dev/null && [[ -s "${_d}/probe" ]]; then
         if bash -n "${_d}/probe" 2>/dev/null; then
@@ -159,6 +161,75 @@ struct_check() {
         die "没能从根分区取出 ${_s}, 无法做语法检查"
       fi
     done
+
+    # 显示分辨率: 解析逻辑错了在真机上只是"分辨率没变", 很难看出是脚本的锅,
+    # 所以把 --self-test 的结果也带出来看一眼。
+    _d="$(mktemp -d)"
+    if $SUDO debugfs -R "dump /usr/local/lib/screentools/fit.py ${_d}/fit.py" "$p3" 2>/dev/null \
+       && [[ -s "${_d}/fit.py" ]]; then
+      ok "根分区存在 /usr/local/lib/screentools/fit.py"
+      if python3 "${_d}/fit.py" --self-test >"${_d}/self.log" 2>&1; then
+        ok "EDID/xrandr 解析自测通过($(grep -c '✅' "${_d}/self.log") 项)"
+      else
+        sed 's/^/[screen-fit] /' "${_d}/self.log" >&2 || true
+        die "EDID/xrandr 解析自测失败, screen-fit 会匹配错分辨率"
+      fi
+    else
+      die "根分区缺少 /usr/local/lib/screentools/fit.py"
+    fi
+    if $SUDO debugfs -R "stat /usr/bin/xrandr" "$p3" 2>/dev/null | grep -q "Inode:"; then
+      ok "根分区存在 /usr/bin/xrandr(screen-fit 依赖它)"
+    else
+      die "根分区缺少 /usr/bin/xrandr, screen-fit 无法工作"
+    fi
+    if $SUDO debugfs -R "cat /etc/xdg/autostart/screen-fit.desktop" "$p3" 2>/dev/null | grep -q "screen-fit --restore"; then
+      ok "已配置开机自动匹配显示器分辨率"
+    else
+      die "没有 screen-fit 自启动项, 开机分辨率不会自动匹配"
+    fi
+
+    # 软件源: 用户明确要求换清华源, 换不成就等于没做
+    local _want="${APT_MIRROR-https://mirrors.tuna.tsinghua.edu.cn/debian}" _sl
+    [[ "$_want" == "off" || -z "$_want" ]] && _want=""
+    _sl="$($SUDO debugfs -R "cat /etc/apt/sources.list" "$p3" 2>/dev/null || true)"
+    if [[ -n "$_want" ]]; then
+      local _host="${_want#*://}"; _host="${_host%%/*}"
+      if grep -q "$_host" <<<"$_sl"; then
+        ok "apt 源已换成 ${_host}"
+      else
+        warn "apt 源不是 ${_host}(构建时镜像站拉不动会自动回退官方源), 当前内容:"
+        sed 's/^/         /' <<<"$_sl"
+      fi
+    else
+      ok "apt 源保持官方源(未指定 APT_MIRROR)"
+    fi
+    if [[ -n "${PIP_INDEX_URL-}" ]]; then
+      local _phost="${PIP_INDEX_URL#*://}"; _phost="${_phost%%/*}"
+      [[ "$_phost" == "off" || "$_phost" == "none" ]] && _phost=""
+      if $SUDO debugfs -R "cat /etc/pip.conf" "$p3" 2>/dev/null | grep -q "$_phost"; then
+        ok "pip 源已换成 ${_phost}"
+      else
+        warn "pip 源不是 ${_phost}"
+      fi
+    fi
+
+    # 代理: 预置配置必须存在, 且生成出来的 shell 必须合法
+    _d="$(mktemp -d)"
+    if $SUDO debugfs -R "dump /etc/profile.d/99-proxy.sh ${_d}/99-proxy.sh" "$p3" 2>/dev/null \
+       && [[ -s "${_d}/99-proxy.sh" ]]; then
+      if bash -n "${_d}/99-proxy.sh" 2>/dev/null; then
+        ok "/etc/profile.d/99-proxy.sh 存在且语法正确"
+      else
+        die "/etc/profile.d/99-proxy.sh 语法错误, source 它会让登录失败"
+      fi
+      if grep -q 'PROXY_URL=' "${_d}/99-proxy.sh"; then
+        ok "预置代理: $(grep -oP 'PROXY_URL="\K[^"]+' "${_d}/99-proxy.sh" | head -1)"
+      else
+        warn "99-proxy.sh 里没找到 PROXY_URL"
+      fi
+    else
+      die "根分区缺少 /etc/profile.d/99-proxy.sh"
+    fi
 
     if $SUDO debugfs -R "ls /etc/systemd/system/multi-user.target.wants" "$p3" 2>/dev/null | grep -q "NetworkManager.service"; then
       ok "NetworkManager 已设为开机自启"

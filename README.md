@@ -232,6 +232,14 @@ cd ~/projects/gequhai-playlist-downloader
 | `root_size_mb` | `6144` | 根分区大小，装大量 Python 包时可以调大 |
 | `with_bios_grub` | `0` | 传统 BIOS 的 GRUB（现代 UEFI 机器不需要） |
 | `with_projects` | `1` | 是否预装两个下载器 + Playwright Chromium |
+| `apt_mirror` | 清华 TUNA | 镜像里的 apt 源，**填 `off` 保持官方源** |
+| `pip_index` | 清华 TUNA | 镜像里的 pip 源，**填 `off` 用默认 PyPI** |
+| `proxy_url` | `socks5://192.168.6.1:1070` | 预置代理。**只是写好配置，不会强制打开** —— `/etc/profile.d/99-proxy.sh` 每次登录先探端口，通了才用 |
+
+> 换源为什么放在构建的**最后**：`debootstrap` 和那一大堆 apt 安装要跑在 GitHub 的美国节点上，
+> 走 `deb.debian.org` 反而更快更稳；成品拿到国内再用清华源才划算。所以脚本是
+> 「先用官方源装完 → 再把 `sources.list` 换成清华源 → 验一次 `apt-get update`」。
+> 万一构建机拉不动清华源，会自动回退官方源并在 `BUILD-INFO.txt` 里标注，不会假装成功。
 
 ### 两个档位差在哪
 
@@ -319,6 +327,42 @@ sudo systemctl disable --now systemd-networkd   # 别让两个一起管网卡
 先用 `usb-grow.sh --check` 看诊断（不需要 root），确认它认出了正确的磁盘和分区再执行。
 如果分区识别错了，可以手动指定：`ROOT_PART=3 MUSIC_PART=4 usb-grow.sh`。
 
+**Q：插到不同显示器上分辨率不对（画面拉伸 / 字糊 / 字特别小）**
+Xorg 开机经常随便挑一个模式（比如 1024x768），而不是这块屏自己的原生分辨率。
+镜像里已经装好 `screen-fit`，**每次图形登录会自动按 EDID 匹配每一块屏**：
+
+```bash
+screen-fit            # 立刻检测并应用
+screen-fit --list     # 只看不改：每块屏"当前 / 建议"
+screen-fit --dry-run  # 打印会执行的 xrandr 命令
+screen-fit --disable  # 不想要开机自动匹配时关掉（手动调过分辨率就用它）
+```
+
+原理是从 `xrandr --verbose` 里抠出每块屏的 EDID 原始数据，按 EDID 规范解析
+**第一个 Detailed Timing Descriptor**（那就是这块屏的首选/原生时序），
+再在 xrandr 列出的模式里找同尺寸、刷新率最高的那一个，逐块屏单独设置。
+EDID 读不到时退回启发式（取刷新率 ≥60 的最大分辨率），会在输出里标明是推测值。
+
+**Q：代理怎么用（默认 socks5://192.168.6.1:1070）**
+```bash
+proxy                 # 等同 proxy status
+proxy status          # 地址 / 端口通不通 / apt / 下载器 / PySocks 各是什么状态
+proxy on              # 开启：apt + 下载器 + 终端环境变量
+proxy on 192.168.1.9:7890
+proxy off             # 全部关掉
+proxy test            # 实测：真发一个请求看能不能出去
+```
+
+镜像里预置了 `/etc/profile.d/99-proxy.sh`，它**先探测端口通不通，通了才 export `http_proxy`**。
+这一步是刻意的：代理没跑的时候如果还硬设 `http_proxy`，症状是"所有下载全部失败"，
+比压根没有代理更难查。`music proxy` 是同一个命令。
+
+两个容易踩的点已经处理好了：
+- `apt` 用不了"先探后用"的写法，所以 apt 的代理由 `proxy on` / `off` 显式开关，
+  并且自动把 `socks5://` 转成 apt 认的 `socks5h://`。
+- Python 的 `requests` 默认**不支持** `socks5://` 代理（会报 `ProxySchemeUnknown`），
+  所以镜像里预装了几个 venv 都带 `PySocks`，`proxy on` 也会顺手补装。
+
 **Q：QEMU 冒烟测试报"没捕获到 GRUB 输出"**
 这只是警告，不是失败。OVMF 可能没走 UEFI 可移动介质路径，或串口输出没打开；结构校验通过就说明镜像结构没问题。
 
@@ -363,9 +407,13 @@ debian-usb-builder/
 │   │   ├── usb-grow.sh                       # x86: 一键扩展分区到整盘(GPT)
 │   │   ├── net-doctor                       # 网络逐层自检 + 自动修复
 │   │   ├── net-rescue                       # 没网时的应急联网(只用 systemd 自带能力)
-│   │   └── music                             # 下载器快捷入口(single/playlist/gui/doctor/net)
+│   │   ├── screen-fit                       # 按 EDID 自动匹配每块显示器的原生分辨率
+│   │   ├── proxy                            # 代理开关(status/on/off/test)
+│   │   └── music                             # 下载器快捷入口(single/playlist/gui/doctor/net/screen/proxy)
 │   ├── usr/local/lib/musictools/
 │   │   └── single.py                         # 命令行单曲搜索下载(纯 requests, 不用 PyQt6)
+│   ├── usr/local/lib/screentools/
+│   │   └── fit.py                            # EDID/xrandr 解析 + 分辨率方案(support --self-test)
 │   └── home/user/.config/fcitx5/rime/        # Rime 简体拼音方案 + 73 条歌名词库
 ├── overlay-n1/                               # 仅 N1 使用
 │   └── usr/local/bin/n1-grow.sh              # N1: 把卡的剩余空间扩给歌曲分区(只改 MBR 4 字节)

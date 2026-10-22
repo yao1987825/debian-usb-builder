@@ -11,6 +11,9 @@
 #   music out                       打印歌曲分区路径
 #   music ls                        列出已下载的歌曲
 #   music which                     打印各组件路径
+#   music net                       网络自检
+#   music proxy [status|on|off]      代理开关
+#   music screen                    自动匹配显示器原生分辨率
 #   music doctor                    环境自检
 #   music setup-gui                 补装 PyQt6 (启用图形界面)
 #   music setup-playwright          补装 Playwright Chromium
@@ -39,7 +42,10 @@ usage() {
   music gui                       图形界面 (需 PyQt6, 轻量镜像未装)
   music net                       网络自检 (连不上网先跑这个)
   music net --fix                 网络自检 + 自动修复
-  music setup-proxy [地址]        设置/清空代理 (不带地址=清空)
+  music proxy [status|on|off]      代理开关 (等同于 proxy 命令)
+  music screen [--list]           自动匹配每块显示器的原生分辨率
+  music setup-proxy [地址]        设置代理 (等同 music proxy on <地址>)
+  music setup-proxy off           清空代理 (等同 music proxy off)
   music out                       打印歌曲分区路径
   music ls                        列出已下载的歌曲
   music which                     打印各组件路径
@@ -173,47 +179,33 @@ cmd_net() {
 }
 
 # ---------------- 代理 ----------------
-cmd_setup_proxy() {
-  local cfg="${PROJ_GUI}/config.json"
-  local addr="${1:-}"
-  if [[ ! -f "$cfg" ]]; then
-    echo "错误: 找不到 ${cfg}(项目没 clone?)" >&2
+# 代理的真正实现在 /usr/local/bin/proxy: 它要同时管 apt 配置、下载器配置、
+# 终端环境变量和 PySocks, 塞在这里只会让 music 变成一个什么都干的大脚本。
+cmd_proxy() {
+  if [[ ! -x /usr/local/bin/proxy ]]; then
+    echo "错误: 找不到 /usr/local/bin/proxy" >&2
     return 1
   fi
-  if [[ -z "$addr" ]]; then
-    # 不带参数 = 清空代理(便携 U 盘上通常没跑 Clash)
-    python3 - "$cfg" "" <<'PY'
-import json, sys
-path, proxy = sys.argv[1], sys.argv[2]
-try:
-    with open(path, encoding="utf-8") as f:
-        data = json.load(f)
-except Exception:
-    data = {}
-data["proxy"] = proxy
-with open(path, "w", encoding="utf-8") as f:
-    json.dump(data, f, ensure_ascii=False, indent=2)
-print(f"proxy = {proxy!r}")
-PY
-    echo "[music] 已清空代理。图形界面和 music single 共用这份配置"
-  else
-    python3 - "$cfg" "$addr" <<'PY'
-import json, sys
-path, proxy = sys.argv[1], sys.argv[2]
-if "://" not in proxy:
-    proxy = "http://" + proxy
-try:
-    with open(path, encoding="utf-8") as f:
-        data = json.load(f)
-except Exception:
-    data = {}
-data["proxy"] = proxy
-with open(path, "w", encoding="utf-8") as f:
-    json.dump(data, f, ensure_ascii=False, indent=2)
-print(f"proxy = {proxy!r}")
-PY
-    echo "[music] 已设置代理"
+  exec /usr/local/bin/proxy "$@"
+}
+
+cmd_setup_proxy() {
+  # 兼容旧用法: music setup-proxy [地址] | music setup-proxy off
+  local arg="${1:-}"
+  case "$arg" in
+    off|--off|clear) cmd_proxy off ;;
+    "")              cmd_proxy status ;;
+    *)               cmd_proxy on "$arg" ;;
+  esac
+}
+
+# ---------------- 显示分辨率 ----------------
+cmd_screen() {
+  if [[ ! -x /usr/local/bin/screen-fit ]]; then
+    echo "错误: 找不到 /usr/local/bin/screen-fit" >&2
+    return 1
   fi
+  exec /usr/local/bin/screen-fit "$@"
 }
 
 # ---------------- 其他 ----------------
@@ -287,6 +279,22 @@ cmd_doctor() {
   if ! command -v nmcli >/dev/null 2>&1; then
     echo "  连不上网且装不了 NetworkManager 时: sudo net-rescue"
   fi
+  echo "  代理开关: music proxy status   (socks5://192.168.6.1:1070)"
+
+  # 显示: 每块屏各用各的原生分辨率, 插到不同显示器上才不会是拉伸的
+  printf '\n%-22s %s\n' "" "---- 显示 ----"
+  if command -v xrandr >/dev/null 2>&1 && [[ -n "${DISPLAY:-}" ]]; then
+    local _o _line
+    while read -r _o _line; do
+      [[ "$_o" == "connected" ]] || continue
+      local _name="${_o%% *}" _res
+      _res="$(printf '%s' "$_line" | grep -oE '[0-9]+x[0-9]+' | head -1)"
+      printf '%-22s %s\n' "${_name}" "${_res:-?} (screen-fit 会自动改成原生分辨率)"
+    done < <(xrandr --query 2>/dev/null | grep ' connected ')
+    echo "  自动匹配原生分辨率: music screen"
+  else
+    printf '%-22s %s\n' "显示" "ℹ️  没有图形会话(纯命令行), 不涉及分辨率"
+  fi
   echo
 }
 
@@ -307,6 +315,8 @@ case "${1:-}" in
     ;;
   doctor)              cmd_doctor ;;
   net)                 shift; cmd_net "$@" ;;
+  proxy)               shift; cmd_proxy "$@" ;;
+  screen|display|res)  shift; cmd_screen "$@" ;;
   setup-proxy)         shift; cmd_setup_proxy "$@" ;;
   setup-gui)           cmd_setup_gui ;;
   setup-playwright)    cmd_setup_playwright ;;

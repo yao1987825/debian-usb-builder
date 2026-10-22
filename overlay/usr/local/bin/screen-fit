@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+#
+# screen-fit —— 自动把每一块显示器设成它自己的原生分辨率
+#
+# 为什么需要它:
+#   同一张 U 盘插到不同显示器/投影仪上, Xorg 经常随便挑一个模式(常见 1024x768),
+#   于是画面拉伸、字糊、字小得看不清。真正该用的是每块屏自己的原生分辨率,
+#   这个值显示器通过 EDID 告诉系统。
+#
+# 用法:
+#   screen-fit              检测并应用(每块屏各用各的原生分辨率)
+#   screen-fit --list       只看不改, 列出每块屏"当前 / 建议"
+#   screen-fit --dry-run    试运行, 打印会执行的 xrandr 命令但不真改
+#   screen-fit --enable     以后每次开机自动匹配
+#   screen-fit --disable    关闭开机自动匹配
+#   screen-fit --no-edid    忽略 EDID, 纯按"最大分辨率"猜(排查用)
+#
+# 必须在图形界面里跑(Xfce 自动登录后打开的终端即可)。
+#
+set -uo pipefail
+
+B="$(readlink -f "${BASH_SOURCE[0]}")"
+FIT_PY="$(dirname "${B}")/../lib/screentools/fit.py"
+
+R=$'\033[1;31m'; G=$'\033[1;32m'; B_=$'\033[1;34m'; N=$'\033[0m'
+
+if [[ ! -f "$FIT_PY" ]]; then
+  echo "${R}[screen-fit]${N} 找不到 ${FIT_PY}" >&2
+  exit 1
+fi
+
+case "${1:-}" in
+  -h|--help|help)
+    sed -n '3,20p' "$0" | sed 's/^# \{0,1\}//'
+    exit 0 ;;
+esac
+
+PY=""
+# 注意: 不能只看 `command -v` —— 某些系统上 python3 是个点不动的桩程序,
+# 真正能跑的是 python。用 -c 'pass' 真跑一下确认。
+for c in python3 python; do
+  if command -v "$c" >/dev/null 2>&1 && "$c" -c 'pass' >/dev/null 2>&1; then
+    PY="$c"; break
+  fi
+done
+if [[ -z "$PY" ]]; then
+  echo "${R}[screen-fit]${N} 系统里没有可用的 python3, 装它: sudo apt-get install -y python3" >&2
+  exit 1
+fi
+
+if ! "$PY" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 6) else 1)' >/dev/null 2>&1; then
+  echo "${R}[screen-fit]${N} ${PY} 版本太老, 需要 3.6 以上" >&2
+  exit 1
+fi
+
+# 没有 DISPLAY 时先自己找 X 的 unix socket, 免得从 TTY 里跑就一片空白
+if [[ -z "${DISPLAY:-}" ]]; then
+  for d in :0 :1; do
+    if [[ -e "/tmp/.X11-unix/X${d#:}" ]]; then export DISPLAY="$d"; break; fi
+  done
+fi
+
+exec "$PY" "$FIT_PY" "$@"

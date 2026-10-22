@@ -30,6 +30,20 @@ SUITE="${SUITE:-bookworm}"                       # bookworm=Debian12, trixie=Deb
 MIRROR="${MIRROR:-http://deb.debian.org/debian}"
 SECURITY_MIRROR="${SECURITY_MIRROR:-http://security.debian.org/debian-security}"
 
+# ---- 镜像里预置的第三方源 ----
+# 传 off / none 表示"不要换源"。这里用 :- 而不是 -:
+# workflow 的 job 级 env 一定会把变量定义出来(可能是空串),
+# 用 - 会把"未指定"和"显式清空"混成一回事。
+APT_MIRROR="${APT_MIRROR:-https://mirrors.tuna.tsinghua.edu.cn/debian}"
+PIP_INDEX_URL="${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}"
+case "$APT_MIRROR"     in off|none|"") APT_MIRROR="" ;; esac
+case "$PIP_INDEX_URL"  in off|none|"") PIP_INDEX_URL="" ;; esac
+
+# ---- 预置代理(只是写好配置, 不会强制打开) ----
+# /etc/profile.d/99-proxy.sh 会先探测端口通不通, 通了才 export http_proxy;
+# 代理没跑的时候什么都不设, 免得表现成"所有下载全部失败"。
+PROXY_URL_DEFAULT="${PROXY_URL_DEFAULT:-socks5://192.168.6.1:1070}"
+
 IMG_SIZE_MB="${IMG_SIZE_MB:-8192}"               # 镜像总大小 (MiB)
 ESP_SIZE_MB="${ESP_SIZE_MB:-512}"                # EFI 分区
 ROOT_SIZE_MB="${ROOT_SIZE_MB:-6144}"             # 根分区
@@ -208,7 +222,8 @@ chroot_run apt-get install -y --no-install-recommends \
   cloud-guest-utils gdisk parted dosfstools e2fsprogs rsync \
   grub-efi-amd64-bin grub-efi-amd64-signed shim-signed \
   systemd-resolved \
-  network-manager wpasupplicant iproute2 iputils-ping dnsutils
+  network-manager wpasupplicant iproute2 iputils-ping dnsutils \
+  x11-xserver-utils
 
 # ---- 可选组件: 装不上不影响系统, 但少了会影响输入法/桌面体验 ----
 apt_optional() {
@@ -226,10 +241,46 @@ apt_optional \
   fcitx5-frontend-qt5 fcitx5-frontend-qt6 \
   thunar mousepad nano tree file unzip zip \
   python3-dev build-essential pkg-config \
-  x11-xserver-utils fonts-wqy-microhei fonts-noto-color-emoji \
+  fonts-wqy-microhei fonts-noto-color-emoji \
   lightdm-gtk-greeter
 
 chroot_run dpkg --configure -a
+
+# ---- 换软件源 ----
+# 放在"重活都干完之后"再换: 构建机在 GitHub 的美国节点, 走 deb.debian.org 反而快;
+# 而成品拿到国内用, 清华源才是刚需。换早了只会让 CI 变慢还更容易超时。
+apply_mirror() {
+  if [[ -z "$APT_MIRROR" ]]; then
+    log "APT_MIRROR 为空, 保持官方源"
+    return 0
+  fi
+  local host="${APT_MIRROR#*://}"
+  host="${host%%/*}"
+
+  log "切换 apt 源到 ${APT_MIRROR}"
+  cat > "${ROOTFS}/etc/apt/sources.list" <<EOF
+# 由 build-image.sh 生成(${SUITE})
+deb ${APT_MIRROR} ${SUITE} main contrib non-free non-free-firmware
+deb ${APT_MIRROR} ${SUITE}-updates main contrib non-free non-free-firmware
+deb ${APT_MIRROR}-security ${SUITE}-security main contrib non-free non-free-firmware
+EOF
+
+  if chroot_run apt-get -o Acquire::Retries=3 -o Acquire::https::Timeout=30 update -qq; then
+    APT_MIRROR_OK=1
+    log "清华源可用 ✅ (${host})"
+  else
+    warn "${host} 在构建机上拉不动, 回退官方源(成品会走官方源, 不是预期行为)"
+    APT_MIRROR_OK=0
+    cat > "${ROOTFS}/etc/apt/sources.list" <<EOF
+deb ${MIRROR} ${SUITE} main contrib non-free non-free-firmware
+deb ${SECURITY_MIRROR} ${SUITE}-security main contrib non-free non-free-firmware
+deb ${MIRROR} ${SUITE}-updates main contrib non-free non-free-firmware
+EOF
+    chroot_run apt-get update -qq || die "官方源也 update 失败"
+  fi
+}
+APT_MIRROR_OK=0
+apply_mirror
 
 # 语言 / 时区 / 主机名
 sed -i "s/^# *${LOCALE_NAME} UTF-8/${LOCALE_NAME} UTF-8/" "${ROOTFS}/etc/locale.gen"
@@ -307,13 +358,14 @@ if [[ "${WITH_PROJECTS}" == "1" ]]; then
   #    命令行单曲下载(music single)复用 gequhai-downloader 里的 gequhai/quark/utils,
   #    这三个模块只依赖 requests, 所以轻量档也能用, 不需要 PyQt6。
   chroot_run su - "$USER_NAME" -c "python3 -m venv /home/${USER_NAME}/.venvs/music"
-  chroot_run su - "$USER_NAME" -c "/home/${USER_NAME}/.venvs/music/bin/pip install --disable-pip-version-check --no-cache-dir -q requests" \
-    || warn "requests 安装失败(single 命令不可用)"
+  # pysocks 必装: requests 默认不支持 socks5:// 代理, 不装的话设了代理反而直接报错
+  chroot_run su - "$USER_NAME" -c "/home/${USER_NAME}/.venvs/music/bin/pip install --disable-pip-version-check --no-cache-dir -q requests pysocks" \
+    || warn "requests/pysocks 安装失败(single 命令不可用)"
 
   # ② 图形版(PyQt6): slim 档跳过, 需要时用 music setup-gui 补装
   if [[ "$WITH_PYQT" == "1" ]]; then
     chroot_run su - "$USER_NAME" -c "python3 -m venv /home/${USER_NAME}/.venvs/gequhai-gui"
-    chroot_run su - "$USER_NAME" -c "/home/${USER_NAME}/.venvs/gequhai-gui/bin/pip install --disable-pip-version-check --no-cache-dir -q PyQt6 requests" \
+    chroot_run su - "$USER_NAME" -c "/home/${USER_NAME}/.venvs/gequhai-gui/bin/pip install --disable-pip-version-check --no-cache-dir -q PyQt6 requests pysocks" \
       || warn "PyQt6 安装失败"
   else
     log "slim 档: 跳过 PyQt6 图形界面 (启动后可用 music setup-gui 补装)"
@@ -344,7 +396,73 @@ fi
 # Windows 上 git 可能没记录执行位, 这里统一补上
 find "${ROOTFS}/usr/local/bin" -type f -exec chmod 0755 {} + 2>/dev/null || true
 chmod 0755 "${ROOTFS}/usr/local/lib/musictools/single.py" 2>/dev/null || true
+chmod 0755 "${ROOTFS}/usr/local/lib/screentools/fit.py" 2>/dev/null || true
 chown -R "${USER_UID}:${USER_GID}" "${ROOTFS}/home/${USER_NAME}"
+
+# ---- pip 换清华源(放在这里而不是第 2 步: 第 3 步的 pip 装包走官方 PyPI 更快) ----
+if [[ -n "$PIP_INDEX_URL" ]]; then
+  cat > "${ROOTFS}/etc/pip.conf" <<EOF
+# 由 build-image.sh 生成
+[global]
+index-url = ${PIP_INDEX_URL}
+timeout = 120
+retries = 5
+EOF
+  mkdir -p "${ROOTFS}/home/${USER_NAME}/.config/pip"
+  cp "${ROOTFS}/etc/pip.conf" "${ROOTFS}/home/${USER_NAME}/.config/pip/pip.conf"
+  log "pip 源: ${PIP_INDEX_URL}"
+else
+  log "PIP_INDEX_URL 为空, pip 保持默认源"
+fi
+
+# ---- 预置代理配置(不强制打开) ----
+# /etc/profile.d/99-proxy.sh 里是"先探测端口通了才 export", 所以代理没跑的时候
+# 终端不会带 http_proxy, 不会把"没开代理"变成"所有下载都失败"。
+printf 'PROXY_URL="%s"\n' "${PROXY_URL_DEFAULT}" > "${ROOTFS}/etc/proxy.conf"
+chmod 0644 "${ROOTFS}/etc/proxy.conf"
+# 模板只从 proxy 脚本本身取(proxy --print-profile-d), 两边各写一份迟早会写岔
+"${ROOTFS}/usr/local/bin/proxy" --print-profile-d "${PROXY_URL_DEFAULT}" \
+  > "${ROOTFS}/etc/profile.d/99-proxy.sh" \
+  || die "proxy --print-profile-d 生成失败"
+chmod 0644 "${ROOTFS}/etc/profile.d/99-proxy.sh"
+# 生成出来的东西必须还是合法 shell, 否则 /etc/profile.d 一被 source 就整个登录失败
+bash -n "${ROOTFS}/etc/profile.d/99-proxy.sh" || die "/etc/profile.d/99-proxy.sh 语法错误"
+log "预置代理: ${PROXY_URL_DEFAULT}(proxy status / proxy on / proxy off)"
+
+# ---- 显示分辨率: 每次图形登录自动匹配每块屏的原生分辨率 ----
+[[ -x "${ROOTFS}/usr/bin/xrandr" ]] || die "xrandr 没装上, screen-fit 无法工作(x11-xserver-utils)"
+[[ -f "${ROOTFS}/usr/local/bin/screen-fit" ]] || die "overlay 里缺 screen-fit"
+[[ -f "${ROOTFS}/usr/local/lib/screentools/fit.py" ]] || die "overlay 里缺 fit.py"
+cat > "${ROOTFS}/etc/xdg/autostart/screen-fit.desktop" <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=Screen Fit (自动匹配显示器原生分辨率)
+Comment=按 EDID 把每块屏设成它自己的原生分辨率
+Exec=/usr/local/bin/screen-fit --restore
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
+EOF
+# 默认就是开的 —— 用户明确要求"开机自动匹配实体屏幕分辨率"。
+# 不想要的话: screen-fit --disable
+mkdir -p "${ROOTFS}/home/${USER_NAME}/.config/screen-fit"
+printf '1\n' > "${ROOTFS}/home/${USER_NAME}/.config/screen-fit/enabled"
+log "已配置开机自动匹配显示器原生分辨率(screen-fit --disable 可关)"
+
+# EDID/xrandr 解析逻辑自测: 这一段纯字符串处理, 不需要 X, 构建期就能验。
+# 解析错了在真机上的表现是"分辨率没变或者整屏拉伸", 很难一眼看出是脚本的锅。
+if python3 "${ROOTFS}/usr/local/lib/screentools/fit.py" --self-test >/tmp/fit-selftest.log 2>&1; then
+  log "EDID/xrandr 解析自测通过"
+else
+  sed 's/^/[screen-fit] /' /tmp/fit-selftest.log >&2 || true
+  die "EDID/xrandr 解析自测失败, screen-fit 会匹配错分辨率"
+fi
+
+# shell 语法: 镜像里的这几个脚本是用户的救命工具, 语法错 = 跑起来毫无反应
+for _sc in music net-doctor net-rescue usb-grow.sh screen-fit proxy; do
+  bash -n "${ROOTFS}/usr/local/bin/${_sc}" || die "镜像里的 ${_sc} 语法错误"
+done
+log "镜像内脚本语法检查通过"
 
 # 对着"即将装进镜像的那份" music 跑一遍命令行回归测试。
 # 这一步放在这里是因为 x86 的 CI runner 没有 loop 设备, 事后没法再从镜像里
@@ -691,6 +809,10 @@ root UUID  : ${ROOT_UUID}
   Playwright Chromium: $( [[ "${WITH_PLAYWRIGHT_BROWSER}" == "1" ]] && echo "已安装" || echo "未安装(用 music setup-playwright 补装)" )
   Noto CJK 字体    : $( [[ "${WITH_NOTO_CJK}" == "1" ]] && echo "已安装" || echo "未安装" )
 单曲下载    : music single "<歌名>"   (只依赖 requests, 任何档位都可用)
+apt 源      : ${APT_MIRROR:-官方源}   $( [[ "$APT_MIRROR_OK" == "1" ]] && echo "(已生效)" || echo "(构建时拉不动, 已回退官方源)" )
+pip 源      : ${PIP_INDEX_URL:-默认 PyPI}
+预置代理    : ${PROXY_URL_DEFAULT}   (proxy status / proxy on / proxy off)
+显示分辨率  : 开机自动按 EDID 匹配每块屏的原生分辨率 (screen-fit --disable 可关)
 Secure Boot: 需要 shim 签名(已随镜像写入); 若无法启动请在固件里关闭 Secure Boot
 EOF
 cat "${OUT_DIR}/BUILD-INFO.txt"

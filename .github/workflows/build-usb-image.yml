@@ -37,6 +37,21 @@ on:
         default: 'full'
         type: choice
         options: ['full', 'slim']
+      apt_mirror:
+        description: '镜像里的 apt 源 | 填 off = 保持官方源'
+        required: true
+        default: 'https://mirrors.tuna.tsinghua.edu.cn/debian'
+        type: string
+      pip_index:
+        description: '镜像里的 pip 源 | 填 off = 用默认 PyPI'
+        required: true
+        default: 'https://pypi.tuna.tsinghua.edu.cn/simple'
+        type: string
+      proxy_url:
+        description: '预置代理(只是写好配置, 不会强制打开; 端口通不通会自动探测)'
+        required: true
+        default: 'socks5://192.168.6.1:1070'
+        type: string
   push:
     tags:
       - 'v*'
@@ -61,6 +76,9 @@ jobs:
       WITH_BIOS_GRUB: ${{ github.event.inputs.with_bios_grub || '0' }}
       WITH_PROJECTS: ${{ github.event.inputs.with_projects || '1' }}
       PROFILE: ${{ github.event.inputs.profile || 'full' }}
+      APT_MIRROR: ${{ github.event.inputs.apt_mirror }}
+      PIP_INDEX_URL: ${{ github.event.inputs.pip_index }}
+      PROXY_URL_DEFAULT: ${{ github.event.inputs.proxy_url }}
 
     steps:
       - name: 检出代码
@@ -91,6 +109,9 @@ jobs:
             WITH_BIOS_GRUB="$WITH_BIOS_GRUB" \
             WITH_PROJECTS="$WITH_PROJECTS" \
             PROFILE="$PROFILE" \
+            APT_MIRROR="$APT_MIRROR" \
+            PIP_INDEX_URL="$PIP_INDEX_URL" \
+            PROXY_URL_DEFAULT="$PROXY_URL_DEFAULT" \
             bash scripts/build-image.sh
 
       - name: 结构校验
