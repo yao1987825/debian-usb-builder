@@ -124,6 +124,10 @@ check_mke2fs_d
   || die "分区总大小 ${ESP_SIZE_MB}+${ROOT_SIZE_MB}+${BIOS_SIZE_MB} 超过镜像 ${IMG_SIZE_MB}MB"
 
 mkdir -p "$BUILD_DIR" "$OUT_DIR"
+# 本脚本以 root 运行, 而 workflow 的后续步骤以普通用户运行。
+# out/ 目录若属主是 root 且权限 755, 普通用户连新建文件都会被拒(Permission denied),
+# 所以这里把产物目录放开写权限。
+chmod 0777 "$OUT_DIR" 2>/dev/null || true
 # 上一次构建如果中断了, 可能还挂着 mount, 先卸干净
 for m in /run /sys /proc /dev/pts /dev; do
   if mountpoint -q "${ROOTFS}${m}" 2>/dev/null; then umount -lf "${ROOTFS}${m}" 2>/dev/null || true; fi
