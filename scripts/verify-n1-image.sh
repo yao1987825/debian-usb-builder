@@ -209,6 +209,17 @@ if mount "${LOOP}p2" "$MOUNT_ROOT" 2>/dev/null; then
   else
     bad "n1-grow.sh 缺失"
   fi
+
+  # 对着"镜像里安装的那份" music 跑一遍命令行回归测试
+  if MUSIC_BIN="${MOUNT_ROOT}/usr/local/bin/music" \
+     bash "$(dirname "${BASH_SOURCE[0]}")/test-music-cli.sh" >/dev/null 2>&1; then
+    ok "music 命令行回归测试通过(参数没有丢失)"
+  else
+    bad "music 命令行回归测试失败"
+    MUSIC_BIN="${MOUNT_ROOT}/usr/local/bin/music" \
+      bash "$(dirname "${BASH_SOURCE[0]}")/test-music-cli.sh" 2>&1 | sed 's/^/       /' | head -20
+  fi
+
   umount "$MOUNT_ROOT"; MOUNT_ROOT=""
 else
   bad "挂载 p2 失败"

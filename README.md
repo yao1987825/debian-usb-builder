@@ -250,6 +250,37 @@ cd ~/projects/gequhai-playlist-downloader
 **Q：QEMU 冒烟测试报"没捕获到 GRUB 输出"**
 这只是警告，不是失败。OVMF 可能没走 UEFI 可移动介质路径，或串口输出没打开；结构校验通过就说明镜像结构没问题。
 
+**Q：`music single` 报"项目源码的接口和本脚本对不上"**
+`gequhai-downloader` 上游改了接口（比如 `search_songs` 改名、删了 `safe_filename`）。
+本脚本在调用前会做 `hasattr` 预检，缺哪个接口会直接列出来，而不是甩一屏 traceback。
+处理办法：`cd ~/projects/gequhai-downloader && git pull` 看是不是上游变了；
+如果确实变了，同步改 `single.py` 里的 `REQUIRED_API`，或者先用 `music gui` 走图形界面。
+
+---
+
+## 七之二、命令行回归测试
+
+`music` 这层壳子（子命令分发 + 参数透传）出过一次很隐蔽的 bug：
+`case` 分支已经 `shift` 掉子命令名，`cmd_single` 内部又 `shift` 了一次，
+结果 `music single "周杰伦 夜曲" --list` 变成 `music single --list` ——
+**关键词被吃掉，而且不报任何错**，只是搜不到东西。
+
+所以加了一个不依赖网络、不依赖真实站点的回归测试：
+
+```bash
+bash scripts/test-music-cli.sh
+```
+
+它用假的 `mountpoint` 和假的 venv python 拦住真实下载，只检查参数有没有原样传下去，
+覆盖 `single` / `search` / `download` / `--index` / 缺关键词 / `doctor` / `out` / `which`。
+
+这个测试在 CI 里跑两道：
+- 流水线开始时对仓库里的脚本跑一遍；
+- 结构校验阶段，对**镜像里安装的那份** `music` 再跑一遍
+  （x86 用 `debugfs` 把 `/usr/local/bin/music` 抠出来跑，N1 直接在挂载的 rootfs 里跑）。
+
+也就是说，**参数透传类的 bug 没法再混进产物**。
+
 ---
 
 ## 六、也可以不用 GitHub Actions，在本地 Linux 上直接构建
@@ -278,7 +309,8 @@ debian-usb-builder/
 │   ├── verify-image.sh                       # x86: 结构校验 + QEMU 启动冒烟测试
 │   ├── build-n1-image.sh                     # N1: ophub rebuild → 追加 MUSIC 分区 → 预装
 │   ├── n1-customize-rootfs.sh                # N1: ARM64 chroot 装软件栈 + 中文输入法
-│   └── verify-n1-image.sh                    # N1: 分区表/引导码/内核/fstab 结构校验
+│   ├── verify-n1-image.sh                    # N1: 分区表/引导码/内核/fstab 结构校验
+│   └── test-music-cli.sh                     # music 命令行回归测试(见下)
 ├── overlay/                                  # x86 与 N1 共用, 直接覆盖到镜像 rootfs 里
 │   ├── usr/local/bin/
 │   │   ├── usb-grow.sh                       # x86: 一键扩展分区到整盘(GPT)

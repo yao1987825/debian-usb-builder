@@ -79,6 +79,9 @@ jobs:
         run: |
           shellcheck -S warning scripts/*.sh overlay/usr/local/bin/* || true
 
+      - name: music 命令行回归测试
+        run: bash scripts/test-music-cli.sh
+
       - name: 构建镜像
         run: |
           sudo -E env \

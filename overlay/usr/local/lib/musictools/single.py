@@ -50,7 +50,36 @@ def load_project(project_dir):
     except ImportError as exc:
         die(f"导入项目模块失败: {exc}\n"
             f"        请执行: pip install requests")
+    check_api(gequhai, quark, utils)
     return gequhai, quark, utils
+
+
+# 本脚本依赖的项目接口。项目的 API 一旦变动, 这里要给出人话提示,
+# 而不是让用户看一整屏 traceback。
+# (模块名, 接口名, 这个接口是干什么的)
+REQUIRED_API = (
+    ("gequhai", "search_songs", "搜索歌曲"),
+    ("quark", "download_from_quark", "夸克网盘转存"),
+    ("utils", "load_config", "读取 config.json"),
+    ("utils", "safe_filename", "文件名安全处理"),
+    ("utils", "download_file", "下载文件"),
+)
+
+
+def check_api(gequhai, quark, utils):
+    """检查项目模块是否提供本脚本要用到的接口, 缺了就给清晰的提示。"""
+    mods = {"gequhai": gequhai, "quark": quark, "utils": utils}
+    missing = []
+    for mod_name, attr, desc in REQUIRED_API:
+        mod = mods.get(mod_name)
+        if mod is None or not hasattr(mod, attr):
+            missing.append(f"{mod_name}.{attr}() ({desc})")
+    if missing:
+        die("项目源码的接口和本脚本对不上, 缺少:\n"
+            + "".join(f"        - {m}\n" for m in missing)
+            + "        这通常是因为 gequhai-downloader 仓库更新后改了接口。\n"
+            f"        处理办法: cd {os.getcwd()} && git pull 后重新确认接口名,\n"
+            "        或改用项目自带的图形界面: music gui")
 
 
 def decode_quark_extra(raw):

@@ -108,6 +108,20 @@ struct_check() {
     else
       die "/etc/fstab 缺少 /boot/efi"
     fi
+
+    # 把镜像里安装的那份 music 抠出来, 跑一遍命令行回归测试
+    # (防止 "关键词被 shift 吃掉" 这类静默 bug 混进产物)
+    local tmp_music; tmp_music="$(mktemp -d)/music"
+    if debugfs -R "dump /usr/local/bin/music ${tmp_music}" "$p3" 2>/dev/null && [[ -s "$tmp_music" ]]; then
+      chmod +x "$tmp_music"
+      if MUSIC_BIN="$tmp_music" bash "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test-music-cli.sh" >/dev/null 2>&1; then
+        ok "镜像里的 music 命令行回归测试通过(参数没有丢失)"
+      else
+        die "镜像里的 music 命令行回归测试失败"
+      fi
+    else
+      warn "没能从根分区取出 /usr/local/bin/music, 跳过回归测试"
+    fi
   else
     warn "缺少 debugfs, 跳过根分区内容校验"
   fi

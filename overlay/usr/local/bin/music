@@ -56,21 +56,25 @@ songdisk_check() {
 }
 
 # ---------------- 单曲下载 ----------------
+# 注意: 调用方(case 分支)已经 shift 掉子命令名了, 这里不能再 shift,
+# 否则第一个参数(关键词)会被吃掉, 变成 "music single --list" 搜不到东西。
 cmd_single() {
   [[ $# -ge 1 ]] || { echo "用法: music single <关键词> [--list] [--index N]" >&2; return 2; }
+  # 第一个参数是选项就说明关键词没写, 别把 "--list" 当成歌名去搜
+  case "${1:-}" in
+    -*) echo "用法: music single <关键词> [--list] [--index N]" >&2; return 2 ;;
+  esac
   songdisk_check || return 1
   if [[ ! -x "${VENV_MUSIC}/bin/python" ]]; then
     echo "错误: 缺少 ${VENV_MUSIC} (单曲下载只依赖 requests)" >&2
     echo "      修复: python3 -m venv ${VENV_MUSIC} && ${VENV_MUSIC}/bin/pip install requests" >&2
     return 1
   fi
-  shift
   exec "${VENV_MUSIC}/bin/python" "${SINGLE_PY}" "$@"
 }
 
 cmd_search() {
   [[ $# -ge 1 ]] || { echo "用法: music search <关键词>" >&2; return 2; }
-  shift
   cmd_single "$@" --list
 }
 

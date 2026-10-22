@@ -130,10 +130,13 @@ jobs:
 
       - name: Shell 语法检查
         run: |
-          shellcheck -S warning scripts/n1-*.sh overlay-n1/usr/local/bin/* || true
+          shellcheck -S warning scripts/n1-*.sh scripts/test-music-cli.sh overlay-n1/usr/local/bin/* || true
           bash -n scripts/build-n1-image.sh
           bash -n scripts/n1-customize-rootfs.sh
           bash -n scripts/verify-n1-image.sh
+
+      - name: music 命令行回归测试
+        run: bash scripts/test-music-cli.sh
 
       - name: 构建镜像
         run: |
