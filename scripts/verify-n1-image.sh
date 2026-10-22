@@ -63,18 +63,29 @@ for i in range(4):
           % (i+1, mbr[off+4], lba, cnt, cnt*512/1048576))
 PY
 
-####################### 2. MBR 引导码 #######################
+####################### 2. MBR 引导区与 u-boot #######################
 echo
-echo "== 2. MBR 引导码(Amlogic u-boot)"
+echo "== 2. MBR 引导区与 u-boot(Amlogic)"
 python3 - "$RAW" <<'PY'
 import sys
 with open(sys.argv[1], 'rb') as f:
-    boot = f.read(446)
-if boot[:64] == b'\x00' * 64:
-    print("  ❌ 前 64 字节全为 0, u-boot 引导码丢失")
+    mbr = f.read(1024)
+if mbr[510:512] != b'\x55\xaa':
+    print("  ❌ MBR 签名不正确")
     sys.exit(1)
-print("  ✅ 前 446 字节存在 u-boot 引导码 (前 4 字节: %s)"
-      % ' '.join('%02x' % b for b in boot[:4]))
+print("  ✅ MBR 签名正确 (0x55AA)")
+boot = mbr[0:446]
+uboot = mbr[512:1024]
+nz = sum(1 for b in boot if b)
+if nz == 0:
+    print("  ℹ️  MBR 引导区(0..445)全为 0 —— Amlogic 板子的正常现象")
+    print("      (u-boot-2015-*.bin 前 512 字节是空的引导头, 真正的 u-boot 落在扇区 1)")
+else:
+    print("  ✅ MBR 引导区有引导码(非 0 字节 %d 个)" % nz)
+if all(b == 0 for b in uboot):
+    print("  ❌ 扇区 1(偏移 512)全为 0, u-boot 本体缺失")
+    sys.exit(1)
+print("  ✅ 扇区 1(偏移 512)存在 u-boot 本体")
 PY
 
 ####################### 3~5. 挂载检查 #######################
@@ -94,32 +105,58 @@ mkdir -p "$MOUNT_BOOT" "$MOUNT_ROOT" "$MOUNT_MUSIC"
 echo
 echo "== 3. BOOT 分区(p1)"
 if mount "${LOOP}p1" "$MOUNT_BOOT" 2>/dev/null; then
-  if ls "${MOUNT_BOOT}"/uEnv.txt "${MOUNT_BOOT}"/armbianEnv.txt >/dev/null 2>&1; then
-    ok "存在 uEnv.txt / armbianEnv.txt 启动配置"
+  # ophub 的 Armbian 启动配置放在 uEnv.txt / armbianEnv.txt 里
+  CONF_FILE=""
+  for c in uEnv.txt armbianEnv.txt; do
+    if [[ -f "${MOUNT_BOOT}/${c}" ]]; then CONF_FILE="${MOUNT_BOOT}/${c}"; break; fi
+  done
+  if [[ -n "$CONF_FILE" ]]; then
+    ok "存在 $(basename "$CONF_FILE")"
+    grep -E 'fdtfile|rootdev|console' "$CONF_FILE" 2>/dev/null | sed 's/^/       /' | head -5
+    if grep -q 'phicomm-n1' "$CONF_FILE"; then
+      ok "启动配置指向 Phicomm N1 的 dtb"
+    else
+      bad "$(basename "$CONF_FILE") 里没有 phicomm-n1 的 dtb"
+    fi
   else
     bad "找不到 uEnv.txt / armbianEnv.txt"
   fi
-  if ls "${MOUNT_BOOT}"/u-boot*.bin >/dev/null 2>&1; then
-    ok "存在 u-boot overload: $(ls "${MOUNT_BOOT}"/u-boot*.bin | head -3 | xargs -n1 basename | tr '\n' ' ')"
+
+  # u-boot: 板级引导(u-boot.sd/usb) + overload(u-boot*.bin / u-boot.ext)
+  uboot_files="$(find "${MOUNT_BOOT}" -maxdepth 1 \( -name 'u-boot.sd' -o -name 'u-boot.usb' \
+    -o -name 'u-boot*.bin' -o -name 'u-boot.ext' \) -printf '%f ' 2>/dev/null)"
+  if [[ -n "$uboot_files" ]]; then
+    ok "存在 u-boot 文件: ${uboot_files}"
   else
-    bad "找不到 u-boot overload 文件"
+    bad "找不到 u-boot 文件"
   fi
-  if ls "${MOUNT_BOOT}"/u-boot-*.dtb >/dev/null 2>&1; then
-    ok "存在 dtb 文件 ($(ls "${MOUNT_BOOT}"/u-boot-*.dtb | wc -l) 个)"
+
+  # dtb: ophub 把所有板子的 dtb 放在 dtb/amlogic/ 下, 由 uEnv.txt 选用
+  n1_dtb="$(find "${MOUNT_BOOT}" -name 'meson-gxl-s905d-phicomm-n1.dtb' -print -quit 2>/dev/null)"
+  if [[ -n "$n1_dtb" ]]; then
+    ok "存在 N1 dtb: ${n1_dtb#${MOUNT_BOOT}/}"
   else
-    bad "找不到 dtb 文件"
+    bad "找不到 meson-gxl-s905d-phicomm-n1.dtb"
   fi
-  if ls "${MOUNT_BOOT}"/Image* "${MOUNT_BOOT}"/initrd* >/dev/null 2>&1; then
-    ok "存在内核镜像: $(ls "${MOUNT_BOOT}"/Image* "${MOUNT_BOOT}"/initrd* 2>/dev/null | head -2 | xargs -n1 basename | tr '\n' ' ')"
+
+  # 内核: vmlinuz-<ver> / zImage, 以及指向它的 Image 符号链接
+  kimg="$(find "${MOUNT_BOOT}" -maxdepth 2 \( -name 'Image' -o -name 'vmlinuz-*' -o -name 'zImage' \) -print -quit 2>/dev/null)"
+  if [[ -n "$kimg" ]]; then
+    ok "存在内核镜像: ${kimg#${MOUNT_BOOT}/}"
   else
     bad "找不到内核镜像"
   fi
-  if grep -qs 'phicomm-n1' "${MOUNT_BOOT}/uEnv.txt" "${MOUNT_BOOT}/armbianEnv.txt" 2>/dev/null \
-     || ls "${MOUNT_BOOT}"/*phicomm-n1* >/dev/null 2>&1; then
-    ok "启动配置里指向 Phicomm N1"
+  kinit="$(find "${MOUNT_BOOT}" -maxdepth 2 \( -name 'uInitrd' -o -name 'uInitrd-*' -o -name 'initrd*' \) -print -quit 2>/dev/null)"
+  if [[ -n "$kinit" ]]; then
+    ok "存在 initrd: ${kinit#${MOUNT_BOOT}/}"
   else
-    info "未在启动配置里直接看到 phicomm-n1 字样(dtb 可能由 u-boot 按板型自动加载)"
+    bad "找不到 initrd"
   fi
+
+  for s in aml_autoscript boot.scr; do
+    if [[ -f "${MOUNT_BOOT}/${s}" ]]; then ok "存在 ${s}"; else bad "缺少 ${s}"; fi
+  done
+
   umount "$MOUNT_BOOT"; MOUNT_BOOT=""
 else
   bad "挂载 p1 失败"
@@ -159,10 +196,13 @@ if mount "${LOOP}p2" "$MOUNT_ROOT" 2>/dev/null; then
   else
     bad "fstab 里没有 /mnt/songdisk"
   fi
-  if grep -qE '^UUID=\S+ +/ +ext4' "${MOUNT_ROOT}/etc/fstab"; then
-    ok "根分区仍按 UUID 挂载(Armbian 原样保留)"
+  # 根分区那行必须和实际文件系统对得上(Armbian 是按 UUID 写的, 我们不能动它)
+  ROOT_UUID="$(blkid -s UUID -o value "${LOOP}p2" 2>/dev/null || true)"
+  if [[ -n "$ROOT_UUID" ]] && grep -qE "^UUID=${ROOT_UUID}[[:space:]]+/" "${MOUNT_ROOT}/etc/fstab"; then
+    ok "根分区 fstab 的 UUID 与实际文件系统一致 (${ROOT_UUID})"
   else
-    bad "根分区的 fstab 行被改动了"
+    bad "根分区 fstab 的 UUID 与实际文件系统不一致 (实际 ${ROOT_UUID:-未知})"
+    grep -E '^[^#].*[[:space:]]/[[:space:]]' "${MOUNT_ROOT}/etc/fstab" | sed 's/^/       /'
   fi
   if [[ -x "${MOUNT_ROOT}/usr/local/bin/n1-grow.sh" ]]; then
     ok "n1-grow.sh 扩容脚本存在"

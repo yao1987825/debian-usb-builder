@@ -209,8 +209,11 @@ P3_START=$(( P2_START + P2_COUNT ))
 P3_SECTORS=$(( MUSIC_SIZE_MB * 2048 ))
 log "p2: start=${P2_START} count=${P2_COUNT}   p3: start=${P3_START} count=${P3_SECTORS}"
 
-# 先备份 MBR, 改完再比对引导码有没有被动过
-head -c 512 "$OUT_IMG" > "${BUILD_DIR}/mbr.before"
+# 先备份 MBR 的两个关键区域, 改完再比对有没有被动过
+#   0..445   : MBR 引导区 (Amlogic 的 u-boot-2015-*.bin 前 512 字节是空的引导头, 这里是全 0)
+#   512..1023: 扇区 1, 真正的 u-boot 本体 (绝对不能碰)
+head -c 446 "$OUT_IMG" > "${BUILD_DIR}/mbr.before.boot"
+dd if="$OUT_IMG" of="${BUILD_DIR}/mbr.before.uboot" bs=512 skip=1 count=1 status=none
 
 CUR_SECTORS=$(( $(stat -c%s "$OUT_IMG") / 512 ))
 NEED_SECTORS=$(( P3_START + P3_SECTORS ))
@@ -238,12 +241,25 @@ with open(path, 'r+b') as f:
 print("已写入 p3 条目: lba=%d count=%d" % (lba, count))
 PY
 
-# 校验引导码(前 446 字节)没有被改动
-head -c 446 "${BUILD_DIR}/mbr.before" > "${BUILD_DIR}/mbr.before.boot"
-head -c 446 "$OUT_IMG"            > "${BUILD_DIR}/mbr.after.boot"
+# 校验关键区域没有被改动
+head -c 446 "$OUT_IMG" > "${BUILD_DIR}/mbr.after.boot"
+dd if="$OUT_IMG" of="${BUILD_DIR}/mbr.after.uboot" bs=512 skip=1 count=1 status=none
 cmp -s "${BUILD_DIR}/mbr.before.boot" "${BUILD_DIR}/mbr.after.boot" \
-  || die "MBR 引导码被改动了, 中止"
-log "MBR 引导码校验通过(前 446 字节完全一致)"
+  || die "MBR 引导区(0..445)被改动了, 中止"
+cmp -s "${BUILD_DIR}/mbr.before.uboot" "${BUILD_DIR}/mbr.after.uboot" \
+  || die "扇区 1 的 u-boot 本体被改动了, 中止"
+log "MBR 引导区(0..445)与 u-boot 本体(512..1023)校验通过, 逐字节未变"
+
+# 再确认扇区 1 里确实有 u-boot 代码(不是全 0)
+python3 - "$OUT_IMG" <<'PY' || die "扇区 1 没有 u-boot 本体, 镜像无法启动"
+import sys
+with open(sys.argv[1], 'rb') as f:
+    f.seek(512)
+    uboot = f.read(512)
+if all(b == 0 for b in uboot):
+    sys.exit("u-boot 本体缺失")
+print("  u-boot 本体前 8 字节: " + " ".join("%02x" % b for b in uboot[:8]))
+PY
 
 log "当前分区表:"
 sfdisk -d "$OUT_IMG" 2>/dev/null | sed 's/^/  /' || true
