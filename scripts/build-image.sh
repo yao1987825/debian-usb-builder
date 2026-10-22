@@ -34,7 +34,8 @@ IMG_SIZE_MB="${IMG_SIZE_MB:-8192}"               # 镜像总大小 (MiB)
 ESP_SIZE_MB="${ESP_SIZE_MB:-512}"                # EFI 分区
 ROOT_SIZE_MB="${ROOT_SIZE_MB:-6144}"             # 根分区
 BIOS_SIZE_MB="${BIOS_SIZE_MB:-1}"                # BIOS boot 分区
-MUSIC_SIZE_MB="${MUSIC_SIZE_MB:-$(( IMG_SIZE_MB - ESP_SIZE_MB - ROOT_SIZE_MB - BIOS_SIZE_MB ))}"
+# 歌曲分区不预设大小: 它吃掉"整盘减去其它分区和 GPT 备份区"剩下的全部空间,
+# 实际字节数在分区表建好后从 sgdisk 反查(见第 7 步), 避免手算出错压掉备份 GPT 头。
 
 HOSTNAME_DEB="${HOSTNAME_DEB:-debian-usb}"
 USER_NAME="${USER_NAME:-user}"
@@ -119,9 +120,8 @@ require_root
 require_cmd debootstrap mke2fs mkfs.vfat mcopy mmd sgdisk dd tar xz git
 check_mke2fs_d
 
-[[ "${MUSIC_SIZE_MB}" -gt 0 ]] || die "分区大小参数不合理: IMG_SIZE_MB 太小"
-(( ESP_SIZE_MB + ROOT_SIZE_MB + MUSIC_SIZE_MB + BIOS_SIZE_MB <= IMG_SIZE_MB )) \
-  || die "分区总大小 ${ESP_SIZE_MB}+${ROOT_SIZE_MB}+${MUSIC_SIZE_MB}+${BIOS_SIZE_MB} 超过镜像 ${IMG_SIZE_MB}MB"
+(( ESP_SIZE_MB + ROOT_SIZE_MB + BIOS_SIZE_MB + 64 < IMG_SIZE_MB )) \
+  || die "分区总大小 ${ESP_SIZE_MB}+${ROOT_SIZE_MB}+${BIOS_SIZE_MB} 超过镜像 ${IMG_SIZE_MB}MB"
 
 mkdir -p "$BUILD_DIR" "$OUT_DIR"
 # 上一次构建如果中断了, 可能还挂着 mount, 先卸干净
@@ -492,11 +492,6 @@ log "已卸载 chroot bind mount, 开始写入 ext4"
 # 构建期的 policy-rc.d 不能进最终镜像(否则目标机上装包时服务起不来)
 rm -f "${ROOTFS}/usr/sbin/policy-rc.d"
 
-# --- 根分区 ---
-truncate -s "${ROOT_SIZE_MB}M" "$ROOT_IMG"
-mke2fs -q -t ext4 -L DEBIAN_ROOT -U "$ROOT_UUID" -d "$ROOTFS" "$ROOT_IMG"
-log "根分区镜像: ${ROOT_SIZE_MB}MB (内容 $(du -sm "$ROOTFS" | cut -f1)MB)"
-
 # --- 先把 EFI 引导文件从 rootfs 里取出来(必须在删除 rootfs 之前!) ---
 EFI_FILES="${BUILD_DIR}/efi-files"
 mkdir -p "$EFI_FILES"
@@ -522,20 +517,48 @@ fi
 [[ -n "$grub_signed" ]] && log "找到签名 grubx64.efi"
 [[ -n "$grub_plain" ]] && log "找到未签名 grubx64.efi"
 
-# 提早删除 rootfs 目录, 把 runner 的磁盘峰值压下来(runner 只有约 14GB 可用)。
-# BIOS GRUB 模式例外: 它还需要 rootfs 里的 /boot 目录。
-if [[ "${WITH_BIOS_GRUB}" != "1" ]]; then
-  rm -rf "$ROOTFS"
-  log "已删除 rootfs 目录, 释放磁盘空间"
-fi
+####################### 第 7 步: 分区表 + 分区镜像 + 拼盘 #######################
+step "7/9 创建整盘镜像与 GPT 分区表"
 
-# --- 歌曲分区 ---
+# 关键顺序: 先建分区表, 再按分区表里各分区的"真实大小"生成分区镜像。
+# 反过来做(先按整数 MiB 做镜像)必然出事: GPT 末尾要给备份分区表 + 备份头留 34 个扇区,
+# 最后一个分区一旦顶到磁盘末尾, dd 就会覆盖掉备份 GPT 头, 分区表直接作废
+# (sgdisk 报 "Backup header: ERROR", 固件也认不出分区表)。
+rm -f "$OUT_IMG"
+truncate -s "${IMG_SIZE_MB}M" "$OUT_IMG"
+sgdisk --clear "$OUT_IMG" >/dev/null
+sgdisk -n "1:0:+${BIOS_SIZE_MB}M" -t 1:ef02 -c 1:"BIOS-BOOT"   "$OUT_IMG" >/dev/null
+sgdisk -n "2:0:+${ESP_SIZE_MB}M"  -t 2:ef00 -c 2:"EFI"         "$OUT_IMG" >/dev/null
+sgdisk -n "3:0:+${ROOT_SIZE_MB}M" -t 3:8300 -c 3:"DEBIAN_ROOT" "$OUT_IMG" >/dev/null
+sgdisk -n "4:0:+0"                -t 4:8300 -c 4:"MUSIC"       "$OUT_IMG" >/dev/null
+sgdisk -A 2:set:2 "$OUT_IMG" >/dev/null   # p2 打上 legacy boot 属性
+
+first_sector() { sgdisk -i "$1" "$OUT_IMG" | awk '/First sector:/ {print $3}'; }
+last_sector()  { sgdisk -i "$1" "$OUT_IMG" | awk '/Last sector:/ {print $3}'; }
+part_bytes()   { echo $(( ( $(last_sector "$1") - $(first_sector "$1") + 1 ) * 512 )); }
+
+ESP_BYTES="$(part_bytes 2)"
+ROOT_BYTES="$(part_bytes 3)"
+MUSIC_BYTES="$(part_bytes 4)"
+log "分区精确大小(字节): ESP=${ESP_BYTES} ROOT=${ROOT_BYTES} MUSIC=${MUSIC_BYTES}"
+
+# 分区起点必须 1MiB 对齐, dd 才能用 bs=1M 精确定位
+for n in 2 3 4; do
+  (( $(first_sector "$n") % 2048 == 0 )) || die "分区 ${n} 起点未按 1MiB 对齐"
+done
+
+# --- 根分区镜像(内容来自 rootfs 目录) ---
+truncate -s "$ROOT_BYTES" "$ROOT_IMG"
+mke2fs -q -t ext4 -L DEBIAN_ROOT -U "$ROOT_UUID" -d "$ROOTFS" "$ROOT_IMG"
+log "根分区镜像: $(du -sm "$ROOT_IMG" | cut -f1)MB"
+
+# --- 歌曲分区镜像 ---
 mkdir -p "${BUILD_DIR}/empty"
-truncate -s "${MUSIC_SIZE_MB}M" "$MUSIC_IMG"
+truncate -s "$MUSIC_BYTES" "$MUSIC_IMG"
 mke2fs -q -t ext4 -L MUSIC -U "$MUSIC_UUID" -d "${BUILD_DIR}/empty" "$MUSIC_IMG"
 
-# --- EFI 分区 ---
-truncate -s "${ESP_SIZE_MB}M" "$ESP_IMG"
+# --- EFI 分区镜像 ---
+truncate -s "$ESP_BYTES" "$ESP_IMG"
 mkfs.vfat -F 32 -n EFI "$ESP_IMG"
 
 mmd -i "$ESP_IMG" ::EFI ::EFI/BOOT ::EFI/debian || true
@@ -560,26 +583,27 @@ fi
 mcopy -i "$ESP_IMG" "${BUILD_DIR}/esp-grub.cfg" ::EFI/BOOT/grub.cfg
 mcopy -i "$ESP_IMG" "${BUILD_DIR}/esp-grub.cfg" ::EFI/debian/grub.cfg
 
-####################### 第 7 步: 组装整盘镜像 #######################
-step "7/9 组装 GPT 分区表并写入各分区"
-rm -f "$OUT_IMG"
-truncate -s "${IMG_SIZE_MB}M" "$OUT_IMG"
-sgdisk --clear "$OUT_IMG" >/dev/null
-sgdisk -n "1:0:+${BIOS_SIZE_MB}M" -t 1:ef02 -c 1:"BIOS-BOOT"   "$OUT_IMG" >/dev/null
-sgdisk -n "2:0:+${ESP_SIZE_MB}M"  -t 2:ef00 -c 2:"EFI"         "$OUT_IMG" >/dev/null
-sgdisk -n "3:0:+${ROOT_SIZE_MB}M" -t 3:8300 -c 3:"DEBIAN_ROOT" "$OUT_IMG" >/dev/null
-sgdisk -n "4:0:+0"                -t 4:8300 -c 4:"MUSIC"       "$OUT_IMG" >/dev/null
-sgdisk -A 2:set:2 "$OUT_IMG" >/dev/null   # p2 打上 legacy boot 属性
+####################### 第 7 步: 把分区写进整盘镜像 #######################
+# rootfs 已经用完, 立刻释放磁盘空间(BIOS GRUB 模式还要用 /boot, 稍后再删)
+if [[ "${WITH_BIOS_GRUB}" != "1" ]]; then
+  rm -rf "$ROOTFS"
+  log "已删除 rootfs 目录, 释放磁盘空间"
+fi
 
-sector_of() { sgdisk -i "$1" "$OUT_IMG" | awk '/First sector:/ {print $3}'; }
-
-p2_start="$(sector_of 2)"; p3_start="$(sector_of 3)"; p4_start="$(sector_of 4)"
+p2_start="$(first_sector 2)"; p3_start="$(first_sector 3)"; p4_start="$(first_sector 4)"
 dd if="$ESP_IMG"   of="$OUT_IMG" bs=1M seek=$(( p2_start * 512 / 1048576 )) conv=notrunc status=none
 dd if="$ROOT_IMG"  of="$OUT_IMG" bs=1M seek=$(( p3_start * 512 / 1048576 )) conv=notrunc status=none
 rm -f "$ROOT_IMG"      # 已并入整盘镜像, 立刻释放 3~6GB
 dd if="$MUSIC_IMG" of="$OUT_IMG" bs=1M seek=$(( p4_start * 512 / 1048576 )) conv=notrunc status=none
 rm -f "$MUSIC_IMG" "$ESP_IMG"
-log "分区起始: EFI@p2=${p2_start} root@p3=${p3_start} music@p4=${p4_start}"
+log "分区起始扇区: EFI@p2=${p2_start} root@p3=${p3_start} music@p4=${p4_start}"
+
+# 自检: GPT(含备份头)必须完好, 否则这张 U 盘插上去也没法引导
+if ! sgdisk -v "$OUT_IMG" 2>&1 | grep -qi "no problems found"; then
+  sgdisk -v "$OUT_IMG" 2>&1 | sed 's/^/[sgdisk] /' || true
+  die "GPT 分区表校验未通过"
+fi
+log "GPT 校验通过 ✅"
 
 # 传统 BIOS 的 GRUB (可选, 实验性): 需要 loop 设备
 if [[ "${WITH_BIOS_GRUB}" == "1" ]]; then
@@ -628,7 +652,8 @@ Debian     : ${SUITE}
 内核       : ${KVER}
 镜像       : $(basename "$OUT_IMG")
 镜像大小   : ${IMG_SIZE_MB} MiB (压缩前)
-分区       : p1 BIOS-BOOT(${BIOS_SIZE_MB}MiB) / p2 EFI(${ESP_SIZE_MB}MiB) / p3 root(${ROOT_SIZE_MB}MiB ext4) / p4 MUSIC(${MUSIC_SIZE_MB}MiB ext4)
+分区       :
+$(sgdisk -p "$OUT_IMG" | grep -E '[0-9]+ +[0-9]+ +[0-9]+ +[0-9.]+ [KMG]iB' | sed 's/^/  /')
 root UUID  : ${ROOT_UUID}
 歌曲挂载点 : /mnt/songdisk
 登录用户   : ${USER_NAME} / 密码 ${USER_PASS}

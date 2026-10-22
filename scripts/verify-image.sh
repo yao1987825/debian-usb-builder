@@ -34,11 +34,14 @@ struct_check() {
   fi
 
   local n_parts
-  n_parts="$(sgdisk -p "$IMG" | grep -cE '^ +[0-9]+ +[0-9]+ +[0-9]+ +[0-9.]+ [KMG]iB' || true)"
+  # 注意: sgdisk -p 作用于"文件"时, Device 列显示的是文件名而不是空格开头,
+  # 所以不能靠行首空格数分区, 要靠"4 个数字 + 容量单位"这个特征。
+  n_parts="$(sgdisk -p "$IMG" | grep -cE '[0-9]+ +[0-9]+ +[0-9]+ +[0-9.]+ [KMG]iB' || true)"
   if [[ "$n_parts" -eq 4 ]]; then
     ok "分区数量 = 4 (BIOS-BOOT / EFI / root / MUSIC)"
   else
-    die "分区数量异常: ${n_parts}"
+    sgdisk -p "$IMG" | sed 's/^/[verify]   /'
+    die "分区数量异常: ${n_parts} (期望 4)"
   fi
 
   sgdisk -p "$IMG" | sed 's/^/[verify]   /'
