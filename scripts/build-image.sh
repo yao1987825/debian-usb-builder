@@ -728,13 +728,16 @@ EOF
 chown -R "${USER_UID}:${USER_GID}" "${ROOTFS}/home/${USER_NAME}/.config/fcitx5"
 
 # 属主与存在性断言(profile/config 上面刚生成)
+# 注意: 必须比**数字 uid** 而不是 stat -c %U —— %U 按构建宿主机的 /etc/passwd
+# 解析, GitHub runner 上 UID 1000 恰好登记叫 "packer", 而镜像里的 1000 是 user;
+# 同一个数字在宿主机和镜像里名字不同, 按名字比对必然白炸一次构建。
 for _f in "${FCITX_DIR}/profile" "${FCITX_DIR}/config"; do
   [[ -f "$_f" ]] || die "fcitx5 配置缺失: $_f"
-  _owner="$(stat -c '%U' "$_f")"
-  [[ "$_owner" == "$USER_NAME" ]] \
-    || die "fcitx5 配置属主是 ${_owner} 而不是 ${USER_NAME}: $_f —— 普通用户写不进去, 输入法切换会失灵"
+  _uid="$(stat -c '%u' "$_f")"
+  [[ "$_uid" == "$USER_UID" ]] \
+    || die "fcitx5 配置属主 uid 是 ${_uid} 而不是 ${USER_UID}: $_f —— 普通用户写不进去, 输入法切换会失灵"
 done
-ok "fcitx5 profile/config 属主正确(${USER_NAME}), 用户可写"
+ok "fcitx5 profile/config 属主正确(uid=${USER_UID} ${USER_NAME}), 用户可写"
 
 # Rime 的简体拼音方案与自定义词库放在 overlay/home/user/.config/fcitx5/rime/ 下
 
