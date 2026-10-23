@@ -327,6 +327,11 @@ SG_RAW="$(try sgdisk -p "$DISK")"
 [[ -n "$SG_RAW" ]] || warn "sgdisk 读不到 ${DISK}(普通用户常没有读整盘权限), 分区名只能靠 udev 数据库"
 SG_ROWS="$(sgdisk_rows <<<"$SG_RAW")"
 
+# GPT 眼里的"磁盘末尾"(last usable sector)。定长镜像(默认 8GiB)写进大 U 盘后,
+# GPT 的备份表还压在镜像做盘时的末尾上, sgdisk 会以为整盘只有镜像那么大 ——
+# 记下这个数, 执行阶段用它判断要不要先做 gdisk -e 搬头。
+GPT_LAST="$(awk '/last usable sector/{print $NF}' <<<"$SG_RAW")"
+
 # 归一化成分区表, 每行: 分区号 主:次 设备节点 GPT名字 FS标签 文件系统类型 起始扇区 结束扇区
 # 三个来源互补: sysfs 给分区号和设备节点, sgdisk -p 给扇区范围和 GPT 名字,
 # /run/udev/data 给标签和文件系统类型(普通用户也读得到, lsblk 认标签靠的就是它)。
@@ -419,6 +424,10 @@ say "未分配空间: $(to_gib "$FREE_SECTORS") GiB"
 # ---------------- --check 到此结束 ----------------
 if [[ "$MODE" == "check" ]]; then
   echo
+  if [[ "$GPT_LAST" =~ ^[0-9]+$ ]] && (( GPT_LAST + 34 < TOTAL_SECTORS )); then
+    warn "GPT 备份表还压在镜像做盘时的大小上(last usable=${GPT_LAST}, 磁盘实际有 ${TOTAL_SECTORS} 扇区)"
+    say "这是定长镜像写大 U 盘的正常现象, 执行 usb-grow.sh 时会先把 GPT 搬到整盘末尾"
+  fi
   if (( FREE_SECTORS <= 0 )); then
     say "磁盘已用满, 没有可扩容的空间"
   else
@@ -487,6 +496,20 @@ GPT_BACKUP="/root/usb-grow-gpt-backup-$(date +%Y%m%d-%H%M%S).bin"
 sgdisk --backup="$GPT_BACKUP" "$DISK" >/dev/null 2>&1 \
   && ok "已备份 GPT 到 ${GPT_BACKUP}" \
   || warn "GPT 备份失败(不影响继续, 但改表出问题就没法回滚了)"
+
+# ---- 关键前置: 把 GPT 备份表搬到真正的磁盘末尾 ----
+# 踩过的坑(真机 14:20 那次): 镜像是定长做的(默认 8GiB), 写进 58.59GiB 的 U 盘后
+# GPT 备份表还压在 8GiB 的老位置, sgdisk 认定整盘 last usable=16777182 ——
+# 一切超出这一线的 --new 全被拒("Could not create partition 3/4 ...")。
+# 上一次(12:48)看起来能写表, 只是 --delete 恰好整张重写把表搬对了地方;
+# 显式 -e (把第二表头/备份表挪到磁盘末尾), 才是让 GPT 覆盖整盘的正路。e 之前
+# 无条件重跑也安全: 表已经在末尾时它就是个 no-op。
+if [[ ! "$GPT_LAST" =~ ^[0-9]+$ ]] || (( GPT_LAST + 34 < TOTAL_SECTORS )); then
+  say "把 GPT 备份表搬到磁盘末尾(sgdisk -e; 定长镜像写大 U 盘时表头会错位) ..."
+  sgdisk -e "$DISK" \
+    || die "sgdisk -e 失败(退出码 $?)。GPT 管不到真实的磁盘大小, 后面改不了表"
+  ok "GPT 已覆盖整块磁盘(last usable: ${GPT_LAST:-旧值} -> 磁盘末尾)"
+fi
 
 # ---------------- 执行 ----------------
 step "执行扩容"
