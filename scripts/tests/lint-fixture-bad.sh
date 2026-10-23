@@ -8,6 +8,7 @@
 # 期望 lint-helpers.sh 对本文件报出:
 #   1) 第 21 行: missing_fn —— 调用了压根没定义的函数
 #   2) 第 12 行: helper   —— 函数定义写在调用后面(bash 先定义后使用)
+#   3) 第 59 行: 注释插在反斜杠续行中间(2026-10-23 真实事故)
 
 log() { printf '%s\n' "$*"; }
 
@@ -34,3 +35,12 @@ cat <<'EOF'
 Some Config Value "quoted text" here
 EOF
 echo "这里是正常的外部命令调用"
+
+# 问题三: 注释插在反斜杠续行中间(2026-10-23 真实事故的原始形态)
+# shell 眼里: "apt-get install -y  <注释被吞>" 就此结束,
+# 然后第 64 行的 "xorg xinit xdg-utils \" 独立成一条命令 -> "xorg: command not found"
+fake_apt_install -y \
+  linux-image-amd64 \
+  # 注释在续行中间, 吞掉了包清单的后续
+  xorg xinit xdg-utils \
+  vim tmux

@@ -11,6 +11,14 @@
 #           这个坑很隐蔽: 语法合法、shellcheck 也不报, 运行时才炸。
 #           selftest_count 就踩过一次(定义在第 495 行, 第 460 行就在用它)。
 #
+#   检查三: 注释插在**反斜杠续行中间**
+#           `cmd a \` 续到下一行时, 下一行若是注释, 注释会把上一行剩余内容一起
+#           吞掉, 而**更后面的行**(本该是同一条命令的继续)会变成独立命令。
+#           2026-10-23 真实事故: build-image.sh 的 apt-get 包清单里插了注释,
+#           结果 "xorg: command not found", 又白等 20 分钟构建。
+#           规则: 上一行以 \ 结尾(且不是注释), 当前行是整行注释 -> 报出。
+
+#
 # 判定"命令位置"的规则(避免把中文提示语里的英文单词误判成命令):
 #   - 行首(可带缩进)
 #   - 紧跟在 && || ; | ( { ! 之后(中间只允许空白)
@@ -56,7 +64,7 @@ is_keyword() {
 #   ORDER <调用行> <名字> <定义行> 定义晚于调用
 # ---------------------------------------------------------------------------
 read -r -d '' AWK_SRC <<'AWKEOF'
-BEGIN { in_here = "" }
+BEGIN { in_here = "" ; prev_cont = 0 }
 
 function is_cmdpos(line, start,   i, c) {
   if (start <= 1) return 1
@@ -90,8 +98,9 @@ function scan_calls(line, ln,   rest, piece, nm, pos, off) {
 {
   line = $0
 
-  # heredoc 正文: 整段跳过(里面的英文单词不是命令)
+  # heredoc 正文: 整段跳过(里面的英文单词不是命令), 续行状态也清零
   if (in_here != "") {
+    prev_cont = 0
     tmp = line
     gsub(/^[ \t]+/, "", tmp)
     gsub(/[ \t]+$/, "", tmp)
@@ -99,8 +108,12 @@ function scan_calls(line, ln,   rest, piece, nm, pos, off) {
     next
   }
 
-  # 整行注释跳过
-  if (line ~ /^[ \t]*#/) next
+  # 整行注释: 检查三在此检出, 然后跳过
+  if (line ~ /^[ \t]*#/) {
+    if (prev_cont) printf "CONTINUATION\t%s\n", NR
+    prev_cont = 0
+    next
+  }
 
   # 函数定义
   if (line ~ /^[A-Za-z_][A-Za-z0-9_]*\(\)[ \t]*\{/) {
@@ -134,6 +147,9 @@ function scan_calls(line, ln,   rest, piece, nm, pos, off) {
       }
     }
   }
+
+  # 续行状态: 以 \ 结尾的非注释行, 才会让下一行"接续"进来
+  if (line ~ /\\[ \t]*$/) prev_cont = 1; else prev_cont = 0
 }
 
 END {
@@ -182,6 +198,11 @@ for f in "${files[@]}"; do
       HEREDOC)
         printf '  %s: 第 %s 行开始的 heredoc(结束符 %s)没匹配到结束行, 后面的内容没被扫描\n' \
           "$f" "$a" "$b"
+        status=1
+        ;;
+      CONTINUATION)
+        printf '  %s: 第 %s 行的注释插在反斜杠续行中间, 会把命令拆断(2026-10-23 真实事故: 包名变成了独立命令)\n' \
+          "$f" "$a"
         status=1
         ;;
     esac

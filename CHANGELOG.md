@@ -13,7 +13,9 @@ GitHub Actions 自动构建镜像并发布到 [Releases](https://github.com/yao1
 
 ---
 
-## v1.0.3 - 2026-10-23
+## v1.0.3
+
+- 2026-10-23
 
 真机（v1.0.2 + 64G U 盘）测出来的四个问题，加上"以后都不用手动操作"的要求。
 
@@ -91,6 +93,14 @@ MUSIC 分区变大了、文件系统还是老大小 —— 这是"欠账"，需�
   notifyd / screensaver 一堆用不上的东西
 - 可选包里的 `thunar` / `mousepad` 也去掉（`nano` 保留）；构建期断言
   面板和桌面图标没被顺带装回来
+
+### 构建流程
+
+- 本次 v1.0.3 第一次构建因 `build-image.sh` 把注释插进了 apt 包清单的
+  反斜杠续行中间而失败（`xorg: command not found`，浪费一次 20 分钟构建）。
+  `lint-helpers.sh` 新增“检查三”：注释插在续行中间直接报错，挂在
+  CI 的语法检查步骤，几秒内失败而不是 20 分钟后
+- 夹具与回归用例入 `scripts/tests/` + `test-lint-helpers.sh`（9 项全过）
 
 ---
 

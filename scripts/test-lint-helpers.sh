@@ -89,6 +89,17 @@ else
   bad "找不到夹具 $OK_FIXTURE"
 fi
 
+# 6.5) 2026-10-23 事故回归: 注释插在反斜杠续行中间, 必须被报出来
+#      真实经过: build-image.sh 的 apt-get 包清单里插了注释, "xorg: command
+#      not found"(exit 127), 白等一次 20 分钟的构建。bash -n / shellcheck
+#      都查不出来, 所以必须由 lint-helpers 抓。
+if grep -q '续行中间' <<<"$out"; then
+  ok "报出了注释插在续行中间的问题"
+else
+  bad "没报出注释插在续行中间的问题"
+  printf '     实际输出:\n%s\n' "$out"
+fi
+
 # 7) 回归: 用历史上真正炸掉的那份 build-image.sh 再验一遍
 #    需要完整 git 历史; CI 是浅克隆(fetch-depth=1)时拿不到, 这时跳过而不是失败。
 BUGGY="${TMPDIR:-/tmp}/lint-regression-build-image.sh"

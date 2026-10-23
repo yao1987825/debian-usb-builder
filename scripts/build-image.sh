@@ -234,15 +234,16 @@ FONT_PKGS="fonts-wqy-zenhei"
 # Recommends; 不装它 Rime 部署不出拼音方案, 表现是"装了输入法但哪里都
 # 打不出中文"。fcitx5-chinese-addons 让 profile 里的 pinyin 引擎真实存在,
 # 作为 Rime 失效时的兜底。
-chroot_run apt-get install -y --no-install-recommends \
-  linux-image-amd64 \
-  dbus-x11 policykit-1 sudo locales tzdata \
-  # 桌面只保留"终端优先"的最小集合。
+# 桌面只保留"终端优先"的最小集合。
 # 之前装的是 xfce4 元包, 它会连带装进 xfce4-panel(顶部/底部面板)和
 # xfdesktop4(桌面图标 dock)—— 用户明确说"不需要 dock 栏, 只要终端",
 # 所以这里换成显式的最小集合: 会话管理 + 窗口管理器 + 设置 + 终端。
 # 少掉的还有 xfce4-appfinder / notifyd / screensaver 等一堆用不上的东西。
-xorg xinit xdg-utils \
+# 注意: 注释不能插在反斜杠续行的中间, 否则会把包名单独拆成一条命令。
+chroot_run apt-get install -y --no-install-recommends \
+  linux-image-amd64 \
+  dbus-x11 policykit-1 sudo locales tzdata \
+  xorg xinit xdg-utils \
   xfce4-session xfwm4 xfce4-settings xfce4-terminal \
   lightdm \
   fcitx5 fcitx5-rime fcitx5-config-qt im-config \
