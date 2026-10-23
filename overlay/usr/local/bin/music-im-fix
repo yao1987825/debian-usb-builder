@@ -41,15 +41,16 @@ fi
 if ! command -v fcitx5 >/dev/null 2>&1; then
   if (( CHECK_ONLY )); then
     warn "fcitx5 未安装"
-    tip "sudo apt-get install -y fcitx5 fcitx5-rime fcitx5-config-qt im-config"
+    tip "sudo apt-get install -y fcitx5 fcitx5-rime fcitx5-config-qt im-config rime-data-luna-pinyin fcitx5-chinese-addons"
   else
-    say "安装 fcitx5 / fcitx5-rime / fcitx5-config-qt ..."
+    say "安装 fcitx5 / fcitx5-rime / 词库 / 拼音引擎 ..."
     if sudo -n apt-get update -qq >/dev/null 2>&1; then
       if sudo -n apt-get install -y --no-install-recommends \
-           fcitx5 fcitx5-rime fcitx5-config-qt im-config x11-xserver-utils >/dev/null 2>&1; then
+           fcitx5 fcitx5-rime fcitx5-config-qt im-config x11-xserver-utils \
+           rime-data-luna-pinyin fcitx5-chinese-addons >/dev/null 2>&1; then
         ok "fcitx5 已安装"
       else
-        die "安装失败。手动执行: sudo apt-get install -y fcitx5 fcitx5-rime fcitx5-config-qt"
+        die "安装失败。手动执行: sudo apt-get install -y fcitx5 fcitx5-rime fcitx5-config-qt rime-data-luna-pinyin fcitx5-chinese-addons"
       fi
     else
       die "apt-get update 失败(可能没网)。联网后重跑: music im-fix"
@@ -59,7 +60,57 @@ else
   ok "fcitx5 已安装 ($(fcitx5 --version 2>/dev/null | head -1))"
 fi
 
-# ---------------- 2. im-config ----------------
+# ---------------- 2. 拼音词库与兜底引擎 ----------------
+# 背景: fcitx5-rime 在 Debian 里只硬 Depends 一个几 KB 的 librime-data 元包,
+# 真正的拼音词库 rime-data-luna-pinyin 只是 Recommends。用 --no-install-recommends
+# 的镜像里它就不在, Rime 部署不出拼音方案, 表现是 fcitx5 图标亮着,
+# 但哪里都打不出中文 —— 这是"装了输入法却打不了字"的最常见原因。
+RIME_SCHEMA="/usr/share/rime-data/luna_pinyin_simp.schema.yaml"
+PINYIN_ADDON="/usr/share/fcitx5/addon/pinyin.conf"
+if (( CHECK_ONLY )); then
+  if [[ -f "$RIME_SCHEMA" ]]; then
+    ok "Rime 拼音词库已安装 (luna_pinyin_simp)"
+  else
+    bad "Rime 拼音词库缺失 (rime-data-luna-pinyin) —— fcitx5 起来也打不出中文的直接原因"
+    tip "sudo apt-get install -y rime-data-luna-pinyin fcitx5-chinese-addons"
+  fi
+  if [[ -f "$PINYIN_ADDON" ]]; then
+    ok "拼音兜底引擎已安装 (fcitx5-chinese-addons 的 pinyin, Rime 失效时可用)"
+  else
+    warn "拼音兜底引擎没装 (fcitx5-chinese-addons) —— Rime 万一挂了就没有替补"
+    tip "sudo apt-get install -y fcitx5-chinese-addons"
+  fi
+else
+  if [[ -f "$RIME_SCHEMA" && -f "$PINYIN_ADDON" ]]; then
+    ok "Rime 拼音词库与拼音兜底引擎都已安装"
+  else
+    say "补装拼音词库/引擎 (rime-data-luna-pinyin / fcitx5-chinese-addons) ..."
+    if sudo -n apt-get install -y --no-install-recommends \
+         rime-data-luna-pinyin fcitx5-chinese-addons >/dev/null 2>&1 \
+    || { sudo -n apt-get update -qq >/dev/null 2>&1 \
+      && sudo -n apt-get install -y --no-install-recommends \
+           rime-data-luna-pinyin fcitx5-chinese-addons >/dev/null 2>&1; }; then
+      ok "词库/引擎已安装"
+      # 新词库进来必须让 Rime 重新部署, 否则 build/ 还是部署失败时的旧产物
+      RIME_USER_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/fcitx5/rime"
+      rm -rf "${RIME_USER_DIR}/build"
+      if pgrep -x fcitx5 >/dev/null 2>&1; then
+        if fcitx5-remote -r >/dev/null 2>&1; then
+          ok "已通知 fcitx5 重新部署 Rime (词库编译需要几秒钟)"
+        else
+          warn "fcitx5-remote -r 没成功, 注销重登一次也能完成部署"
+        fi
+      else
+        warn "fcitx5 没在运行, 重新部署推迟到下次登录"
+      fi
+    else
+      bad "apt 安装失败(可能要密码或没联网)"
+      tip "手动执行: sudo apt-get install -y rime-data-luna-pinyin fcitx5-chinese-addons"
+    fi
+  fi
+fi
+
+# ---------------- 3. im-config ----------------
 if (( CHECK_ONLY )); then
   if [[ -f "${HOME_DIR}/.xinputrc" ]] && grep -q fcitx5 "${HOME_DIR}/.xinputrc" 2>/dev/null; then
     ok "~/.xinputrc 已指向 fcitx5"
@@ -76,7 +127,7 @@ else
   fi
 fi
 
-# ---------------- 3. 保险①: ~/.xprofile 直接导出 IM 环境变量 ----------------
+# ---------------- 4. 保险①: ~/.xprofile 直接导出 IM 环境变量 ----------------
 # Xsession 钩子断了也能生效 —— Xfce 登录时会读 .xprofile
 XPROF="${HOME_DIR}/.xprofile"
 if (( CHECK_ONLY )); then
@@ -101,7 +152,7 @@ EOF
   ok "~/.xprofile 已导出 GTK_IM_MODULE / QT_IM_MODULE / XMODIFIERS"
 fi
 
-# ---------------- 4. 保险②: 自启项 ----------------
+# ---------------- 5. 保险②: 自启项 ----------------
 AUTOSTART_DIR="${HOME_DIR}/.config/autostart"
 DESKTOP="${AUTOSTART_DIR}/fcitx5.desktop"
 if (( CHECK_ONLY )); then
@@ -126,7 +177,7 @@ EOF
   ok "已写入 ${DESKTOP}"
 fi
 
-# ---------------- 5. 立刻启动 ----------------
+# ---------------- 6. 立刻启动 ----------------
 if command -v fcitx5 >/dev/null 2>&1; then
   if pgrep -x fcitx5 >/dev/null 2>&1; then
     ok "fcitx5 正在运行"
@@ -148,7 +199,7 @@ if command -v fcitx5 >/dev/null 2>&1; then
   fi
 fi
 
-# ---------------- 6. 收尾 ----------------
+# ---------------- 7. 收尾 ----------------
 echo
 if (( CHECK_ONLY )); then
   say "以上为检查结果(没有做任何修改)。要修复就跑: music im-fix"

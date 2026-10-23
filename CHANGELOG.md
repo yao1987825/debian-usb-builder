@@ -83,6 +83,39 @@ xrandr 找不到叫这个名字的模式。
 体检报告显示"分区""剩余空间"都是空的。改成和 `usb-grow.sh` 同一套来源（sysfs + udev 数据库），
 读不到时明说"需要 root 才能读整盘"，而不是假装没有剩余空间。
 
+#### `music`：哪里都打不出中文 —— Rime 拼音词库没被装上
+
+**现象**：fcitx5 图标亮着、`Ctrl+Space` 也有反应，但在任何程序里打拼音都出不了中文，
+终端里尤其明显。
+
+**原因**：Debian 的 `fcitx5-rime` 只硬依赖一个几 KB 的 `librime-data` 元包，
+真正的拼音词库 `rime-data-luna-pinyin` 只是 Recommends；镜像装包用了
+`--no-install-recommends`，词库就没了。Rime 部署时找不到 `luna_pinyin_simp`
+方案，整个引擎空转 —— 这是"装了输入法却打不了字"的最常见原因，壁纸
+证书和旧镜像的都是同一根因。
+
+**改法**：
+
+- 必需包清单显式加上 `rime-data-luna-pinyin` 与 `fcitx5-chinese-addons`
+  （后者为 profile 里引用的 pinyin 引擎兜底）
+- 构建期验证这两个文件真实存在（词库方案 yaml / pinyin 引擎 addon），
+  缺任何一个直接让构建失败 —— 这类错误在真机上只能靠手指头试出来
+- `music im-fix` / `music-health` 增加词库检测与修复（补装 + 清掉部署失败
+  的旧产物 + 通知 fcitx5 重新部署）
+- `[Hotkey]` 全局快捷键从 `fcitx5/profile` 挪到 `fcitx5/config`（profile
+  只认 Groups 信息，写在里面的 Hotkey 一直被忽略）
+
+#### CI：第一次发 Release 失败（artifact 下载重试 5 次全挂）
+
+**现象**：打 v1.0.0 tag 后构建、压缩、上传产物全部成功，
+最后一步 `download-artifact` 从 Azure blob 拉回 946MB 的产物时重试 5 次全失败，Release 没发出去。
+
+**原因**：那一步本来就是多余的 —— `out/` 目录还在同一个 job 的 workspace 里，
+不需要"上传后再下载回来"。
+
+**改法**：删掉 `download-artifact` 中转，Release 步骤直接用 workspace 里的产物，
+少搬 946MB，这类瞬时失败也不复存在了。
+
 ### 新增
 
 - `usb-grow.sh --self-test`：认分区逻辑自测（喂一份真机抓下来的 `sgdisk -p` 输出做夹具，17 项），
@@ -93,6 +126,9 @@ xrandr 找不到叫这个名字的模式。
 - 构建时预建 `root:user 0664` 的 `/var/log/usb-grow.log`，避免第一次跑被 root 建出 0644 导致日志散成两处
 - 推 `v*` tag 时，GitHub Actions 构建完成后自动把镜像 + 校验和 + `BUILD-INFO.txt`
   发到 Releases，说明里带镜像信息、校验值、写盘命令和本次改动
+- **母盘瘦身**：打包前删掉包文档（每包留 copyright）/ 手册页 / 非中文 locale
+  翻译 / apt 索引与缓存，约省 200~400MB；只删静态文件，不动 `/var/lib/dpkg`，
+  运行时再装包先 `apt-get update` 即可
 
 ### 已知问题
 

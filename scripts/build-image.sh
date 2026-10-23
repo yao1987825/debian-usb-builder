@@ -228,6 +228,12 @@ FONT_PKGS="fonts-wqy-zenhei"
 # ---- 必需组件 ----
 # 网络: 必须装 NetworkManager。Debian 12 + Xfce 默认不带任何网卡配置服务,
 # 没有它开机就没人给网卡分配 IP(DHCP), 表现为"完全连不上网"。
+# 输入法: fcitx5-chinese-addons 和 rime-data-luna-pinyin 必须显式列出 --
+# 这里的 --no-install-recommends 会跳过它们。fcitx5-rime 只硬 Depends 一个
+# 几 KB 的 librime-data 元包, 真正的拼音词库 rime-data-luna-pinyin 只是
+# Recommends; 不装它 Rime 部署不出拼音方案, 表现是"装了输入法但哪里都
+# 打不出中文"。fcitx5-chinese-addons 让 profile 里的 pinyin 引擎真实存在,
+# 作为 Rime 失效时的兜底。
 chroot_run apt-get install -y --no-install-recommends \
   linux-image-amd64 \
   dbus-x11 policykit-1 sudo locales tzdata \
@@ -235,6 +241,7 @@ chroot_run apt-get install -y --no-install-recommends \
   xfce4 xfce4-terminal \
   lightdm \
   fcitx5 fcitx5-rime fcitx5-config-qt im-config \
+  fcitx5-chinese-addons rime-data-luna-pinyin \
   ${FONT_PKGS} \
   python3 python3-venv python3-pip \
   git curl wget ca-certificates \
@@ -572,6 +579,17 @@ log "镜像内脚本语法检查通过"
 # 真机表现是"按 Shift 没反应", 根本看不出是配置问题。所以直接检查内容。
 RIME_CFG="${ROOTFS}/home/${USER_NAME}/.config/fcitx5/rime/default.custom.yaml"
 [[ -f "$RIME_CFG" ]] || die "Rime 配置缺失: ${RIME_CFG}"
+# 拼音词库必须真实存在: default.custom.yaml 要求 luna_pinyin_simp 方案,
+# 但 --no-install-recommends 不会带 rime-data-luna-pinyin(见上面装包注释),
+# 词库缺失时 Rime 部署失败, 整个镜像一个中文字都打不出来 —— 构建期就拦下。
+[[ -f "${ROOTFS}/usr/share/rime-data/luna_pinyin_simp.schema.yaml" ]] \
+  || die "拼音词库缺失: ${ROOTFS}/usr/share/rime-data/luna_pinyin_simp.schema.yaml 未找到(rime-data-luna-pinyin 没装进去), Rime 将无法部署拼音方案"
+ok "rime-data-luna-pinyin: luna_pinyin_simp 方案已就位"
+# profile 里引用了 pinyin 引擎(fcitx5-chinese-addons 提供), 它也必须真实存在,
+# 否则 Rime 万一挂了连兜底都没有
+[[ -f "${ROOTFS}/usr/share/fcitx5/addon/pinyin.conf" ]] \
+  || die "pinyin 引擎缺失: ${ROOTFS}/usr/share/fcitx5/addon/pinyin.conf 未找到(fcitx5-chinese-addons 没装进去), profile 里的 pinyin 引用是悬空的"
+ok "fcitx5-chinese-addons: pinyin 引擎已就位"
 if grep -qE 'ascii_composer/switch_key/(Shift_L|Shift_R)' "$RIME_CFG"; then
   ok "Rime Shift 切换中英文已用扁平键配置"
 elif grep -q 'ascii_composer/switch_key' "$RIME_CFG"; then
@@ -646,13 +664,17 @@ Layout=
 
 [GroupOrder]
 0=Default
+EOF
 
+# 全局快捷键必须放在 config(全局配置)里, 不能放进 profile —— profile 只认
+# Groups/GroupOrder, 之前把 [Hotkey] 写在 profile 里, fcitx5 不认这段, 白写。
+cat > "${ROOTFS}/home/${USER_NAME}/.config/fcitx5/config" <<'EOF'
 [Hotkey]
 TriggerKeys=Control+space
-EnumerateWithTriggerKeys=True
 AltTriggerKeys=Shift+space
 EnumerateForwardKeys=Control+Tab
 EnumerateBackwardKeys=Shift+Tab
+EnumerateWithTriggerKeys=True
 EOF
 
 # Rime 的简体拼音方案与自定义词库放在 overlay/home/user/.config/fcitx5/rime/ 下
@@ -910,7 +932,36 @@ if [[ "${WITH_BIOS_GRUB}" == "1" ]]; then
 fi
 
 ####################### 第 8 步: 清理与自检 #######################
-step "8/9 清理中间文件并自检"
+step "8/9 清理并瘦身母盘"
+
+# ---- 瘦身: 删掉母盘里"装了但用不上"的内容 ----
+# 只删可再生成的静态内容, 包数据库(/var/lib/dpkg)一律不动, apt/dpkg 状态不会坏:
+#   1) /usr/share/doc    包装的 README/changelog(每包只留 copyright), 官网都有
+#   2) /usr/share/man /info /groff   手册页, 镜像里没有 man 工作流, 一页也用不到
+#   3) /usr/share/locale 除 zh_CN / en_US / C* 之外的翻译(.mo), 镜像是给中文用户的
+#   4) apt 索引与下载缓存(debootstrap 及后续装包攒下的, 几十 MB 起步)
+# 运行时再装包先 apt-get update 即可(music-im-fix 里已经是这个顺序)
+if [[ -d "$ROOTFS" ]]; then
+  _used() { du -sb \
+    "$ROOTFS/usr/share/doc" "$ROOTFS/usr/share/man" "$ROOTFS/usr/share/info" \
+    "$ROOTFS/usr/share/groff" "$ROOTFS/usr/share/locale" \
+    "$ROOTFS/var/lib/apt/lists" "$ROOTFS/var/cache/apt" \
+    2>/dev/null | awk '{s+=$1} END {print s+0}'; }
+  _before="$(_used)"
+  find "$ROOTFS/usr/share/doc" -mindepth 1 -type f ! -name copyright -delete 2>/dev/null || true
+  find "$ROOTFS/usr/share/doc" -mindepth 1 -type d -empty -delete 2>/dev/null || true
+  find "$ROOTFS/usr/share/man"  -mindepth 1 -delete 2>/dev/null || true
+  find "$ROOTFS/usr/share/info" -mindepth 1 -delete 2>/dev/null || true
+  find "$ROOTFS/usr/share/groff" -mindepth 1 -delete 2>/dev/null || true
+  find "$ROOTFS/usr/share/locale" -mindepth 1 -maxdepth 1 \
+    ! -name "zh_CN*" ! -name "en_US*" ! -name "C*" \
+    -exec rm -rf {} + 2>/dev/null || true
+  rm -rf "$ROOTFS"/var/lib/apt/lists/* "$ROOTFS"/var/lib/apt/lists/partial 2>/dev/null || true
+  rm -rf "$ROOTFS"/var/cache/apt/archives/*.deb "$ROOTFS"/var/cache/apt/archives/partial 2>/dev/null || true
+  _after="$(_used)"
+  log "瘦身: 释放 $(( (_before - _after) / 1024 / 1024 )) MB 的文档/手册/翻译/apt 残留"
+fi
+
 [[ -d "$ROOTFS" ]] && rm -rf "$ROOTFS"
 rm -rf "${BUILD_DIR}/empty" "${BUILD_DIR}/efi-files"
 rm -f "$ROOT_IMG" "$MUSIC_IMG" "$ESP_IMG"

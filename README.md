@@ -166,6 +166,17 @@ usb-grow.sh --self-test        # 认分区逻辑自测(构建期也会自动跑�
   想手动触发可以执行 `rime_deployer --build`。
 - 改了输入法配置完全没反应时：`im-config -n fcitx5` 然后注销重登。
 
+> **打不出中文自查**：fcitx5 图标亮着但哪里都输不了中文？多半是拼音词库
+> `rime-data-luna-pinyin` 没装（Debian 里它只是 fcitx5-rime 的推荐依赖，
+> 不用 `--no-install-recommends` 覆盖装不出来）。老镜像提前一行修好：
+>
+> ```bash
+> sudo apt-get install -y rime-data-luna-pinyin fcitx5-chinese-addons
+> music im-fix     # 清掉失败的部署产物并让 fcitx5 重新部署
+> ```
+>
+> `music-health` 会直接点名这个问题。
+
 ### 3. 下载歌曲
 
 **连不上网？先跑这个：**
@@ -323,6 +334,18 @@ GET https://pan.quark.cn/account/info?st=<ticket>&lw=scan   → 写入 cookie
 
 镜像越大，GitHub Actions 的磁盘占用和压缩耗时也越大（runner 只有约 14G 临时空间，
 `img_size_mb` 建议不超过 `12288`）。
+
+### 构建时会自动瘦身的部分
+
+母盘打完包前，构建脚本会删掉这些"装了但用不上"的内容并记录释放量
+（只是删静态文件，`/var/lib/dpkg` 包数据库不动，apt 状态不会坏）：
+
+| 删什么 | 说明 |
+| --- | --- |
+| `/usr/share/doc` 里包的 README/changelog | 每包只留 `copyright`，文档在官网都有 |
+| `/usr/share/man` `/usr/share/info` `/usr/share/groff` | 手册页，镜像里压根没有 man 工作流 |
+| `/usr/share/locale` 除 `zh_CN`/`en_US`/`C*` 外的翻译 | 镜像是给中文用户用的 |
+| `/var/lib/apt/lists` `/var/cache/apt` | apt 索引和下载缓存；运行时再装包先 `apt-get update` 即可 |
 
 ---
 

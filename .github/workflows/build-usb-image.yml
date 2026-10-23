@@ -190,13 +190,12 @@ jobs:
 
       # 只有打 tag 才发 Release; workflow_dispatch 的试构建只在 Artifacts 里留一份,
       # 不去污染正式发布页。
-      - name: 取回产物(发 Release 用)
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: actions/download-artifact@v4
-        with:
-          name: debian-usb-image-${{ env.SUITE }}
-          path: out
-
+      #
+      # 注意: out/ 就在同一个 job 的 workspace 里, 上面的 upload-artifact 只是拷了一份,
+      # 文件还在。曾经以为"上传完就得下载回来才能用", 加了 download-artifact 步骤,
+      # 结果多转一道手: 第一次发 Release 时 Azure blob 下载重试 5 次全失败,
+      # 整个 run 白白陪葬。现在直接用 workspace 里的 out/, 少搬 946MB,
+      # 这种下载失败也就整个不存在了。
       - name: 生成 Release 说明
         if: startsWith(github.ref, 'refs/tags/v')
         run: |

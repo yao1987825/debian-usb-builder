@@ -56,9 +56,19 @@ fi
 sect "1. 中文输入法 (fcitx5 + Rime)"
 if ! command -v fcitx5 >/dev/null 2>&1; then
   bad "fcitx5 没安装"
-  tip "sudo apt-get install -y fcitx5 fcitx5-rime fcitx5-config-qt im-config"
+  tip "sudo apt-get install -y fcitx5 fcitx5-rime fcitx5-config-qt im-config rime-data-luna-pinyin fcitx5-chinese-addons"
 else
   ok "fcitx5 已安装 ($(fcitx5 --version 2>/dev/null | head -1))"
+fi
+
+# 拼音词库最容易被漏装(fcitx5-rime 对它只是 Recommends, 不用 Install-Recommends
+# 装就刚好没有), 没有 fcitx5 照样启动, 但哪里都打不出中文
+if [[ -f /usr/share/rime-data/luna_pinyin_simp.schema.yaml ]]; then
+  ok "Rime 拼音词库已安装 (luna_pinyin_simp)"
+else
+  bad "Rime 拼音词库没装 (rime-data-luna-pinyin) —— 这就是哪里都打不出中文的直接原因"
+  tip "sudo apt-get install -y rime-data-luna-pinyin fcitx5-chinese-addons"
+  tip "装完跑: music im-fix   (它会清掉部署产物并让 fcitx5 重新部署)"
 fi
 
 if pgrep -a fcitx5 >/dev/null 2>&1; then
