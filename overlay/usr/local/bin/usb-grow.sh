@@ -64,11 +64,20 @@ done
 try() { "$@" 2>/dev/null || true; }
 
 # udev 已经把识别好的分区信息写在 /run/udev/data/<主>:<次> 里了, 而且是全局可读的。
-# 分区名/标签/文件系统类型从这里拿, 普通用户也能拿到 —— 不依赖任何外部命令。
+# 分区名/标签/扇区位置从这里拿, 普通用户也能拿到 —— 不依赖任何外部命令。
+# 踩过的坑: udev 的块设备条目文件名带 'b' 前缀(/run/udev/data/b8:3),
+# 只拼 <主:次> 永远匹配不到文件, 非 root 下诊断全是 "-"。两种名字都试, 保险。
 udev_prop() {   # udev_prop <主:次> <ID_FS_LABEL 之类的键>
-  local f="/run/udev/data/${1}" k="E: ${2}="
-  [[ -r "$f" ]] || return 0
-  awk -v k="$k" 'index($0, k) == 1 { print substr($0, length(k) + 1); exit }' "$f" 2>/dev/null || true
+  local f k="E: ${2}=" out
+  for f in "/run/udev/data/b${1}" "/run/udev/data/${1}"; do
+    [[ -r "$f" ]] || continue
+    out="$(awk -v k="$k" 'index($0, k) == 1 { print substr($0, length(k) + 1); exit }' "$f" 2>/dev/null)" || true
+    if [[ -n "$out" ]]; then
+      printf '%s\n' "$out"
+      return 0
+    fi
+  done
+  return 0
 }
 
 # 解析 `sgdisk -p` 的输出(从 stdin 读), 归一化成一行一个:
@@ -334,6 +343,18 @@ PART_TABLE="$(
     _fst="$(udev_prop "$_mm" ID_FS_TYPE)"
     _st="$(awk -v n="$_p" '$1==n{print $2}' <<<"$SG_ROWS")"
     _en="$(awk -v n="$_p" '$1==n{print $3}' <<<"$SG_ROWS")"
+    # 踩过的坑: sgdisk -p 看的只是"磁盘上的 GPT"。上次运行中途失败过的话,
+    # 旧 MUSIC 条目可能已被删掉, 而 sgdisk --delete 写盘时**内核不重读表**,
+    # /run/udev/data 里缓存的还是分区真实存在时的位置 —— 拿它兜底, 既能
+    # 让 --check 出完整诊断, 也能让脚本在"中断过的盘"上直接自愈。
+    if [[ -z "$_st" || "$_st" == "-" ]]; then
+      _ust="$(try udev_prop "$_mm" ID_PART_ENTRY_START)"
+      _usz="$(try udev_prop "$_mm" ID_PART_ENTRY_SIZE)"
+      if [[ "$_ust" =~ ^[0-9]+$ && "$_usz" =~ ^[0-9]+$ ]]; then
+        _st="$_ust"
+        _en=$((_ust + _usz - 1))
+      fi
+    fi
     # 注意: 拿不到的字段一律写 "-" 占位, 不能留空 ——
     # 下面用 `read` 逐行拆表, 默认 IFS 会把连续的空格折叠掉, 一留空整行就错位。
     printf '%s %s %s %s %s %s %s %s\n' "$_p" "$_mm" "$_dev" \
@@ -384,7 +405,7 @@ MUSIC_LAST="$(part_field "$MUSIC_PART" 8)"
 # (表里读不到的字段是 "-", 所以空和 "-" 都要当成"没读到")
 for _v in "$TOTAL_SECTORS" "$ROOT_START" "$ROOT_LAST" "$MUSIC_START" "$MUSIC_LAST"; do
   if [[ -z "$_v" || "$_v" == "-" ]]; then
-    die "读不到 ${DISK} 的分区扇区范围。最常见的原因是权限: 读整块磁盘需要 root, 请跑 sudo usb-grow.sh --check"
+    die "读不到 ${DISK} 的分区扇区范围。两种常见原因: 1) 权限不够(读整盘要 root, 跑 sudo usb-grow.sh --check); 2) 上次运行失败中断过, 连 udev 缓存里也找不到该分区的位置 —— 重启一次让内核按磁盘上真实的 GPT 重读, 再跑本脚本"
   fi
   [[ "$_v" =~ ^[0-9]+$ ]] || die "分区扇区范围里出现非数字($_v), 分区表可能已损坏, 先跑 --check 看完整信息"
 done
@@ -415,15 +436,45 @@ fi
 
 ROOT_EXTRA=$(( FREE_SECTORS * ROOT_PERCENT / 100 ))
 (( ROOT_EXTRA > 0 )) || ROOT_EXTRA=0
-MUSIC_EXTRA=$(( FREE_SECTORS - ROOT_EXTRA ))
 
-NEW_ROOT_LAST=$(( ROOT_LAST + ROOT_EXTRA ))
-NEW_MUSIC_START=$(( NEW_ROOT_LAST + 1 ))
+MUSIC_OLD_SIZE=$(( MUSIC_LAST - MUSIC_START + 1 ))
+
+# 几何硬约束(这次真机翻车就是忽略了它):
+# root 在 MUSIC 前面, 空闲空间在 MUSIC 后面 —— root 想变长,
+# MUSIC 就必须从老位置整体搬到磁盘尾部去, 给 root 腾地方。
+# 搬家有两条铁律, 混掉任何一条都会毁数据:
+#   1) 搬完之后 MUSIC 的数据起点必须整个退出老位置;
+#   2) 尾部新家按 1MiB(2048 扇区)对齐, sgdisk/分区工具看着舒服, 读写也快。
+NEW_MUSIC_START_DEFAULT=$(( ((ROOT_LAST + ROOT_EXTRA + 1 + 2047) / 2048) * 2048 ))
+NEW_MUSIC_START="$NEW_MUSIC_START_DEFAULT"
+if (( NEW_MUSIC_START <= MUSIC_LAST )) && (( NEW_MUSIC_START != MUSIC_START )); then
+  # root 分到的太少, 对齐后的分界线还落在老 MUSIC 自己身上 —— 直接把新家
+  # 贴在老尾巴后面, 让 root 一口气吃掉整个老 MUSIC 区域
+  NEW_MUSIC_START=$(( MUSIC_LAST + 1 ))
+fi
+NEW_ROOT_LAST=$(( NEW_MUSIC_START - 1 ))
+(( NEW_ROOT_LAST >= ROOT_START + 4096 )) \
+  || die "root 分到的新大小居然比现状还小(PR/参数有误), 拒绝改表"
+(( NEW_MUSIC_START + MUSIC_OLD_SIZE - 1 <= TOTAL_SECTORS - 34 )) \
+  || die "MUSIC 新位置放不下老数据, 拒绝改表"
+# root 只要不要动起始扇区, resize2fs 就能在线长大; MUSIC 起点动过没动由这里决定
+MUSIC_MOVE=0
+(( NEW_MUSIC_START != MUSIC_START )) && MUSIC_MOVE=1
+
+ROOT_EXTRA_ACTUAL=$(( NEW_ROOT_LAST - ROOT_LAST ))
+(( ROOT_EXTRA_ACTUAL > 0 )) || ROOT_EXTRA_ACTUAL=0
+MUSIC_EXTRA_ACTUAL=$(( TOTAL_SECTORS - NEW_MUSIC_START - MUSIC_OLD_SIZE ))
+(( MUSIC_EXTRA_ACTUAL > 0 )) || MUSIC_EXTRA_ACTUAL=0
 
 step "扩容方案"
 say "新增可分配: $(to_gib "$FREE_SECTORS") GiB  (root ${ROOT_PERCENT}% / MUSIC $((100-ROOT_PERCENT))%)"
-say "root   : $(to_gib $((ROOT_LAST-ROOT_START+1))) GiB  ->  $(to_gib $((NEW_ROOT_LAST-ROOT_START+1))) GiB  (+$(to_gib "$ROOT_EXTRA") GiB)"
-say "MUSIC  : $(to_gib $((MUSIC_LAST-MUSIC_START+1))) GiB  ->  $(to_gib $((TOTAL_SECTORS-NEW_MUSIC_START))) GiB  (+$(to_gib "$MUSIC_EXTRA") GiB)"
+say "root   : $(to_gib $((ROOT_LAST-ROOT_START+1))) GiB  ->  $(to_gib $((NEW_ROOT_LAST-ROOT_START+1))) GiB  (+$(to_gib "$ROOT_EXTRA_ACTUAL") GiB)"
+if (( MUSIC_MOVE )); then
+  say "MUSIC  : $(to_gib "$MUSIC_OLD_SIZE") GiB  ->  $(to_gib $((TOTAL_SECTORS-NEW_MUSIC_START))) GiB  (+$(to_gib "$MUSIC_EXTRA_ACTUAL") GiB)"
+  say "        数据搬家: 扇区 ${MUSIC_START}-${MUSIC_LAST} -> ${NEW_MUSIC_START} 起(先把数据拷到尾部, 再动分区表)"
+else
+  say "MUSIC  : $(to_gib $((MUSIC_LAST-MUSIC_START+1))) GiB  ->  $(to_gib $((TOTAL_SECTORS-NEW_MUSIC_START))) GiB  (+$(to_gib "$MUSIC_EXTRA_ACTUAL") GiB)"
+fi
 
 if (( DRY_RUN )); then
   say "--dry-run: 到此为止, 不做任何修改"
@@ -445,21 +496,47 @@ if mountpoint -q /mnt/songdisk; then
   ok "已卸载"
 fi
 
-say "重写分区表 ..."
-printf '    $ sgdisk --delete=%s %s\n' "$MUSIC_PART" "$DISK"
-sgdisk --delete="$MUSIC_PART" "$DISK" || die "删除旧 MUSIC 分区条目失败(退出码 $?)"
+# ---- 第一步: 先把 MUSIC 数据搬到尾部新家(只写数据, 还不动分区表) ----
+# 顺序是安全的来源: 拷贝失败 -> 分区表还没动, 盘和跑之前一模一样, 重跑即可;
+# 拷贝成功之后再改表, 表改完 MUSIC 的数据正好在新家等着。
+# 真机翻车记录: 之前是"只删 MUSIC 条目, 再分三次 sgdisk 重建"——
+# 第二次 --new=3 时旧 p3 条目还在盘上, sgdisk 拒绝创建重叠分区(退出码 4);
+# 就算真创建成功了, root 会盖住老 MUSIC 的数据, 歌曲盘就毁了。
+# 必须先搬数据 + 表的删除/重建放同一条 sgdisk 里原子完成。
+if (( MUSIC_MOVE )); then
+  MUSIC_OLD_BYTES=$(( MUSIC_OLD_SIZE * 512 ))
+  say "搬移 MUSIC 数据: ${MUSIC_DEV} -> ${DISK} 扇区 ${NEW_MUSIC_START} ($(to_gib "$MUSIC_OLD_SIZE") GiB, 走 USB 需要几分钟) ..."
+  dd if="$MUSIC_DEV" of="$DISK" bs=1M \
+     iflag=count_bytes oflag=seek_bytes \
+     count="$MUSIC_OLD_BYTES" seek=$(( NEW_MUSIC_START * 512 )) \
+     conv=fsync status=progress \
+    || die "MUSIC 数据搬移失败。分区表尚未改动, 数据无损 —— 直接重跑本脚本重试"
+  sync
+  ok "MUSIC 数据搬移完成(fsync 过, 现在可以放心改表了)"
+fi
 
-say "  扩展 root 到扇区 ${NEW_ROOT_LAST}"
-printf '    $ sgdisk --new=%s:%s:%s ...\n' "$ROOT_PART" "$ROOT_START" "$NEW_ROOT_LAST"
-sgdisk --new="${ROOT_PART}:${ROOT_START}:${NEW_ROOT_LAST}" \
+# ---- 第二步: 同一条 sgdisk 里原子地"删旧 -> 建新" ----
+# sgdisk 按参数出现顺序在内存里逐条执行, 整张表只写盘一次:
+# 没有"删了 A 条目还挂着 B"的中间状态, 挂在任何一条上都是退出码非零。
+say "重写分区表(删除 + 重建, 一次写入) ..."
+DEL_OPTS=()
+# 踩过的坑: 上次运行中断过的盘, 磁盘上的 GPT 里旧 MUSIC 条目可能已被删掉
+# (内核还认着它), 对不存在条目发 --delete 会把整条命令搞挂 —— 靠 SG_ROWS 判定
+for _n in "$ROOT_PART" "$MUSIC_PART"; do
+  if grep -q "^${_n} " <<<"$SG_ROWS"; then
+    DEL_OPTS+=(--delete="$_n")
+  fi
+done
+printf '    $ sgdisk --delete=3 --delete=4 --new=%s:%s:%s --new=%s:%s:+0 ...\n' \
+       "$ROOT_PART" "$ROOT_START" "$NEW_ROOT_LAST" \
+       "$MUSIC_PART" "$NEW_MUSIC_START"
+sgdisk "${DEL_OPTS[@]}" \
+       --new="${ROOT_PART}:${ROOT_START}:${NEW_ROOT_LAST}" \
        --typecode="${ROOT_PART}:8300" --change-name="${ROOT_PART}:DEBIAN_ROOT" \
-       "$DISK" || die "重建 root 分区条目失败(退出码 $?)"
-
-say "  在扇区 ${NEW_MUSIC_START} 重建 MUSIC 到磁盘末尾"
-printf '    $ sgdisk --new=%s:%s:+0 ...\n' "$MUSIC_PART" "$NEW_MUSIC_START"
-sgdisk --new="${MUSIC_PART}:${NEW_MUSIC_START}:+0" \
+       --new="${MUSIC_PART}:${NEW_MUSIC_START}:+0" \
        --typecode="${MUSIC_PART}:8300" --change-name="${MUSIC_PART}:MUSIC" \
-       "$DISK" || die "重建 MUSIC 分区条目失败(退出码 $?)"
+       "$DISK" \
+  || die "分区表重写失败(退出码 $?)。盘未动过, 可重跑; 不放心可用备份恢复: sudo sgdisk --loadbackup=${GPT_BACKUP} ${DISK}"
 ok "分区表已更新"
 
 # 备份头被压掉是最危险的后果(插到别的机器上整张盘认不出来), 这里必须验
