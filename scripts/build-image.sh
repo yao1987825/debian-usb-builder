@@ -341,11 +341,9 @@ EOF
 chroot_run systemctl enable systemd-resolved
 # 网卡配置: NetworkManager 负责 DHCP / 路由 / WiFi。没有它就是一台没有网络的机器。
 chroot_run systemctl enable NetworkManager || die "NetworkManager 启用失败"
-# 开机自扩容: 定长镜像写进大 U 盘后, 剩下的空间在开机时自动分给 root/MUSIC。
-# 写完镜像插上就能用, 用户不需要手动跑任何脚本(真机翻了三轮才把这条路走通)。
-[[ -f "${ROOTFS}/etc/systemd/system/usb-grow.service" ]] \
-  || die "usb-grow.service 没进镜像, 开机不会自动扩容"
-chroot_run systemctl enable usb-grow.service || die "usb-grow.service 启用失败"
+# 开机自扩容实机验证在 overlay 复制完之后(第 434 行之后); 这里不能提前断言,
+# 因为 overlay 文件此刻还没写进 ROOTFS —— 之前就因为放这里, 构建在
+# 第 346 行白炸一次("文件没进镜像", 其实根本还没拷)。
 # 让 NetworkManager 用 systemd-resolved 提供的 DNS(和 Debian 官方桌面一致)
 mkdir -p "${ROOTFS}/etc/NetworkManager/conf.d"
 cat > "${ROOTFS}/etc/NetworkManager/conf.d/10-dns.conf" <<'EOF'
@@ -434,6 +432,15 @@ step "4/9 写入 overlay(输入法/快捷脚本/桌面配置)"
 if [[ -d "${REPO_DIR}/overlay" ]]; then
   cp -a "${REPO_DIR}/overlay/." "${ROOTFS}/"
 fi
+# 开机自扩容: 定长镜像写进大 U 盘后, 剩下的空间在开机时自动分给 root/MUSIC。
+# 写完镜像插上就能用, 用户不需要手动跑任何脚本(真机翻了三轮才把这条路走通)。
+# 断言/启用必须放在 overlay 拷完之后 —— 之前放在第 3 步, overlay 还没拷,
+# 构建在断言上白炸一次("usb-grow.service 没进镜像", 其实根本还没拷)。
+[[ -f "${ROOTFS}/etc/systemd/system/usb-grow.service" ]] \
+  || die "usb-grow.service 没进镜像, 开机不会自动扩容"
+[[ -x "${ROOTFS}/usr/local/bin/usb-grow.sh" ]] \
+  || die "usb-grow.sh 没进镜像或没有执行位, systemd 只会拉起一个空壳"
+chroot_run systemctl enable usb-grow.service || die "usb-grow.service 启用失败"
 # Windows 上 git 可能没记录执行位, 这里统一补上
 find "${ROOTFS}/usr/local/bin" -type f -exec chmod 0755 {} + 2>/dev/null || true
 chmod 0755 "${ROOTFS}/usr/local/lib/musictools/single.py" 2>/dev/null || true
