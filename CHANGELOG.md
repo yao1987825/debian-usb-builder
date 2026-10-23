@@ -16,6 +16,22 @@ GitHub Actions 自动构建镜像并发布到 [Releases](https://github.com/yao1
 ## v1.0.4
 
 - 2026-10-23 真机（v1.0.3 + 64G U 盘）实测发现两个"扩了但文件系统永远不补"的连环 bug
+- 2026-10-24 同台真机复现"开机自启的终端永远打不出中文"，根因是 autostart 竞态
+
+### autostart 竞态：开机首个终端窗口终身无法输入中文
+
+xfce4-session 并行拉起所有 autostart 项，实测开机首窗 terminal(666) 抢在
+fcitx5(675) 之前启动。GTK 端 im-fcitx5 模块这时连 fcitx5 的 dbus 握手失败
+后**不会恢复**，这个窗口从此按键直通 shell（预编辑/候选窗/ctrl+space 全部
+无反应），但手动新开的任何终端窗口都完全正常 —— 因为此时 fcitx5 早已就绪。
+
+- 症状与 2026-10-23 的"env/配置都对了还是切不动"完全是另一回事：输入法
+  引擎、配置、dbus 总线全部健康，坏的只是"第一个窗口的时间窗"。
+- 修复：terminal 的 autostart 改为等待 `org.fcitx.Fcitx5` 出现在 session
+  bus 上再启动（最长约 15 秒，超时兜底照常开终端，不会卡死桌面）。
+- 构建期加断言：autostart 里必须含 `NameHasOwner` 等待，否则 die。
+- 真机验证：镜像内同款修复部署后重启，开机自动打开的首个终端窗口中
+  xdotool 打 `nihao` 能提交出"你好"（截图确认候选流程恢复）。
 
 ### 问题链（第一次开机表现正确，之后全卡住）
 

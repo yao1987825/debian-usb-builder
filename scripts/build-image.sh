@@ -743,16 +743,25 @@ ok "fcitx5 profile/config 属主正确(uid=${USER_UID} ${USER_NAME}), 用户可�
 
 # 登录后自动开一个终端(命令行优先)
 mkdir -p "${ROOTFS}/home/${USER_NAME}/.config/autostart"
+# 踩过的坑(真机 v1.0.3 输入法在终端打不出中文): xfce4-session 并行拉起所有
+# autostart 项, terminal(666) 抢在 fcitx5(675) 之前启动 —— GTK 端 im-fcitx5
+# 连接 fcitx5 的 dbus 握手失败后不会再恢复, 这个窗口就终身绕不过输入法,
+# 表现为"打字直接进 shell、ctrl+space 没反应", 但凡手动新开的终端窗口都正常,
+# 极难定位。这里让 terminal 等 org.fcitx.Fcitx5 出现在 session bus 上再启动,
+# 最长约 15 秒, 超时也照样开终端, 不会把桌面卡死。
 cat > "${ROOTFS}/home/${USER_NAME}/.config/autostart/xfce-terminal.desktop" <<'EOF'
 [Desktop Entry]
 Type=Application
 Name=Terminal
 Comment=启动终端
-Exec=xfce4-terminal --title="debian-usb" --geometry=120x32
+Exec=sh -c 'for i in $(seq 1 75); do dbus-send --session --dest=org.freedesktop.DBus --type=method_call --print-reply / org.freedesktop.DBus.NameHasOwner string:org.fcitx.Fcitx5 >/dev/null 2>&1 && break; sleep 0.2; done; exec xfce4-terminal --title=debian-usb --geometry=120x32'
 Icon=utilities-terminal
 Terminal=false
 X-GNOME-Autostart-enabled=true
 EOF
+grep -q "NameHasOwner string:org.fcitx.Fcitx5" \
+  "${ROOTFS}/home/${USER_NAME}/.config/autostart/xfce-terminal.desktop" \
+  || die "terminal 自启项没有等待 fcitx5 就绪 —— 开机首个窗口会因 IM 握手竞态永远打不出中文(真机 v1.0.3 的坑)"
 
 # 图形版下载器默认走 Clash(127.0.0.1:7897), 这里给一份清空代理的初始配置
 if [[ -f "${ROOTFS}/home/${USER_NAME}/projects/gequhai-downloader/utils.py" ]]; then
