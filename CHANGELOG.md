@@ -18,6 +18,7 @@ GitHub Actions 自动构建镜像并发布到 [Releases](https://github.com/yao1
 - 2026-10-23 真机（v1.0.3 + 64G U 盘）实测发现两个"扩了但文件系统永远不补"的连环 bug
 - 2026-10-24 同台真机复现"开机自启的终端永远打不出中文"，根因是 autostart 竞态
 - 2026-10-24 真机通缉另外两坑：MUSIC 挂载点属主不可写；夸克下载恒 412
+- 2026-10-24 新功能：单曲下载自动按歌手归类；`music reorg` 兼容历史平铺文件
 
 ### MUSIC 挂载点属主：user 不可写("错误: 歌曲分区不可写")
 
@@ -33,6 +34,14 @@ mkfs 出来的 ext4 根目录属主是 root:root，迁移数据时 rsync 只搬�
 412(Tengine)。新增 scripts/patch-quark-puus.py：抓 API 响应 Set-Cookie 的
 __puus 合回 cookie 再交给 download_file；构建期在 clone 之后打补丁，补丁
 没打上会 die。真机验证：'突然好想你-五月天.mp3'(10.6MB)成功落 /mnt/songdisk。
+
+### 单曲下载自动按歌手归类
+
+`music single` 的产物不再平铺在歌盘根目录，而是落
+`<歌盘>/<歌手>/<歌名-歌手>.mp3(.lrc/.jpg)` 三件套同目录。已有文件用
+`music reorg` 一次性归档（按文件名最后一个 - 切出歌手）；`music ls`
+会同时列出根目录与歌手子目录里的文件。真机验证：下载"光良 童话"
+自动创建 `光良/` 子目录，三件套齐全。
 
 ### autostart 竞态：开机首个终端窗口终身无法输入中文xfce4-session 并行拉起所有 autostart 项，实测开机首窗 terminal(666) 抢在
 fcitx5(675) 之前启动。GTK 端 im-fcitx5 模块这时连 fcitx5 的 dbus 握手失败

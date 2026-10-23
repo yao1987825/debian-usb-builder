@@ -297,7 +297,15 @@ def main():
                 f"          或运行 music gui, 在弹窗里粘贴 Cookie 并勾选记住")
 
     ext = os.path.splitext(audio_path)[1] or ".mp3"
-    final_audio = os.path.join(args.out, f"{unified}{ext}")
+    # 自动归类: /mnt/songdisk/<歌手>/<歌名-歌手>.mp3, 歌词/封面跟着同一目录,
+    # 不再所有文件平铺在盘根(用户要求)。歌手目录名也走 safe_filename 防怪字符。
+    artist_dirname = utils.safe_filename(artist) or "未知歌手"
+    artist_dir = os.path.join(args.out, artist_dirname)
+    try:
+        os.makedirs(artist_dir, exist_ok=True)
+    except OSError as exc:
+        die(f"无法创建歌手目录 {artist_dir}: {exc}")
+    final_audio = os.path.join(artist_dir, f"{unified}{ext}")
     if os.path.abspath(audio_path) != os.path.abspath(final_audio):
         os.replace(audio_path, final_audio)
     print()
@@ -305,7 +313,7 @@ def main():
 
     lrc_text = info.get("lrc_text", "")
     if lrc_text:
-        lrc_path = os.path.join(args.out, f"{unified}.lrc")
+        lrc_path = os.path.join(artist_dir, f"{unified}.lrc")
         with open(lrc_path, "w", encoding="utf-8") as fh:
             fh.write(lrc_text)
         log(f"歌词: {lrc_path}")
@@ -316,7 +324,7 @@ def main():
             import requests
             resp = requests.get(cover_url, timeout=15, proxies=utils.get_proxies())
             if resp.ok:
-                cover_path = os.path.join(args.out, f"{unified}.jpg")
+                cover_path = os.path.join(artist_dir, f"{unified}.jpg")
                 with open(cover_path, "wb") as fh:
                     fh.write(resp.content)
                 log(f"封面: {cover_path}")

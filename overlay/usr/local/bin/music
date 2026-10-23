@@ -9,7 +9,8 @@
 #   music playlist playlist.csv     按歌单 CSV 批量下载
 #   music gui                       图形界面 (需 PyQt6, 轻量镜像未装)
 #   music out                       打印歌曲分区路径
-#   music ls                        列出已下载的歌曲
+#   music ls                        列出已下载的歌曲(含歌手子目录)
+#   music reorg                     把根目录的历史平铺文件按歌手归类
 #   music which                     打印各组件路径
 #   music net                       网络自检
 #   music quark-login               扫码登录夸克(不需要浏览器)
@@ -267,6 +268,38 @@ cmd_im_fix() {
   exec /usr/local/bin/music-im-fix "$@"
 }
 
+# 把下载时留在歌盘根目录的平铺文件("歌名-歌手.mp3") 归档到歌手子目录。
+# 在"自动归类"上线之前下载的文件还是平铺的, 用这一条命令断后生成目录。
+# 文件名必须有"歌名-歌手"这种以最后一个 - 分隔的识别式, 缺减号时跳过。
+cmd_reorg() {
+  songdisk_check || return 1
+  local f base artist_sub moved=0 skipped=0
+  while IFS= read -r -d '' f; do
+    base="$(basename "$f")"
+    # 歌名-歌手.扩展名 -> 上面的 ${base%.*} 去扩展名, #*- 里取("-");
+    # 从最后一个 - 处切开, 前半是歌名(可能自己带 -), 后半是歌手。
+    if [[ "$base" != *.mp3 && "$base" != *.m4a && "$base" != *.lrc \
+          && "$base" != *.jpg && "$base" != *.flac ]]; then
+      continue
+    fi
+    if [[ "${base%.*}" != *-* ]]; then
+      skipped=$((skipped + 1)); continue
+    fi
+    artist_sub="${base%.*}"        # 歌名-歌手
+    artist_sub="${artist_sub##*-}" # 歌手(最后一个 - 之后)
+    if [[ -z "$artist_sub" ]]; then
+      skipped=$((skipped + 1)); continue
+    fi
+    mkdir -p "$SONG_DIR/$artist_sub"
+    # 同名文件已在目标位置时, 只移动根目录里的那一份(子目录里的保持不动)
+    if [[ -e "$SONG_DIR/$artist_sub/$base" && "$(dirname "$f")" != "$SONG_DIR" ]]; then
+      skipped=$((skipped + 1)); continue
+    fi
+    mv -- "$f" "$SONG_DIR/$artist_sub/" && moved=$((moved + 1))
+  done < <(find "$SONG_DIR" -mindepth 1 -maxdepth 1 -type f -print0 2>/dev/null)
+  echo "归类完成: 移动了 ${moved} 个文件, 跳过 ${skipped} 个(命名不吃 - 或重名)"
+}
+
 # ---------------- 其他 ----------------
 cmd_doctor() {
   echo "=== music 环境自检 ==="
@@ -363,7 +396,8 @@ case "${1:-}" in
   playlist|batch)      shift; cmd_playlist "$@" ;;
   gui)                 shift; cmd_gui "$@" ;;
   out)                 echo "$SONG_DIR" ;;
-  ls|list)             songdisk_check && ls -lh "$SONG_DIR" 2>/dev/null | head -60 ;;
+  ls|list)             songdisk_check && ls -lh "$SONG_DIR" 2>/dev/null | head -60 && find "$SONG_DIR" -mindepth 2 -maxdepth 2 -type f -printf '%10k KB  %h/%f  %TY-%Tm-%Td\n' 2>/dev/null | sort | head -120 ;;
+  reorg)               shift; cmd_reorg "$@" ;;
   which)
     printf '单曲 venv   : %s\n' "$VENV_MUSIC"
     printf '图形 venv   : %s\n' "$VENV_GUI"
