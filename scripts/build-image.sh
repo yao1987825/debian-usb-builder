@@ -631,14 +631,9 @@ fi
 # 真机 v1.0.2 "输入法切不动"的根因: profile/config 属主是 root, 用户写不进去,
 # fcitx5 切换时要写状态, 写不进去就没反应。构建期直接断言属主, 不给这种坑
 # 再流到用户手上的机会。
+# 注意: 断言必须放在下方真正生成 profile/config 并 chown 之后 —— 这两个文件
+# 不在 overlay 里, 是构建脚本 cat 出来的, 提前断言只会白炸一次构建。
 FCITX_DIR="${ROOTFS}/home/${USER_NAME}/.config/fcitx5"
-for _f in "${FCITX_DIR}/profile" "${FCITX_DIR}/config"; do
-  [[ -f "$_f" ]] || die "fcitx5 配置缺失: $_f"
-  _owner="$(stat -c '%U' "$_f")"
-  [[ "$_owner" == "$USER_NAME" ]] \
-    || die "fcitx5 配置属主是 ${_owner} 而不是 ${USER_NAME}: $_f —— 普通用户写不进去, 输入法切换会失灵"
-done
-ok "fcitx5 profile/config 属主正确(${USER_NAME}), 用户可写"
 # 前端包是"必装", 但再确认一次真的进了 dpkg 状态库 —— 前端缺失时终端里
 # Ctrl+Space 完全没反应, 而用户只会觉得"输入法坏了"。
 for _pkg in fcitx5-frontend-gtk3 fcitx5-frontend-qt5 fcitx5-config-qt openssh-client; do
@@ -731,6 +726,15 @@ EOF
 # 往这些文件里写状态, 写不进去时切换就没反应, 而且是"有时能切有时不能",
 # 很难查。这里显式把整个 fcitx5 配置目录交还给用户。
 chown -R "${USER_UID}:${USER_GID}" "${ROOTFS}/home/${USER_NAME}/.config/fcitx5"
+
+# 属主与存在性断言(profile/config 上面刚生成)
+for _f in "${FCITX_DIR}/profile" "${FCITX_DIR}/config"; do
+  [[ -f "$_f" ]] || die "fcitx5 配置缺失: $_f"
+  _owner="$(stat -c '%U' "$_f")"
+  [[ "$_owner" == "$USER_NAME" ]] \
+    || die "fcitx5 配置属主是 ${_owner} 而不是 ${USER_NAME}: $_f —— 普通用户写不进去, 输入法切换会失灵"
+done
+ok "fcitx5 profile/config 属主正确(${USER_NAME}), 用户可写"
 
 # Rime 的简体拼音方案与自定义词库放在 overlay/home/user/.config/fcitx5/rime/ 下
 
