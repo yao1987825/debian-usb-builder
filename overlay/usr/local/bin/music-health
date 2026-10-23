@@ -104,6 +104,27 @@ for v in GTK_IM_MODULE QT_IM_MODULE XMODIFIERS; do
   fi
 done
 
+# 真机 v1.0.2 "输入法切不动"的根因就是这两个文件属主成了 root —— 读得到、
+# 写不进去, fcitx5 切换时写状态失败, 于是表现为"有时能切有时不能"。
+# 必须在体检里查出来, 否则用户只会以为输入法坏了。
+FC_DIR="${HOME}/.config/fcitx5"
+for f in "${FC_DIR}/profile" "${FC_DIR}/config"; do
+  if [[ ! -e "$f" ]]; then
+    warn "$f 不存在(fcitx5 会用默认配置, 快捷键可能不是 Ctrl+Space)"
+  elif [[ ! -w "$f" ]]; then
+    bad "$f 当前用户写不进去(属主 $(stat -c '%U' "$f" 2>/dev/null || echo '?')) —— 这是输入法切不动最常见的原因"
+    tip "修复: sudo chown -R \$(id -un):\$(id -gn) ${FC_DIR} && music im-fix"
+  fi
+done
+
+# 前端包缺失时, 终端等 GTK 程序里 Ctrl+Space 完全没反应(只有输入法框架在跑)
+for p in fcitx5-frontend-gtk3 fcitx5-frontend-qt5; do
+  if ! dpkg -s "$p" >/dev/null 2>&1; then
+    bad "$p 没装 —— GTK/Qt 程序里输入法用不了(Ctrl+Space 无反应)"
+    tip "sudo apt-get install -y $p"
+  fi
+done
+
 HOMEDIR="$(eval echo "~$(id -un)")"
 if [[ -f "${HOMEDIR}/.xinputrc" ]]; then
   ok "~/.xinputrc 存在"
@@ -192,9 +213,16 @@ if [[ -n "$ROOT_DISK" && -e "/sys/block/${ROOT_DISK}" ]]; then
   # 分区名一律从 udev 数据库(/run/udev/data)拿, 不用 lsblk 的列名 ——
   # 不同发行版的 lsblk 认得的列不一样(PARTN/PARTLABEL/FSTYPE), 不认时它会打印
   # "unknown column: ..." 并返回非零, 这一节就会静默丢掉全部分区信息。
+  # 块设备的 udev 条目文件名带 'b' 前缀(/run/udev/data/b8:3), 两种都试。
   part_prop() {   # part_prop <主:次> <ID_PART_ENTRY_NAME 之类的键>
-    awk -v k="E: $2=" 'index($0,k)==1{print substr($0,length(k)+1); exit}' \
-      "/run/udev/data/$1" 2>/dev/null || true
+    local f out
+    for f in "/run/udev/data/b$1" "/run/udev/data/$1"; do
+      [[ -r "$f" ]] || continue
+      out="$(awk -v k="E: $2=" 'index($0,k)==1{print substr($0,length(k)+1); exit}' \
+              "$f" 2>/dev/null)" || true
+      [[ -n "$out" ]] && { printf '%s\n' "$out"; return 0; }
+    done
+    return 0
   }
   part_num_by_name() {   # part_num_by_name <GPT 分区名> -> 分区号
     local s mm nm
@@ -224,14 +252,30 @@ if [[ -n "$ROOT_DISK" && -e "/sys/block/${ROOT_DISK}" ]]; then
     FREE=$(( TOTAL - MUSIC_LAST - 1 ))
     if (( FREE > 0 )); then
       warn "还有 $((FREE/2097152)) GiB 没分配(所以 U 盘剩余空间用不上)"
-      tip "sudo usb-grow.sh --check   先看诊断"
-      tip "sudo usb-grow.sh             真正扩容(会自动加 sudo, 你不用自己加)"
-      GUESSED_HINTS="${GUESSED_HINTS}还有 $((FREE/2097152)) GiB 未分配, 需要跑 usb-grow.sh\n"
+      tip "开机时 usb-grow.service 应该自动处理; 没生效就看: sudo systemctl status usb-grow"
+      tip "手动补: sudo usb-grow.sh --check   先看诊断"
+      GUESSED_HINTS="${GUESSED_HINTS}还有 $((FREE/2097152)) GiB 未分配, 开机自扩容没跑成功\n"
     else
       ok "磁盘空间已经全部分完"
     fi
   elif [[ -z "$MUSIC_LAST" ]]; then
     info "读不到 MUSIC 分区末尾扇区(需要 root 才能读整盘), 跳过剩余空间检查"
+  fi
+
+  # 开机自扩容跑没跑过: 有 journal 就能看出来, 没 journal 也不该因此报错
+  if command -v systemctl >/dev/null 2>&1; then
+    _grow_state="$(systemctl is-active usb-grow.service 2>/dev/null || true)"
+    case "$_grow_state" in
+      active)
+        ok "开机自动扩容(usb-grow.service)已执行完成" ;;
+      failed)
+        bad "开机自动扩容失败了 —— 看日志: sudo journalctl -u usb-grow -n 50"
+        tip "手动补一次: sudo usb-grow.sh"
+        ;;
+      *)
+        info "开机自动扩容还没执行(正常: 首次开机前它一直是 inactive)"
+        ;;
+    esac
   fi
 else
   warn "推断不出物理磁盘(findmnt/lsblk 失败)"

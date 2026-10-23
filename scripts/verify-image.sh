@@ -314,6 +314,41 @@ struct_check() {
     else
       warn "systemd-resolved 没开机自启, DNS 可能解析不了"
     fi
+
+    # 开机自动扩容: 用户的要求是"写盘即用, 不用手动跑脚本"。
+    # 这个单元没启用 = 用户第一次开机就发现根分区还是 6G。
+    if $SUDO debugfs -R "ls /etc/systemd/system/multi-user.target.wants" "$p3" 2>/dev/null | grep -q "usb-grow.service"; then
+      ok "usb-grow.service 已设为开机自启(开机自动扩容)"
+    else
+      die "usb-grow.service 没开机自启 —— 写完镜像还得手动跑 usb-grow.sh, 等于没做自动"
+    fi
+    if $SUDO debugfs -R "stat /usr/local/bin/usb-grow.sh" "$p3" 2>/dev/null | grep -q "0755"; then
+      ok "usb-grow.sh 可执行"
+    else
+      die "usb-grow.sh 不是 0755, systemd 起不来它"
+    fi
+
+    # 输入法配置属主: 真机 v1.0.2 就是死在这(root 属主 -> 切换时写不进去)
+    if $SUDO debugfs -R "stat /home/user/.config/fcitx5/profile" "$p3" 2>/dev/null | grep -qE "User:\s+1000|uid:\s+1000"; then
+      ok "fcitx5/profile 属主是普通用户"
+    else
+      die "fcitx5/profile 属主不是普通用户, 输入法切换会失灵(真机 v1.0.2 的坑)"
+    fi
+
+    # 桌面精简: 面板/桌面图标一旦回来, 开机就会冒出用户不要的 dock
+    for _p in xfce4-panel xfdesktop4; do
+      if $SUDO debugfs -R "cat /var/lib/dpkg/status" "$p3" 2>/dev/null | grep -q "^Package: ${_p}$"; then
+        die "镜像里装了 ${_p}, 开机会有面板/桌面图标"
+      fi
+    done
+    ok "镜像里没有面板/桌面图标包"
+
+    # openssh-client 是这轮明确要求预装的
+    if $SUDO debugfs -R "stat /usr/bin/ssh" "$p3" 2>/dev/null | grep -q "Inode:"; then
+      ok "openssh-client 已预装(/usr/bin/ssh)"
+    else
+      die "openssh-client 没装进镜像"
+    fi
   else
     warn "缺少 debugfs, 跳过根分区内容校验"
   fi

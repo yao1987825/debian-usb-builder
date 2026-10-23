@@ -199,13 +199,36 @@ if command -v fcitx5 >/dev/null 2>&1; then
   fi
 fi
 
-# ---------------- 7. 收尾 ----------------
+# ---------------- 7. 配置目录属主 ----------------
+# 真机 v1.0.2 "切不动"的根因: 构建时 profile/config 是在 chown -R 之后写出来的,
+# 属主成了 root。fcitx5 切换输入法时要往这两个文件写状态, 写不进去就没反应。
+# 这里无条件检查并修回当前用户。
+FC_CFG_DIR="${HOME_DIR}/.config/fcitx5"
+FC_BAD=()
+for _f in "${FC_CFG_DIR}/profile" "${FC_CFG_DIR}/config"; do
+  [[ -e "$_f" && ! -w "$_f" ]] && FC_BAD+=("$_f")
+done
+if (( ${#FC_BAD[@]} == 0 )); then
+  ok "fcitx5 配置目录属主正常(当前用户可写)"
+elif (( CHECK_ONLY )); then
+  bad "以下配置文件当前用户写不进去, 输入法切换会失灵:"
+  printf '       %s (属主 %s)\n' "${FC_BAD[@]}" "$(stat -c '%U' "${FC_BAD[0]}" 2>/dev/null || echo '?')"
+else
+  say "修正 fcitx5 配置目录属主 -> $(id -un):$(id -gn) ..."
+  if sudo -n chown -R "$(id -u):$(id -g)" "$FC_CFG_DIR" 2>/dev/null; then
+    ok "属主已修正"
+  else
+    warn "自动修正失败, 手动执行: sudo chown -R \$(id -u):\$(id -g) ${FC_CFG_DIR}"
+  fi
+fi
+
+# ---------------- 8. 收尾 ----------------
 echo
 if (( CHECK_ONLY )); then
   say "以上为检查结果(没有做任何修改)。要修复就跑: music im-fix"
 else
   say "修好了。现在测一下:"
-  echo "    1) 打开一个文本框(比如 mousepad), 按 Ctrl+Space 激活输入法"
+  echo "    1) 在这个终端里直接按 Ctrl+Space(终端是 GTK 程序, 装了 fcitx5-frontend-gtk3 才认)"
   echo "    2) 输入 nihao 应该出候选; 按 Ctrl+9 或 Ctrl+0 选词"
   echo "    3) 单独按 Shift 切中英文(Rime 的 ascii_composer)"
   echo

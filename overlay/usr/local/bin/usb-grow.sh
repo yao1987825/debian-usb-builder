@@ -10,9 +10,12 @@
 #   usb-grow.sh --root-percent 50
 #   usb-grow.sh --check        # 只诊断, 不改任何东西(不需要 root)
 #   usb-grow.sh --dry-run      # 打印将执行的改动, 但不动分区表
+#   usb-grow.sh --auto         # 开机自扩容用(usb-grow.service 调它), 幂等
 #   usb-grow.sh --self-test    # 分区识别逻辑自测(不需要 root)
 #
 # 说明: 非 root 直接跑会自动用 sudo 重新执行自己, 不用自己加 sudo。
+#       平时**什么都不用跑**: 镜像开机时 usb-grow.service 会自动完成分区+扩容,
+#       本脚本留着只为出问题时手动排查/补刀。
 #
 set -Eeuo pipefail
 umask 022
@@ -36,6 +39,7 @@ usage() {
   --root-percent N      root 拿 N%, MUSIC 拿剩下的(默认 30)
   --check               只做诊断, 打印当前情况, 不做任何修改(不需要 root)
   --dry-run             打印将执行的改动, 但不真正修改
+  --auto                开机自扩容用: 没得做就安静退出, 出错也不挂起系统
   --self-test           分区识别逻辑自测(不需要 root, 不碰任何磁盘)
   -h, --help            显示本帮助
 
@@ -44,11 +48,13 @@ EOF
 }
 
 # ---------------- 参数解析 ----------------
+AUTO=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --root-percent) ROOT_PERCENT="${2:?--root-percent 需要一个数字}"; shift 2 ;;
     --check)        MODE=check; shift ;;
     --dry-run)      DRY_RUN=1; shift ;;
+    --auto)         AUTO=1; shift ;;
     --self-test)    MODE=selftest; shift ;;
     -h|--help)      usage; exit 0 ;;
     *) echo "未知参数: $1" >&2; usage >&2; exit 2 ;;
@@ -118,6 +124,16 @@ part_last_num() {       # 最后一个分区号(兜底用)
   awk 'NF {a=$1} END {print a}' <<<"$PART_TABLE"
 }
 
+# 纯算术判断: 文件系统是不是还欠着 resize。单独拎出来是为了能在 --self-test
+# 里验证(不碰磁盘)。定义必须早于 self_test 的调用。
+# 2048 = 1MiB 容差: 分区末尾对齐带来的几百扇区差不算"欠账"。
+is_lagging() {        # is_lagging <文件系统扇区> <分区扇区> -> 欠账时返回 0
+  local fs="$1" part="$2"
+  [[ "$fs" =~ ^[0-9]+$ ]] || return 1
+  [[ "$part" =~ ^[0-9]+$ ]] || return 1
+  (( fs < part - 2048 ))
+}
+
 # ---------------- 分区识别自测 ----------------
 # 为什么专门写这个: "认分区"这一段全是 awk 字符串处理, 错了在真机上的表现
 # 要么是扩容脚本自己没了, 要么是认错分区把分区表改了 —— 后者不可逆。
@@ -185,6 +201,13 @@ Number  Start (sector)    End (sector)  Size       Code  Name
   free=$(( 122880000 - 16777182 - 1 ))
   st_case "未分配空间算得对(122880000 - 16777182 - 1 扇区 ≈ 50.59 GiB)" "50.59" "$(to_gib "$free")"
 
+  # "文件系统欠账"判定: 真机第三轮就是死在这 —— 分区表改完了、磁盘已满,
+  # 但 MUSIC 的 resize2fs 失败, 于是"已用满 -> 什么都不做"让它永远补不齐。
+  st_case "文件系统与分区等大 -> 没欠账"     "no"  "$(is_lagging 3141599 3141599 && echo yes || echo no)"
+  st_case "文件系统比分区小 1.5GiB -> 欠账" "yes" "$(is_lagging 3141599 31416100 && echo yes || echo no)"
+  st_case "只差几百扇区(对齐误差) -> 没欠账" "no" "$(is_lagging 3141599 3142000 && echo yes || echo no)"
+  st_case "读不到文件系统大小时不当欠账"     "no"  "$(is_lagging "" 31416100 && echo yes || echo no)"
+
   echo
   if (( SELFTEST_FAILED == 0 )); then
     echo "✅ 分区识别自测全部通过"
@@ -228,7 +251,12 @@ say()  { printf '%s[grow]%s %s\n' "$BLU" "$RST" "$*"; log_line "$*"; }
 step(){ printf '\n%s==> %s%s\n' "$BLU" "$*" "$RST"; log_line ""; log_line "==> $*"; }
 ok()  { printf '  %s✅%s %s\n' "$GRN" "$RST" "$*"; log_line "  ✅ $*"; }
 warn(){ printf '  %s⚠️ %s%s\n' "$YEL" "$*" "$RST"; log_line "  ⚠️  $*"; }
-die() { printf '\n%s❌ 失败: %s%s\n' "$RED" "$*" "$RST" >&2; log_line "❌ 失败: $*"; exit 1; }
+# die 在 --auto(开机自扩容)下不能把开机卡住: 记完原因就安静退出, 下次开机再试
+die() {
+  printf '\n%s❌ 失败: %s%s\n' "$RED" "$*" "$RST" >&2; log_line "❌ 失败: $*"
+  if (( AUTO )); then exit 0; fi
+  exit 1
+}
 
 # 日志路径可能是空的(哪都写不了), 这时候就别再提"完整日志在哪儿"
 log_hint() { [[ -n "$LOG_FILE" ]] && say "完整日志: $LOG_FILE"; return 0; }
@@ -251,6 +279,8 @@ on_err() {
   printf '   2) 报错涉及 umount: 关掉正在访问 /mnt/songdisk 的程序(播放器/文件管理器)再重试\n' >&2
   printf '   3) 先跑 %s --check 看完整诊断(不需要 root)\n' "$(basename "$0")" >&2
   printf '   4) 上一条命令的真实输出: sudo %s --check 2>&1 | tee /tmp/grow.txt\n' "$(basename "$0")" >&2
+  # 开机自扩容: 出错也不能让系统起不来, 记完就退, 下次开机自动再试
+  if (( AUTO )); then exit 0; fi
   exit "$rc"
 }
 trap 'on_err "$?" "$LINENO" "$BASH_COMMAND"' ERR
@@ -285,7 +315,7 @@ say "脚本        : $(readlink -f "$0")"
 say "执行用户    : $(id -un) (uid=$(id -u))"
 say "内核/架构   : $(uname -sr) / $(uname -m)"
 
-for c in sgdisk findmnt resize2fs partprobe partx awk; do
+for c in sgdisk findmnt resize2fs e2fsck dumpe2fs blockdev partprobe partx awk; do
   command -v "$c" >/dev/null 2>&1 || die "缺少命令 [$c]。安装: sudo apt-get install -y gdisk e2fsprogs util-linux"
 done
 ok "依赖命令齐全 (sgdisk / resize2fs / partprobe / partx)"
@@ -421,12 +451,76 @@ ok "MUSIC 分区: p${MUSIC_PART} = ${MUSIC_DEV}  (扇区 ${MUSIC_START}..${MUSIC
 FREE_SECTORS=$(( TOTAL_SECTORS - MUSIC_LAST - 1 ))
 say "未分配空间: $(to_gib "$FREE_SECTORS") GiB"
 
+# ---------------- 文件系统有没有落后于分区表 ----------------
+# 踩过的坑(真机第三轮): 分区表改成功了, root 也扩到了 21G, 但 MUSIC 的
+# resize2fs 报 "Please run e2fsck -f" 没成功 —— 此时**磁盘已经没有空闲扇区**了,
+# 而脚本开头一句"磁盘已用满, 什么都不做"就退出了, 于是再也补不齐:
+# 重跑多少次都是"已用满 -> 退出"。所以"没有空闲空间"不等于"没事可做",
+# 必须先看文件系统是不是还欠着。
+#   fs_sectors <分区大小 => 文件系统还没跟上分区表, 只需要补 resize
+fs_size_sectors() {   # fs_size_sectors <设备> -> 文件系统实际占用扇区数
+  local dev="$1" blocks bsize out
+  out="$(try dumpe2fs -h "$dev" 2>/dev/null)" || return 0
+  blocks="$(awk -F': ' '/^Block count:/{print $2; exit}' <<<"$out")"
+  bsize="$(awk -F': ' '/^Block size:/{print $2; exit}' <<<"$out")"
+  if [[ "$blocks" =~ ^[0-9]+$ && "$bsize" =~ ^[0-9]+$ ]]; then
+    echo $(( blocks * bsize / 512 ))
+  fi
+  return 0
+}
+
+ROOT_PART_SECTORS=$(( ROOT_LAST - ROOT_START + 1 ))
+MUSIC_PART_SECTORS=$(( MUSIC_LAST - MUSIC_START + 1 ))
+ROOT_FS_SECTORS="$(fs_size_sectors "$ROOT_DEV")"
+MUSIC_FS_SECTORS="$(fs_size_sectors "$MUSIC_DEV")"
+
+ROOT_FS_LAG=0
+MUSIC_FS_LAG=0
+if is_lagging "$ROOT_FS_SECTORS" "$ROOT_PART_SECTORS"; then ROOT_FS_LAG=1; fi
+if is_lagging "$MUSIC_FS_SECTORS" "$MUSIC_PART_SECTORS"; then MUSIC_FS_LAG=1; fi
+
+# ---------------- 补齐文件系统(不改分区表, 随时可重跑) ----------------
+# 这是幂等操作: 文件系统已经够大就直接跳过, 所以开机自动跑多少遍都安全。
+finish_fs_growth() {
+  local rc=0 changed=0
+  if (( ROOT_FS_LAG )); then
+    say "root 文件系统比分区小, 补 resize2fs ${ROOT_DEV} ..."
+    if resize2fs "$ROOT_DEV" 2>&1 | sed 's/^/    /'; then
+      ok "root 文件系统已对齐"
+    else
+      warn "root 文件系统补扩展失败, 重启后再跑一次: usb-grow.sh"
+      rc=1
+    fi
+    changed=1
+  fi
+  if (( MUSIC_FS_LAG )); then
+    # 分区被内核重读过、而文件系统是 dd 搬过来的副本时, resize2fs 会要求
+    # 先 e2fsck —— 不照做它只会甩一句 "Please run 'e2fsck -f' first" 然后失败。
+    say "MUSIC 文件系统比分区小, 先 e2fsck 再扩展 ${MUSIC_DEV} ..."
+    e2fsck -f -p "$MUSIC_DEV" 2>&1 | sed 's/^/    /' || true
+    if resize2fs "$MUSIC_DEV" 2>&1 | sed 's/^/    /'; then
+      ok "MUSIC 文件系统已对齐"
+    else
+      warn "MUSIC 文件系统补扩展失败, 重启后再跑一次: usb-grow.sh"
+      rc=1
+    fi
+    changed=1
+  fi
+  if (( changed == 0 )); then
+    ok "文件系统与分区表已经一致, 无需补齐"
+  fi
+  return "$rc"
+}
+
 # ---------------- --check 到此结束 ----------------
 if [[ "$MODE" == "check" ]]; then
   echo
   if [[ "$GPT_LAST" =~ ^[0-9]+$ ]] && (( GPT_LAST + 34 < TOTAL_SECTORS )); then
     warn "GPT 备份表还压在镜像做盘时的大小上(last usable=${GPT_LAST}, 磁盘实际有 ${TOTAL_SECTORS} 扇区)"
     say "这是定长镜像写大 U 盘的正常现象, 执行 usb-grow.sh 时会先把 GPT 搬到整盘末尾"
+  fi
+  if (( ROOT_FS_LAG || MUSIC_FS_LAG )); then
+    warn "分区表比文件系统大 —— 上次扩容只做了一半。执行 usb-grow.sh(或重启)能补齐"
   fi
   if (( FREE_SECTORS <= 0 )); then
     say "磁盘已用满, 没有可扩容的空间"
@@ -439,7 +533,16 @@ fi
 
 # ---------------- 计算方案 ----------------
 if (( FREE_SECTORS <= 0 )); then
-  say "磁盘已用满, 没有可扩容的空间, 什么都不做"
+  # 没有空闲扇区了, 但文件系统可能还欠着账(上一轮 resize2fs 失败)——
+  # 这种情况下"什么都不做"会让盘永远停在半扩状态, 所以先补文件系统。
+  if (( ROOT_FS_LAG || MUSIC_FS_LAG )); then
+    finish_fs_growth || true
+    step "结果"
+    df -h / /mnt/songdisk 2>/dev/null | sed 's/^/    /' || true
+    log_hint
+    exit 0
+  fi
+  say "磁盘已用满, 分区和文件系统都已到位, 什么都不做"
   exit 0
 fi
 
@@ -572,22 +675,64 @@ else
 fi
 
 say "通知内核重新读取分区表 ..."
-partx -u "$DISK" 2>/dev/null || partprobe "$DISK" 2>/dev/null \
-  || warn "partprobe 失败。如果后面报设备不存在, 重启一次再跑本脚本"
-
-step "扩展文件系统"
-say "扩展 root (${ROOT_DEV}) ..."
-if resize2fs "$ROOT_DEV" 2>&1 | sed 's/^/    /'; then
-  ok "root 文件系统已扩展"
-else
-  die "root 文件系统扩展失败。若提示 busy, 请重启后再跑一次: usb-grow.sh"
+# 真机踩过的坑: partx -u 返回 0 却可能什么都没做(分区起点变了它处理不了),
+# 结果内核里的 /dev/sdb4 还是老大小, 后面 resize2fs 当然扩不动。
+# 所以这里不信它的退出码, 直接拿内核眼里的扇区数和分区表比。
+kern_sectors() { try cat "/sys/class/block/${1}/size"; }
+kernel_refresh() {
+  partx -u "$DISK" 2>/dev/null || true
+  partprobe "$DISK" 2>/dev/null || true
+  blockdev --rereadpt "$DISK" 2>/dev/null || true
+}
+# refresh_lag 里算 FS_LAG 时也必须先把"内核不认的分区"排除掉。
+# 真机第三轮就是这样翻车的: p4 的起点被搬到了 45467648, 而内核搬不动正在使用
+# 的分区, /dev/sdb4 还指着老位置 13635584 —— 那块地方此时已经被扩大的 root 覆盖。
+# 此时对 /dev/sdb4 跑 dumpe2fs/e2fsck/resize2fs, 读到的可能是 root 的数据,
+# 运气好只是报"请先 e2fsck", 运气差就是在破坏 root。所以: 内核不认的分区,
+# 本次一律不碰它的文件系统, 留给下次开机内核按新表重读后再处理。
+refresh_lag() {   # 重新判断: 内核认不认新表 / 文件系统欠不欠 resize
+  local k
+  k="$(kern_sectors "${ROOT_DEV##*/}")"
+  [[ "$k" =~ ^[0-9]+$ ]] && (( k >= ROOT_PART_SECTORS - 2048 )) && ROOT_KERN_OK=1 || ROOT_KERN_OK=0
+  k="$(kern_sectors "${MUSIC_DEV##*/}")"
+  [[ "$k" =~ ^[0-9]+$ ]] && (( k >= MUSIC_PART_SECTORS - 2048 )) && MUSIC_KERN_OK=1 || MUSIC_KERN_OK=0
+  ROOT_FS_SECTORS=""
+  MUSIC_FS_SECTORS=""
+  ROOT_FS_LAG=0
+  MUSIC_FS_LAG=0
+  if (( ROOT_KERN_OK )); then
+    ROOT_FS_SECTORS="$(fs_size_sectors "$ROOT_DEV")"
+    if is_lagging "$ROOT_FS_SECTORS" "$ROOT_PART_SECTORS"; then ROOT_FS_LAG=1; fi
+  fi
+  if (( MUSIC_KERN_OK )); then
+    MUSIC_FS_SECTORS="$(fs_size_sectors "$MUSIC_DEV")"
+    if is_lagging "$MUSIC_FS_SECTORS" "$MUSIC_PART_SECTORS"; then MUSIC_FS_LAG=1; fi
+  fi
+}
+ROOT_KERN_OK=1; MUSIC_KERN_OK=1
+refresh_lag
+DEFER_FS=0
+if (( ROOT_KERN_OK == 0 || MUSIC_KERN_OK == 0 )); then
+  warn "内核还认着旧的分区大小, 再试一次强制刷新 ..."
+  kernel_refresh
+  refresh_lag
+  if (( ROOT_KERN_OK == 0 || MUSIC_KERN_OK == 0 )); then
+    warn "内核搬不动正在使用的分区(内核的硬限制: 挂载中的分区不能在线搬家)"
+    if (( MUSIC_KERN_OK == 0 )); then
+      warn "MUSIC 分区数据已在新位置, 但内核这次不认 —— 本次**不会**碰它的文件系统"
+      DEFER_FS=1
+    fi
+    warn "重启一次(或等下次开机)内核就会按新分区表重读, 剩下的自动补齐"
+  fi
 fi
 
-say "扩展 MUSIC (${MUSIC_DEV}) ..."
-if resize2fs "$MUSIC_DEV" 2>&1 | sed 's/^/    /'; then
-  ok "MUSIC 文件系统已扩展"
+step "扩展文件系统"
+if (( DEFER_FS )); then
+  warn "跳过本次文件系统扩展, 避免对内核还没认的新分区下刀"
+elif (( ROOT_FS_LAG || MUSIC_FS_LAG )); then
+  finish_fs_growth || warn "有文件系统没能当场补齐, 下次开机会自动重试"
 else
-  warn "MUSIC 文件系统扩展失败, 可重启后再跑一次: usb-grow.sh"
+  ok "文件系统与分区表已经一致, 无需补齐"
 fi
 
 mount /mnt/songdisk 2>/dev/null || warn "自动挂载 /mnt/songdisk 失败, 请手动: sudo mount /mnt/songdisk"
@@ -605,10 +750,12 @@ MUSIC_GB_EXPECT="$(to_gib $((TOTAL_SECTORS-NEW_MUSIC_START)) | cut -d. -f1)"
 echo
 if (( MUSIC_GB_AFTER >= MUSIC_GB_EXPECT - 1 )); then
   ok "扩容完成 🎉 /mnt/songdisk 现在 ${MUSIC_GB_AFTER}G"
+elif (( MUSIC_KERN_OK == 0 )); then
+  warn "内核还没接受新的分区大小, /mnt/songdisk 现在仍是 ${MUSIC_GB_AFTER}G"
+  warn "分区表和数据都已经就位, 下次开机会自动补齐 —— 不用手动做任何事"
 else
   warn "文件系统实际只有 ${MUSIC_GB_AFTER}G, 达不到预期的 ${MUSIC_GB_EXPECT}G —— 分区表改了但文件系统没跟上"
-  warn "绝大多数情况是内核还没接受新的分区大小。重启一次, 再跑一次 ${0##*/} 即可补齐"
-  warn "或者手动执行: sudo partprobe ${DISK} && sudo resize2fs ${MUSIC_DEV}"
+  warn "手动补齐: sudo e2fsck -f ${MUSIC_DEV} && sudo resize2fs ${MUSIC_DEV}"
 fi
 ok "root 分区: $(df -h / 2>/dev/null | awk 'NR==2{print $2}' || echo '?')"
 log_hint

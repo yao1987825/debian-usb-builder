@@ -30,6 +30,47 @@ import sys
 EDID_HEADER = b"\x00\xff\xff\xff\xff\xff\xff\x00"
 
 
+def _dtd_active(d):
+    """从一个 18 字节时序描述符里取出 (水平有效, 垂直有效) 像素。"""
+    pixel_clock = d[0] | (d[1] << 8)
+    if pixel_clock == 0:
+        return None
+    h_active = d[2] | ((d[4] & 0xF0) << 4)
+    v_active = d[5] | ((d[7] & 0xF0) << 4)
+    if h_active >= 320 and v_active >= 200:
+        return (h_active, v_active)
+    return None
+
+
+def _parse_cta_dtds(edid):
+    """扫 CTA-861 扩展块, 返回里面所有详细时序的 (w, h) 列表(按出现顺序)。"""
+    found = []
+    if not edid or len(edid) < 132:
+        return found
+    i = 128
+    while i + 4 <= len(edid):
+        tag, size = edid[i], edid[i + 1]
+        if tag == 0x02:                       # CTA-861 / CEA-861 扩展块
+            body = edid[i + 4:i + 4 + size]
+            if len(body) >= 3:
+                dtd_count = body[2] & 0x1F   # 偏移 2 的低 5 位 = DTD 个数
+                off = 3
+                for _ in range(dtd_count):
+                    if off + 18 > len(body):
+                        break
+                    act = _dtd_active(body[off:off + 18])
+                    if act:
+                        found.append(act)
+                    off += 18
+            return found
+        if tag in (0x00, 0x10):               # 扩展块结束 / 空白
+            break
+        if size == 0xFF:
+            break
+        i += 4 + size
+    return found
+
+
 def parse_edid_preferred(edid):
     """从 EDID 字节串里取出首选(原生)分辨率。
 
@@ -42,6 +83,10 @@ def parse_edid_preferred(edid):
         [5]     垂直有效行数低字节
         [7] 高4位 垂直有效行数高字节
     按规范第一个 DTD 就是首选模式。
+    真机翻车补充(1440x900 一直认不出来): 非 16:9 的面板常把原生模式写在
+    CTA-861 扩展块里, 基础块的时序是别的东西 —— 只扫基础块就拿错, 甚至返回
+    None 掉进"取面积最大"的兜底, 于是每块屏都被设成同一个大分辨率。
+    现在基础块扫不到就去扩展块扫。
     返回 (width, height), 解析不出来返回 None。
     """
     if not edid or len(edid) < 126 or edid[:8] != EDID_HEADER:
@@ -54,13 +99,44 @@ def parse_edid_preferred(edid):
             break
         if d[0] == 0 and d[1] == 0:
             continue  # 监视器描述符, 不是时序
-        pixel_clock = d[0] | (d[1] << 8)
-        if pixel_clock == 0:
+        act = _dtd_active(d)
+        if act:
+            return act
+
+    ext = _parse_cta_dtds(edid)
+    if ext:
+        return ext[0]
+    return None
+
+
+def parse_edid_native_candidates(edid):
+    """EDID 里所有算"原生"的尺寸: 基础块 DTD + 扩展块 DTD, 去重保序。"""
+    out = []
+    if not edid or len(edid) < 126 or edid[:8] != EDID_HEADER:
+        return out
+    for i in range(4):
+        off = 54 + i * 18
+        d = edid[off:off + 18]
+        if len(d) < 18:
+            break
+        if d[0] == 0 and d[1] == 0:
             continue
-        h_active = d[2] | ((d[4] & 0xF0) << 4)
-        v_active = d[5] | ((d[7] & 0xF0) << 4)
-        if h_active >= 320 and v_active >= 200:
-            return h_active, v_active
+        act = _dtd_active(d)
+        if act and act not in out:
+            out.append(act)
+    for act in _parse_cta_dtds(edid):
+        if act not in out:
+            out.append(act)
+    return out
+
+
+def edid_physical_mm(edid):
+    """EDID 基础块里的物理尺寸 (宽mm, 高mm); 读不到返回 None。"""
+    if not edid or len(edid) < 128 or edid[:8] != EDID_HEADER:
+        return None
+    w_mm, h_mm = edid[21], edid[22]
+    if w_mm and h_mm:
+        return (w_mm, h_mm)
     return None
 
 
@@ -192,7 +268,7 @@ def parse_edids(text):
 # ---------------------------------------------------------------- 选模式
 
 def pick_native(modes, target):
-    """在 modes 里找与 (target_w, target_h) 一致的模式, 取刷新率最高的那个。"""
+    """在 modes 里找与 (target_w, target_h) 完全一致的模式, 取刷新率最高的那个。"""
     if not target:
         return None
     tw, th = target
@@ -202,12 +278,53 @@ def pick_native(modes, target):
     return max(cands, key=lambda m: (m[2] if m[2] is not None else 0.0))
 
 
-def pick_fallback(modes):
-    """没有 EDID 时的兜底: 合理尺寸范围内, 优先 >=60Hz, 再取面积最大的。"""
+def _sane(modes):
+    """合理尺寸范围内的横屏模式(排除竖屏与离谱尺寸)。"""
     valid = [m for m in modes
              if 800 <= m[0] <= 7680 and 600 <= m[1] <= 4320 and m[0] >= m[1]]
     if not valid:
         valid = [m for m in modes if m[0] >= 640 and m[1] >= 480]
+    return valid
+
+
+def pick_closest(modes, target):
+    """目标分辨率在模式表里没有完全一致的, 就找"离它最近"的那个。
+
+    真机 1440x900 的教训: EDID 明明说了 1440x900, 但驱动给的模式表里只有
+    1440x900i 或者干脆没有, 以前一律掉进"取面积最大"的兜底 —— 于是不管接
+    什么屏都被拉到 1920x1080/更大的固定分辨率。这里改成按
+    (面积接近度, 宽高比接近度) 打分选最接近目标的那个。
+    """
+    if not target:
+        return None
+    valid = _sane(modes)
+    if not valid:
+        return None
+    tw, th = target
+    tgt_area = tw * th
+    tgt_ratio = tw / th
+
+    def score(m):
+        w, h = m[0], m[1]
+        area_ratio = (w * h) / tgt_area if tgt_area else 1.0
+        ratio_diff = abs((w / h) - tgt_ratio) if h else 999
+        rate = m[2] if m[2] is not None else 0.0
+        return (area_ratio, ratio_diff, -rate)   # 越小越接近
+
+    return min(valid, key=score)
+
+
+def pick_fallback(modes, target=None):
+    """兜底选模式。
+
+    有 EDID 目标 -> 选离它最近的(见 pick_closest), 这是真机 1440x900 的正解;
+    完全没 EDID -> 优先 >=60Hz, 再取面积最大的(信息不足时的老规矩)。
+    """
+    if target:
+        got = pick_closest(modes, target)
+        if got:
+            return got
+    valid = _sane(modes)
     if not valid:
         return None
     hi = [m for m in valid if m[2] is not None and m[2] >= 59.5]
@@ -216,7 +333,14 @@ def pick_fallback(modes):
 
 
 def build_plan(query_text, verbose_text, force_fallback=False):
-    """综合 xrandr --query 和 --verbose, 生成"每块屏该设成什么"的方案。"""
+    """综合 xrandr --query 和 --verbose, 生成"每块屏该设成什么"的方案。
+
+    选择顺序(真机 1440x900 翻车后重排):
+      1) EDID 里第一个原生尺寸, 且驱动真的给这个模式 -> 用它
+      2) EDID 里其他原生尺寸(基础块/扩展块), 哪个被驱动给了就用哪个
+      3) 离 EDID 原生最近的那个模式(见 pick_closest) —— 关键是**不再跳去最大面积**
+      4) 完全没有 EDID 信息才用"面积最大"的老兜底
+    """
     info = parse_xrandr(query_text)
     edids = parse_edids(verbose_text) if verbose_text else {}
     plan = []
@@ -224,12 +348,22 @@ def build_plan(query_text, verbose_text, force_fallback=False):
         if not o["connected"]:
             continue
         edid = edids.get(name, b"")
-        native = None if force_fallback else parse_edid_preferred(edid)
-        mode = pick_native(o["modes"], native) if native else None
-        origin = "edid"
+        cands = [] if force_fallback else parse_edid_native_candidates(edid)
+        mode = None
+        origin = "fallback"
+        for cand in cands:
+            mode = pick_native(o["modes"], cand)
+            if mode:
+                origin = "edid" if cand == cands[0] else "edid-alt"
+                break
+        if mode is None and cands:
+            mode = pick_closest(o["modes"], cands[0])
+            if mode:
+                origin = "edid-closest"
         if mode is None:
             mode = pick_fallback(o["modes"])
             origin = "fallback"
+        phys = edid_physical_mm(edid)
         plan.append({
             "output": name,
             "primary": o["primary"],
@@ -238,7 +372,9 @@ def build_plan(query_text, verbose_text, force_fallback=False):
             "target": mode,
             "origin": origin,
             "edid_name": describe_edid(edid),
-            "has_edid": bool(native),
+            "edid_mm": "%dx%d" % phys if phys else "",
+            "edid_native": "%dx%d" % cands[0] if cands else "",
+            "has_edid": bool(cands),
         })
     return plan
 
@@ -451,11 +587,23 @@ def main(argv):
     for item in plan:
         mark = f" {DIM}(主屏){RST}" if item["primary"] else ""
         who = f" {DIM}[{item['edid_name']}]{RST}" if item["edid_name"] else ""
-        how = {True: "", False: f" {YEL}(没读到 EDID, 用的推测值){RST}"}[item["origin"] == "edid"]
+        how = {
+            "edid": "",
+            "edid-alt": f" {DIM}(用了 EDID 里的另一个原生模式){RST}",
+            "edid-closest": f" {DIM}(EDID 想要的模式驱动没给, 取最接近的){RST}",
+            "fallback": f" {YEL}(没读到 EDID, 用的推测值){RST}",
+        }.get(item["origin"], "")
         if do_list:
             print(f"  {BLU}{item['output']}{RST}{mark}{who}")
             print(f"      当前: {item['current_label'] or '无'}")
             print(f"      建议: {human_mode(item)}{how}")
+            extra = []
+            if item.get("edid_native"):
+                extra.append(f"EDID 原生 {item['edid_native']}")
+            if item.get("edid_mm"):
+                extra.append(f"物理尺寸 {item['edid_mm']}mm")
+            if extra:
+                print(f"      {' · '.join(extra)}")
             continue
 
         if not item["target"]:
@@ -548,6 +696,61 @@ def self_test():
     cases.append(("兜底取最大分辨率",
                   fb is not None and fb[0] == 1920 and fb[1] == 1080,
                   fb[3] if fb else None))
+
+    # === 真机回归: 1440x900 的屏一直被设成固定的 1920x1080 ===
+    # 场景: 模式表里同时有 1440x900 和 1920x1080(驱动爱给一堆)
+    modes_1440 = [(1440, 900, 60.0, "1440x900      60.00"),
+                  (1600, 900, 60.0, "1600x900      60.00"),
+                  (1920, 1080, 60.0, "1920x1080     60.00"),
+                  (1920, 1080, 50.0, "1920x1080     50.00")]
+    cases.append(("EDID 说 1440x900 时精确命中它",
+                  pick_native(modes_1440, (1440, 900))[0:2] == (1440, 900),
+                  "1440x900"))
+    got = pick_fallback(modes_1440, (1440, 900))
+    cases.append(("目标就在模式表里时兜底也不会选更大的",
+                  got is not None and got[0] == 1440 and got[1] == 900,
+                  got[3] if got else None))
+    got = pick_fallback(modes_1440, (1400, 880))
+    cases.append(("目标不在模式表时取最接近的(而不是最大面积)",
+                  got is not None and got[0] == 1440 and got[1] == 900,
+                  got[3] if got else None))
+    got = pick_fallback(modes_1440, (1280, 1024))
+    cases.append(("目标是 4:3 的 1280x1024 时也不会跳去 16:9 大分辨率",
+                  got is not None and got[0] == 1440 and got[1] == 900,
+                  got[3] if got else None))
+    got = pick_fallback([(1920, 1080, 60.0, "1920x1080")], (2560, 1440))
+    cases.append(("只有一个更大的模式时宁小勿大(不硬拉到超过原生)",
+                  got is not None and got[0] == 1920,
+                  got[3] if got else None))
+
+    # 基础块没有可用时序, 原生模式只在 CTA-861 扩展块里 —— 1440x900 面板的常见写法
+    e_cta = bytearray(make_edid(1440, 900))
+    e_cta[54:72] = b"\x00" * 18          # 基础块第一个描述符清空
+    cta = bytearray(b"\x02" + bytes([0]) + b"\x00\x00")   # tag=0x02, 0x00 扩展块(占位)
+    cta[2] = 0x00
+    body = bytearray([0x00, 0x00, 0x01])                 # dtd_count = 1
+    d = bytearray(18)
+    d[0:2] = (108000 // 10).to_bytes(2, "little")
+    d[2] = 1440 & 0xFF
+    d[4] = ((1440 >> 8) & 0x0F) << 4
+    d[5] = 900 & 0xFF
+    d[7] = ((900 >> 8) & 0x0F) << 4
+    body += d
+    ext = bytes([0x02, len(body)]) + bytes([0x00, 0x00]) + bytes(body)
+    cta = bytearray(ext)
+    got = parse_edid_preferred(bytes(e_cta) + bytes(cta))
+    cases.append(("原生模式只在 CTA-861 扩展块里也能认出来",
+                  got == (1440, 900), got))
+
+    cands = parse_edid_native_candidates(bytes(make_edid(1440, 900)))
+    cases.append(("原生候选列表含 1440x900",
+                  cands and cands[0] == (1440, 900), cands))
+
+    e_mm = bytearray(make_edid(1440, 900))
+    e_mm[21], e_mm[22] = 250, 140       # 物理宽高各 1 字节, 取合理范围
+    cases.append(("读出 EDID 物理尺寸",
+                  edid_physical_mm(bytes(e_mm)) == (250, 140),
+                  edid_physical_mm(bytes(e_mm))))
 
     # --mode 只能给"模式名", 不能把 xrandr 打印的整行(含 73.00* 这种标记)塞进去。
     # 这条正是真机上 screen-fit 一块屏都设不成的直接原因。

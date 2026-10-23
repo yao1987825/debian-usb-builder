@@ -1,0 +1,22 @@
+[Unit]
+# 开机自动扩容: 定长镜像写进大 U 盘后, 剩下的空间在开机时自动分给 root/MUSIC。
+# 用户什么都不用做 —— 写完镜像插上就能用。
+Description=自动把 U 盘剩余空间分给 root / MUSIC
+Documentation=file:///usr/local/bin/usb-grow.sh
+DefaultDependencies=no
+After=systemd-remount-fs.service local-fs.target
+Before=multi-user.target display-manager.service
+ConditionPathIsMountPoint=/
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# --auto: 没得做就安静退出, 出错只记日志, 绝不把开机卡住
+ExecStart=/usr/local/bin/usb-grow.sh --auto
+# 拷 1.5GiB 的 MUSIC 数据走 USB 要一两分钟, 但只在第一次开机发生
+TimeoutStartSec=1800
+Nice=5
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=multi-user.target

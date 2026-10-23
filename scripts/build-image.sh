@@ -237,11 +237,18 @@ FONT_PKGS="fonts-wqy-zenhei"
 chroot_run apt-get install -y --no-install-recommends \
   linux-image-amd64 \
   dbus-x11 policykit-1 sudo locales tzdata \
-  xorg xinit xdg-utils \
-  xfce4 xfce4-terminal \
+  # 桌面只保留"终端优先"的最小集合。
+# 之前装的是 xfce4 元包, 它会连带装进 xfce4-panel(顶部/底部面板)和
+# xfdesktop4(桌面图标 dock)—— 用户明确说"不需要 dock 栏, 只要终端",
+# 所以这里换成显式的最小集合: 会话管理 + 窗口管理器 + 设置 + 终端。
+# 少掉的还有 xfce4-appfinder / notifyd / screensaver 等一堆用不上的东西。
+xorg xinit xdg-utils \
+  xfce4-session xfwm4 xfce4-settings xfce4-terminal \
   lightdm \
   fcitx5 fcitx5-rime fcitx5-config-qt im-config \
   fcitx5-chinese-addons rime-data-luna-pinyin \
+  fcitx5-frontend-gtk3 fcitx5-frontend-qt5 \
+  openssh-client \
   ${FONT_PKGS} \
   python3 python3-venv python3-pip \
   git curl wget ca-certificates \
@@ -264,9 +271,9 @@ apt_optional() {
   done
 }
 apt_optional \
-  fcitx5-frontend-gtk3 fcitx5-frontend-gtk4 \
-  fcitx5-frontend-qt5 fcitx5-frontend-qt6 \
-  thunar mousepad nano tree file unzip zip \
+  fcitx5-frontend-gtk4 \
+  fcitx5-frontend-qt6 \
+  nano tree file unzip zip \
   python3-dev build-essential pkg-config \
   fonts-wqy-microhei fonts-noto-color-emoji \
   lightdm-gtk-greeter
@@ -333,6 +340,11 @@ EOF
 chroot_run systemctl enable systemd-resolved
 # 网卡配置: NetworkManager 负责 DHCP / 路由 / WiFi。没有它就是一台没有网络的机器。
 chroot_run systemctl enable NetworkManager || die "NetworkManager 启用失败"
+# 开机自扩容: 定长镜像写进大 U 盘后, 剩下的空间在开机时自动分给 root/MUSIC。
+# 写完镜像插上就能用, 用户不需要手动跑任何脚本(真机翻了三轮才把这条路走通)。
+[[ -f "${ROOTFS}/etc/systemd/system/usb-grow.service" ]] \
+  || die "usb-grow.service 没进镜像, 开机不会自动扩容"
+chroot_run systemctl enable usb-grow.service || die "usb-grow.service 启用失败"
 # 让 NetworkManager 用 systemd-resolved 提供的 DNS(和 Debian 官方桌面一致)
 mkdir -p "${ROOTFS}/etc/NetworkManager/conf.d"
 cat > "${ROOTFS}/etc/NetworkManager/conf.d/10-dns.conf" <<'EOF'
@@ -521,6 +533,16 @@ fi
 chmod 0664 "${ROOTFS}/var/log/usb-grow.log"
 chown root:"${USER_NAME}" "${ROOTFS}/var/log/usb-grow.log" 2>/dev/null || true
 
+# 桌面精简的构建期断言: 面板/桌面图标一旦被某个包顺带装回来, 开机就会冒出
+# 用户明确不要的 dock 和面板。这里直接检查 autostart 里没有它们。
+for _panel in xfce4-panel xfdesktop4; do
+  if [[ -e "${ROOTFS}/etc/xdg/autostart/${_panel}.desktop" ]] \
+     || grep -q "^Package: ${_panel}\$" "${ROOTFS}/var/lib/dpkg/status" 2>/dev/null; then
+    die "${_panel} 又被装进镜像了, 开机会有面板/桌面图标(用户要求只留终端)"
+  fi
+done
+ok "桌面已精简: 无面板、无桌面图标, 登录后直接进终端"
+
 # 夸克扫码登录: URL 拼接 / 状态码解析 / cookie 提取与打码 / 配置写回
 # 全部是纯逻辑, 不联网就能测。真实接口在开发期人工实测过(拿到真 token、
 # 轮询返回 50004001、假 ticket 被服务端以 AUTH_ERROR:50051 拒绝)。
@@ -597,6 +619,24 @@ elif grep -q 'ascii_composer/switch_key' "$RIME_CFG"; then
 else
   warn "Rime 没配 Shift 切中英文(按 Shift 不会有反应)"
 fi
+# 真机 v1.0.2 "输入法切不动"的根因: profile/config 属主是 root, 用户写不进去,
+# fcitx5 切换时要写状态, 写不进去就没反应。构建期直接断言属主, 不给这种坑
+# 再流到用户手上的机会。
+FCITX_DIR="${ROOTFS}/home/${USER_NAME}/.config/fcitx5"
+for _f in "${FCITX_DIR}/profile" "${FCITX_DIR}/config"; do
+  [[ -f "$_f" ]] || die "fcitx5 配置缺失: $_f"
+  _owner="$(stat -c '%U' "$_f")"
+  [[ "$_owner" == "$USER_NAME" ]] \
+    || die "fcitx5 配置属主是 ${_owner} 而不是 ${USER_NAME}: $_f —— 普通用户写不进去, 输入法切换会失灵"
+done
+ok "fcitx5 profile/config 属主正确(${USER_NAME}), 用户可写"
+# 前端包是"必装", 但再确认一次真的进了 dpkg 状态库 —— 前端缺失时终端里
+# Ctrl+Space 完全没反应, 而用户只会觉得"输入法坏了"。
+for _pkg in fcitx5-frontend-gtk3 fcitx5-frontend-qt5 fcitx5-config-qt openssh-client; do
+  grep -q "^Package: ${_pkg}$" "${ROOTFS}/var/lib/dpkg/status" \
+    || die "包 ${_pkg} 没装进镜像(输入法前端/SSH 客户端都会缺)"
+done
+ok "输入法前端与 openssh-client 已在必装清单里"
 # 输入法的两条"保险"也直接写好, 不依赖 im-config 的钩子链条
 if [[ -n "${USER_NAME}" ]]; then
   mkdir -p "${ROOTFS}/home/${USER_NAME}/.config/autostart"
@@ -676,6 +716,12 @@ EnumerateForwardKeys=Control+Tab
 EnumerateBackwardKeys=Shift+Tab
 EnumerateWithTriggerKeys=True
 EOF
+
+# 踩过的坑(真机 v1.0.2 输入法切不动): 这两个文件是在上面 chown -R 之后才 cat 出来的,
+# 于是属主落在 root:root 0644 —— 普通用户读得到、写不进去。fcitx5 切输入法时要
+# 往这些文件里写状态, 写不进去时切换就没反应, 而且是"有时能切有时不能",
+# 很难查。这里显式把整个 fcitx5 配置目录交还给用户。
+chown -R "${USER_UID}:${USER_GID}" "${ROOTFS}/home/${USER_NAME}/.config/fcitx5"
 
 # Rime 的简体拼音方案与自定义词库放在 overlay/home/user/.config/fcitx5/rime/ 下
 
