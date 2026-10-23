@@ -765,6 +765,18 @@ fi
 
 mount /mnt/songdisk 2>/dev/null || warn "自动挂载 /mnt/songdisk 失败, 请手动: sudo mount /mnt/songdisk"
 
+# ---- 把挂载点交还给普通用户 ----
+# 踩过的坑(真机 v1.0.4): mkfs 出来的 ext4 根目录属主是 root:root, 迁移数据时
+# rsync 只搬目录内容(搬运路径自带属主), 盘根 inode 永远是 root —— user 往盘里
+# 下载/搜索时直接报"歌曲分区不可写"。镜像构建期把 rootfs 挂载点 chown 了也
+# 没用: mount 一上, 看到的就是磁盘里的根 inode。这里显式交还, 幂等无害。
+# 镜像是我们自己产的, 普通用户固定 uid=1000(user)。
+if mountpoint -q /mnt/songdisk; then
+  _SONG_OWNER="$(try stat -c '%u:%g' /mnt/songdisk)"
+  [[ "$_SONG_OWNER" == "1000:1000" ]] \
+    || try chown 1000:1000 /mnt/songdisk
+fi
+
 step "结果"
 df -h / /mnt/songdisk 2>/dev/null | sed 's/^/    /' || true
 

@@ -392,6 +392,20 @@ if [[ "${WITH_PROJECTS}" == "1" ]]; then
   git clone --depth 1 "$REPO_GEQUHAI"  "${ROOTFS}/home/${USER_NAME}/projects/gequhai-downloader"  || warn "clone ${REPO_GEQUHAI} 失败"
   git clone --depth 1 "$REPO_PLAYLIST" "${ROOTFS}/home/${USER_NAME}/projects/gequhai-playlist-downloader" || warn "clone ${REPO_PLAYLIST} 失败"
 
+  # 踩过的坑(真机 v1.0.4): 夸克 CDN 直链必须带新鲜 __puus cookie(约 3 小时有效),
+  # 扫码登录拿到的 11 个字段里根本没有它; /file/download API 响应的 Set-Cookie
+  # 会首次下发。上游 Yannick-Mo/gequhai-downloader 不处理, 结果取链成功但下载
+  # 恒 412 Precondition Failed(Tengine)。这里构建期给 quark.py 打补丁: 抓响应
+  # Set-Cookie 里的 __puus 合回 cookie, 再交给 download_file。
+  QUARK_SRC="${ROOTFS}/home/${USER_NAME}/projects/gequhai-downloader/quark.py"
+  if [[ -f "$QUARK_SRC" ]]; then
+    python3 "${SCRIPT_DIR}/patch-quark-puus.py" "$QUARK_SRC" \
+      || warn "quark.py __puus 补丁执行失败(下载会 412)"
+    grep -q "_refresh_puus" "$QUARK_SRC" \
+      || die "quark.py __puus 补丁没打上 —— 夸克下载会恒 412(真机 v1.0.4 的坑)"
+    log "gequhai-downloader quark.py 已打 __puus 补丁"
+  fi
+
   # ① 单曲下载 venv: 只依赖 requests。
   #    命令行单曲下载(music single)复用 gequhai-downloader 里的 gequhai/quark/utils,
   #    这三个模块只依赖 requests, 所以轻量档也能用, 不需要 PyQt6。

@@ -17,10 +17,24 @@ GitHub Actions 自动构建镜像并发布到 [Releases](https://github.com/yao1
 
 - 2026-10-23 真机（v1.0.3 + 64G U 盘）实测发现两个"扩了但文件系统永远不补"的连环 bug
 - 2026-10-24 同台真机复现"开机自启的终端永远打不出中文"，根因是 autostart 竞态
+- 2026-10-24 真机通缉另外两坑：MUSIC 挂载点属主不可写；夸克下载恒 412
 
-### autostart 竞态：开机首个终端窗口终身无法输入中文
+### MUSIC 挂载点属主：user 不可写("错误: 歌曲分区不可写")
 
-xfce4-session 并行拉起所有 autostart 项，实测开机首窗 terminal(666) 抢在
+mkfs 出来的 ext4 根目录属主是 root:root，迁移数据时 rsync 只搬子目录内容，
+盘根 inode 永远是 root —— user 下载/搜索直接报"歌曲分区不可写"。usb-grow
+在 mount /mnt/songdisk 之后显式把挂载点 chown 给 uid=1000(幂等无害)。
+
+### 夸克下载恒 412：cookie 缺 __puus(上游补丁)
+
+夸克 CDN 直链必须带新鲜 `__puus` cookie(约 3 小时有效)，但扫码登录拿到的
+11 个字段里根本没有它；取直链的 /file/download API 响应的 Set-Cookie 会
+首次下发。上游 Yannick-Mo/gequhai-downloader 不处理 → 取链成功但下载恒
+412(Tengine)。新增 scripts/patch-quark-puus.py：抓 API 响应 Set-Cookie 的
+__puus 合回 cookie 再交给 download_file；构建期在 clone 之后打补丁，补丁
+没打上会 die。真机验证：'突然好想你-五月天.mp3'(10.6MB)成功落 /mnt/songdisk。
+
+### autostart 竞态：开机首个终端窗口终身无法输入中文xfce4-session 并行拉起所有 autostart 项，实测开机首窗 terminal(666) 抢在
 fcitx5(675) 之前启动。GTK 端 im-fcitx5 模块这时连 fcitx5 的 dbus 握手失败
 后**不会恢复**，这个窗口从此按键直通 shell（预编辑/候选窗/ctrl+space 全部
 无反应），但手动新开的任何终端窗口都完全正常 —— 因为此时 fcitx5 早已就绪。
