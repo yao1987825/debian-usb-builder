@@ -133,6 +133,19 @@ is_lagging() {        # is_lagging <文件系统扇区> <分区扇区> -> 欠账
   [[ "$part" =~ ^[0-9]+$ ]] || return 1
   (( fs < part - 2048 ))
 }
+# 解析必须用 $NF(行尾最后一个字段): dumpe2fs 的真实输出是
+# "Block count:              1572864" —— 冒号后跟一列空格再跟数字, 用
+# -F': ' 取 $2 会把前导空格一起取进来, "^[0-9]+$" 永远匹配不上,
+# 函数返回空 -> is_lagging 恒为"没欠账"(真机 23:44 复现的第二个坑)。
+parse_fs_sectors() {  # parse_fs_sectors <dumpe2fs -h 输出> -> 扇区数(解析不出输出空)
+  local out="$1" blocks bsize
+  blocks="$(awk '/^Block count:/{print $NF; exit}' <<<"$out")"
+  bsize="$(awk '/^Block size:/{print $NF; exit}' <<<"$out")"
+  if [[ "$blocks" =~ ^[0-9]+$ && "$bsize" =~ ^[0-9]+$ ]]; then
+    echo $(( blocks * bsize / 512 ))
+  fi
+  return 0
+}
 
 # ---------------- 分区识别自测 ----------------
 # 为什么专门写这个: "认分区"这一段全是 awk 字符串处理, 错了在真机上的表现
@@ -207,6 +220,14 @@ Number  Start (sector)    End (sector)  Size       Code  Name
   st_case "文件系统比分区小 1.5GiB -> 欠账" "yes" "$(is_lagging 3141599 31416100 && echo yes || echo no)"
   st_case "只差几百扇区(对齐误差) -> 没欠账" "no" "$(is_lagging 3141599 3142000 && echo yes || echo no)"
   st_case "读不到文件系统大小时不当欠账"     "no"  "$(is_lagging "" 31416100 && echo yes || echo no)"
+  # 真机 23:44 的坑: dumpe2fs 输出冒号后是一列空格再跟数字, 老解析(取 $2)
+  # 带回前导空格, 匹配失败返回空, 欠账恒为"没有" —— 用真机实际格式回归。
+  st_case "dumpe2fs 真实输出(多空格)能解析" "12582912" \
+    "$(parse_fs_sectors $'dumpe2fs 1.47.0\nBlock count:              1572864\nBlock size:               4096\nFree blocks:')"
+  st_case "dumpe2fs 单空格输出也能解析"     "12582912" \
+    "$(parse_fs_sectors $'Block count: 1572864\nBlock size: 4096')"
+  st_case "解析不出(缺 Block size)输出空"     "" \
+    "$(parse_fs_sectors $'Block count: 1572864')"
 
   echo
   if (( SELFTEST_FAILED == 0 )); then
@@ -448,7 +469,14 @@ done
 ok "root 分区 : p${ROOT_PART} = ${ROOT_DEV}  (扇区 ${ROOT_START}..${ROOT_LAST})"
 ok "MUSIC 分区: p${MUSIC_PART} = ${MUSIC_DEV}  (扇区 ${MUSIC_START}..${MUSIC_LAST})"
 
-FREE_SECTORS=$(( TOTAL_SECTORS - MUSIC_LAST - 1 ))
+# 可用上限 = 物理末尾 - 34 扇区(GPT 备份头占据磁盘最后 34 个扇区)。
+# v1.0.3 的坑: 这里的"空闲"按 TOTAL-MUSIC_LAST-1 算, MUSIC 已长到
+# last usable=TOTAL-34 时算出 33 个扇区的"伪空闲" —— 于是不走"已用满"分支,
+# 继续重规划并对齐出一条落进老 MUSIC 的边界, 触发"贴尾巴"分支后在
+# "新位置放不下老数据"守卫上必死, 文件系统的账永远补不齐。
+USABLE_LAST=$(( TOTAL_SECTORS - 34 ))
+FREE_SECTORS=$(( USABLE_LAST - MUSIC_LAST ))
+(( FREE_SECTORS >= 0 )) || FREE_SECTORS=0
 say "未分配空间: $(to_gib "$FREE_SECTORS") GiB"
 
 # ---------------- 文件系统有没有落后于分区表 ----------------
@@ -458,16 +486,11 @@ say "未分配空间: $(to_gib "$FREE_SECTORS") GiB"
 # 重跑多少次都是"已用满 -> 退出"。所以"没有空闲空间"不等于"没事可做",
 # 必须先看文件系统是不是还欠着。
 #   fs_sectors <分区大小 => 文件系统还没跟上分区表, 只需要补 resize
+#   fs_sectors <分区大小 => 文件系统还没跟上分区表, 只需要补 resize
 fs_size_sectors() {   # fs_size_sectors <设备> -> 文件系统实际占用扇区数
-  local dev="$1" blocks bsize out
-  out="$(try dumpe2fs -h "$dev" 2>/dev/null)" || return 0
-  blocks="$(awk -F': ' '/^Block count:/{print $2; exit}' <<<"$out")"
-  bsize="$(awk -F': ' '/^Block size:/{print $2; exit}' <<<"$out")"
-  if [[ "$blocks" =~ ^[0-9]+$ && "$bsize" =~ ^[0-9]+$ ]]; then
-    echo $(( blocks * bsize / 512 ))
-  fi
-  return 0
+  parse_fs_sectors "$(try dumpe2fs -h "$1" 2>/dev/null)"
 }
+
 
 ROOT_PART_SECTORS=$(( ROOT_LAST - ROOT_START + 1 ))
 MUSIC_PART_SECTORS=$(( MUSIC_LAST - MUSIC_START + 1 ))
@@ -522,8 +545,8 @@ if [[ "$MODE" == "check" ]]; then
   if (( ROOT_FS_LAG || MUSIC_FS_LAG )); then
     warn "分区表比文件系统大 —— 上次扩容只做了一半。执行 usb-grow.sh(或重启)能补齐"
   fi
-  if (( FREE_SECTORS <= 0 )); then
-    say "磁盘已用满, 没有可扩容的空间"
+  if (( FREE_SECTORS < 4096 )); then
+    say "磁盘已用满(可分配空间不足一个对齐单位), 没有可扩容的空间"
   else
     say "有 $(to_gib "$FREE_SECTORS") GiB 未分配。执行 usb-grow.sh 可以把它分给 root / MUSIC"
   fi
@@ -532,10 +555,15 @@ if [[ "$MODE" == "check" ]]; then
 fi
 
 # ---------------- 计算方案 ----------------
-if (( FREE_SECTORS <= 0 )); then
+# 门槛: 拿不出一个对齐单位(2MiB=4096 扇区)以上的真空闲, 就不再重规划 ——
+# 表已定型, 唯一可能欠的是文件系统里的账。之前按 ">0" 判断, 33 个扇区也能触发
+# 规划, 在"贴尾巴"分支上必死(见上面 USABLE_LAST 的注释); 修表后 boot2 就是
+# 这样错过补账的。
+if (( FREE_SECTORS < 4096 )); then
   # 没有空闲扇区了, 但文件系统可能还欠着账(上一轮 resize2fs 失败)——
   # 这种情况下"什么都不做"会让盘永远停在半扩状态, 所以先补文件系统。
   if (( ROOT_FS_LAG || MUSIC_FS_LAG )); then
+    say "剩余空间不足一个对齐单位( $(to_gib 4096) GiB), 表已定型, 只补文件系统"
     finish_fs_growth || true
     step "结果"
     df -h / /mnt/songdisk 2>/dev/null | sed 's/^/    /' || true
