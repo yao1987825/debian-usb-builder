@@ -432,21 +432,22 @@ step "4/9 写入 overlay(输入法/快捷脚本/桌面配置)"
 if [[ -d "${REPO_DIR}/overlay" ]]; then
   cp -a "${REPO_DIR}/overlay/." "${ROOTFS}/"
 fi
-# 开机自扩容: 定长镜像写进大 U 盘后, 剩下的空间在开机时自动分给 root/MUSIC。
-# 写完镜像插上就能用, 用户不需要手动跑任何脚本(真机翻了三轮才把这条路走通)。
-# 断言/启用必须放在 overlay 拷完之后 —— 之前放在第 3 步, overlay 还没拷,
-# 构建在断言上白炸一次("usb-grow.service 没进镜像", 其实根本还没拷)。
-[[ -f "${ROOTFS}/etc/systemd/system/usb-grow.service" ]] \
-  || die "usb-grow.service 没进镜像, 开机不会自动扩容"
-[[ -x "${ROOTFS}/usr/local/bin/usb-grow.sh" ]] \
-  || die "usb-grow.sh 没进镜像或没有执行位, systemd 只会拉起一个空壳"
-chroot_run systemctl enable usb-grow.service || die "usb-grow.service 启用失败"
 # Windows 上 git 可能没记录执行位, 这里统一补上
 find "${ROOTFS}/usr/local/bin" -type f -exec chmod 0755 {} + 2>/dev/null || true
 chmod 0755 "${ROOTFS}/usr/local/lib/musictools/single.py" 2>/dev/null || true
 chmod 0755 "${ROOTFS}/usr/local/lib/musictools/quark_login.py" 2>/dev/null || true
 chmod 0755 "${ROOTFS}/usr/local/lib/screentools/fit.py" 2>/dev/null || true
 chown -R "${USER_UID}:${USER_GID}" "${ROOTFS}/home/${USER_NAME}"
+
+# 开机自扩容: 定长镜像写进大 U 盘后, 剩下的空间在开机时自动分给 root/MUSIC。
+# 写完镜像插上就能用, 用户不需要手动跑任何脚本(真机翻了三轮才把这条路走通)。
+# 这里**必须在补执行位的 chmod 之后**: git 在 Windows 下会把 bin 档的执行位
+# 记成 0644, cp -a 原样拷出来, 断言放 chmod 前就会白炸一次(真机踩过)。
+[[ -f "${ROOTFS}/etc/systemd/system/usb-grow.service" ]] \
+  || die "usb-grow.service 没进镜像, 开机不会自动扩容"
+[[ -x "${ROOTFS}/usr/local/bin/usb-grow.sh" ]] \
+  || die "usb-grow.sh 没进镜像或没有执行位, systemd 只会拉起一个空壳"
+chroot_run systemctl enable usb-grow.service || die "usb-grow.service 启用失败"
 
 # ---- pip 换清华源(放在这里而不是第 2 步: 第 3 步的 pip 装包走官方 PyPI 更快) ----
 if [[ -n "$PIP_INDEX_URL" ]]; then
