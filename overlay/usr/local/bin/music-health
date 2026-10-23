@@ -170,15 +170,46 @@ sect "3. 磁盘、分区与权限"
 df -h / /mnt/songdisk 2>/dev/null | sed 's/^/     /' || warn "df 失败"
 
 ROOT_SRC="$(findmnt -no SOURCE / 2>/dev/null || true)"
-ROOT_DISK="$(lsblk -no PKNAME "$ROOT_SRC" 2>/dev/null | head -1 || true)"
-if [[ -n "$ROOT_DISK" ]]; then
+ROOT_SRC="$(readlink -f "$ROOT_SRC" 2>/dev/null || true)"
+# 从 /dev/sdb3 顺着 sysfs 反推物理磁盘; 兜底才用 lsblk(只取单列 PKNAME)
+ROOT_DISK="$(basename "$(readlink -f "/sys/class/block/$(basename "${ROOT_SRC:-x}")/.." 2>/dev/null)" 2>/dev/null || true)"
+[[ -e "/sys/block/${ROOT_DISK:-x}" ]] || ROOT_DISK="$(lsblk -no PKNAME "$ROOT_SRC" 2>/dev/null | head -1 || true)"
+if [[ -n "$ROOT_DISK" && -e "/sys/block/${ROOT_DISK}" ]]; then
   DISK="/dev/${ROOT_DISK}"
-  info "物理磁盘: ${DISK}  (总扇区 $(cat "/sys/block/${ROOT_DISK}/size" 2>/dev/null || echo '?'))"
-  lsblk -no NAME,PARTN,PARTLABEL,FSTYPE,SIZE "$DISK" 2>/dev/null | sed 's/^/       /' || true
-  ROOT_P="$(lsblk -ln -o PARTN,PARTLABEL "$DISK" 2>/dev/null | awk '$2=="DEBIAN_ROOT"{print $1; exit}')"
-  MUSIC_P="$(lsblk -ln -o PARTN,PARTLABEL "$DISK" 2>/dev/null | awk '$2=="MUSIC"{print $1; exit}')"
-  MUSIC_LAST="$(sgdisk -i "${MUSIC_P:-1}" "$DISK" 2>/dev/null | awk '/Last sector:/{print $3}' || true)"
   TOTAL="$(cat "/sys/block/${ROOT_DISK}/size" 2>/dev/null || echo 0)"
+  info "物理磁盘: ${DISK}  (总扇区 ${TOTAL})"
+
+  # 分区名一律从 udev 数据库(/run/udev/data)拿, 不用 lsblk 的列名 ——
+  # 不同发行版的 lsblk 认得的列不一样(PARTN/PARTLABEL/FSTYPE), 不认时它会打印
+  # "unknown column: ..." 并返回非零, 这一节就会静默丢掉全部分区信息。
+  part_prop() {   # part_prop <主:次> <ID_PART_ENTRY_NAME 之类的键>
+    awk -v k="E: $2=" 'index($0,k)==1{print substr($0,length(k)+1); exit}' \
+      "/run/udev/data/$1" 2>/dev/null || true
+  }
+  part_num_by_name() {   # part_num_by_name <GPT 分区名> -> 分区号
+    local s mm nm
+    for s in /sys/block/"${ROOT_DISK}"/"${ROOT_DISK}"*; do
+      [[ -r "$s/partition" ]] || continue
+      mm="$(cat "$s/dev" 2>/dev/null || true)"
+      nm="$(part_prop "$mm" ID_PART_ENTRY_NAME)"
+      [[ "$nm" == "$1" ]] && { cat "$s/partition" 2>/dev/null || true; return 0; }
+    done
+    return 0
+  }
+  for s in /sys/block/"${ROOT_DISK}"/"${ROOT_DISK}"*; do
+    [[ -r "$s/partition" ]] || continue
+    p="$(cat "$s/partition" 2>/dev/null || echo '?')"
+    mm="$(cat "$s/dev" 2>/dev/null || true)"
+    nm="$(part_prop "$mm" ID_PART_ENTRY_NAME)"
+    printf '     p%-4s %-12s %s\n' "$p" "/dev/${s##*/}" "${nm:-无分区名}"
+  done
+  ROOT_P="$(part_num_by_name DEBIAN_ROOT)"
+  MUSIC_P="$(part_num_by_name MUSIC)"
+  if [[ -z "$ROOT_P" || -z "$MUSIC_P" ]]; then
+    # 非 root 时 udev 数据库里也可能没有 GPT 分区名, 这时退回看挂载点
+    ROOT_P="${ROOT_P:-$(findmnt -no SOURCE / 2>/dev/null | grep -oE '[0-9]+$' || true)}"
+  fi
+  MUSIC_LAST="$(sgdisk -i "${MUSIC_P:-1}" "$DISK" 2>/dev/null | awk '/Last sector:/{print $3}' || true)"
   if [[ -n "$MUSIC_LAST" && "$TOTAL" =~ ^[0-9]+$ ]]; then
     FREE=$(( TOTAL - MUSIC_LAST - 1 ))
     if (( FREE > 0 )); then
@@ -189,6 +220,8 @@ if [[ -n "$ROOT_DISK" ]]; then
     else
       ok "磁盘空间已经全部分完"
     fi
+  elif [[ -z "$MUSIC_LAST" ]]; then
+    info "读不到 MUSIC 分区末尾扇区(需要 root 才能读整盘), 跳过剩余空间检查"
   fi
 else
   warn "推断不出物理磁盘(findmnt/lsblk 失败)"

@@ -57,6 +57,10 @@ USER_PASS="${USER_PASS:-user}"
 LOCALE_NAME="${LOCALE_NAME:-zh_CN.UTF-8}"
 TIMEZONE_NAME="${TIMEZONE_NAME:-Asia/Shanghai}"
 
+# 构建器版本: 打进镜像的 BUILD-INFO.txt, 出问题时能一眼看出这份镜像是哪版脚本做的。
+# 优先用 git 描述(tag 优先), 在导出的源码包/无 git 目录下退到 commit 或 unknown。
+BUILDER_VERSION="${BUILDER_VERSION:-$(git -C "${REPO_DIR}" describe --tags --always --dirty 2>/dev/null || echo unknown)}"
+
 WITH_BIOS_GRUB="${WITH_BIOS_GRUB:-0}"            # 1=额外安装传统 BIOS 的 GRUB(实验性, 需 loop 设备)
 WITH_PROJECTS="${WITH_PROJECTS:-1}"              # 1=把两个下载器项目预装进镜像
 
@@ -445,6 +449,22 @@ chmod 0644 "${ROOTFS}/etc/proxy.conf"
 chmod 0644 "${ROOTFS}/etc/profile.d/99-proxy.sh"
 # 生成出来的东西必须还是合法 shell, 否则 /etc/profile.d 一被 source 就整个登录失败
 bash -n "${ROOTFS}/etc/profile.d/99-proxy.sh" || die "/etc/profile.d/99-proxy.sh 语法错误"
+
+# 光有 /etc/profile.d 是不够的 —— 那是**登录 shell** 才读的。xfce4-terminal
+# 开出来的是非登录交互 shell, 只读 ~/.bashrc, 于是 proxy status 里永远显示
+# "终端环境变量: 未设置", 而用户明明在图形桌面里。这里给两个账号的 ~/.bashrc
+# 各加一行 source, 两条路都通。
+for _bashrc in "${ROOTFS}/home/${USER_NAME}/.bashrc" "${ROOTFS}/root/.bashrc"; do
+  [[ -f "$_bashrc" ]] || { : >>"$_bashrc"; chmod 0644 "$_bashrc"; }
+  grep -q '99-proxy.sh' "$_bashrc" || cat >>"$_bashrc" <<'EOF'
+
+# --- 代理(由 debian-usb-builder 预置) ---
+# xfce4-terminal 这类终端是非登录 shell, 读不到 /etc/profile.d, 这里补一刀。
+if [ -r /etc/profile.d/99-proxy.sh ]; then
+  . /etc/profile.d/99-proxy.sh
+fi
+EOF
+done
 log "预置代理: ${PROXY_URL_DEFAULT}(proxy status / proxy on / proxy off)"
 
 # ---- 显示分辨率: 每次图形登录自动匹配每块屏的原生分辨率 ----
@@ -477,6 +497,22 @@ else
   sed 's/^/[screen-fit] /' "${BUILD_DIR}/fit-selftest.log" >&2 || true
   die "EDID/xrandr 解析自测失败, screen-fit 会匹配错分辨率"
 fi
+
+# 认分区那一段同样是纯字符串处理(喂一份真的 sgdisk -p 输出), 不碰磁盘,
+# 所以能在构建期验。这段以前错在"认分区依赖 lsblk 的列名 + set -e/pipefail",
+# 真机上的表现是 usb-grow.sh 跑到一半自己没了, 所以必须在这里卡一道。
+if bash "${ROOTFS}/usr/local/bin/usb-grow.sh" --self-test >"${BUILD_DIR}/grow-selftest.log" 2>&1; then
+  log "分区识别自测通过($(selftest_count "${BUILD_DIR}/grow-selftest.log") 项)"
+else
+  sed 's/^/[usb-grow] /' "${BUILD_DIR}/grow-selftest.log" >&2 || true
+  die "分区识别自测失败, usb-grow.sh 在真机上会认错分区"
+fi
+
+# 日志文件先建好并给普通用户写权限: 否则第一次跑永远是 root 建出来的 0644,
+# 普通用户再跑就只能退到 ~/.local/state, 日志散在两个地方。
+: >"${ROOTFS}/var/log/usb-grow.log"
+chmod 0664 "${ROOTFS}/var/log/usb-grow.log"
+chown root:"${USER_NAME}" "${ROOTFS}/var/log/usb-grow.log" 2>/dev/null || true
 
 # 夸克扫码登录: URL 拼接 / 状态码解析 / cookie 提取与打码 / 配置写回
 # 全部是纯逻辑, 不联网就能测。真实接口在开发期人工实测过(拿到真 token、
@@ -901,6 +937,7 @@ esac
 
 cat > "${OUT_DIR}/BUILD-INFO.txt" <<EOF
 构建时间   : $(date -Is)
+构建器版本 : ${BUILDER_VERSION}   (github.com/yao1987825/debian-usb-builder)
 Debian     : ${SUITE}
 内核       : ${KVER}
 镜像       : $(basename "$OUT_IMG")

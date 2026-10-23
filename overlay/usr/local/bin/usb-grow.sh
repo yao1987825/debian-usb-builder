@@ -10,6 +10,7 @@
 #   usb-grow.sh --root-percent 50
 #   usb-grow.sh --check        # 只诊断, 不改任何东西(不需要 root)
 #   usb-grow.sh --dry-run      # 打印将执行的改动, 但不动分区表
+#   usb-grow.sh --self-test    # 分区识别逻辑自测(不需要 root)
 #
 # 说明: 非 root 直接跑会自动用 sudo 重新执行自己, 不用自己加 sudo。
 #
@@ -19,7 +20,9 @@ umask 022
 ROOT_PERCENT=30
 MODE=grow
 DRY_RUN=0
-LOG_FILE=/var/log/usb-grow.log
+# 日志文件在启动时再定(见 init_log): 非 root 时 /var/log 写不进去,
+# 直接往那儿 append 会让 bash 每打印一行就报一次"权限不够", 刷屏。
+LOG_FILE=""
 # 原样保存参数, 自动提权时要原样传给 sudo 重新执行的自己
 ORIG_ARGS=("$@")
 
@@ -33,6 +36,7 @@ usage() {
   --root-percent N      root 拿 N%, MUSIC 拿剩下的(默认 30)
   --check               只做诊断, 打印当前情况, 不做任何修改(不需要 root)
   --dry-run             打印将执行的改动, 但不真正修改
+  --self-test           分区识别逻辑自测(不需要 root, 不碰任何磁盘)
   -h, --help            显示本帮助
 
 不带 sudo 也能直接跑, 脚本会自己提权。
@@ -45,6 +49,7 @@ while [[ $# -gt 0 ]]; do
     --root-percent) ROOT_PERCENT="${2:?--root-percent 需要一个数字}"; shift 2 ;;
     --check)        MODE=check; shift ;;
     --dry-run)      DRY_RUN=1; shift ;;
+    --self-test)    MODE=selftest; shift ;;
     -h|--help)      usage; exit 0 ;;
     *) echo "未知参数: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -53,12 +58,171 @@ done
 
 # ---------------- 输出 ----------------
 # 同时写终端和日志文件, 避免"终端里什么都看不到"的情况
-mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
-say()  { printf '%s[grow]%s %s\n' "$BLU" "$RST" "$*"; printf '%s\n' "[grow] $*" >> "$LOG_FILE" 2>/dev/null || true; }
-step(){ printf '\n%s==> %s%s\n' "$BLU" "$*" "$RST"; printf '\n==> %s\n' "$*" >> "$LOG_FILE" 2>/dev/null || true; }
-ok()  { printf '  %s✅%s %s\n' "$GRN" "$RST" "$*"; printf '  ✅ %s\n' "$*" >> "$LOG_FILE" 2>/dev/null || true; }
-warn(){ printf '  %s⚠️ %s%s\n' "$YEL" "$*" "$RST"; printf '  ⚠️  %s\n' "$*" >> "$LOG_FILE" 2>/dev/null || true; }
-die() { printf '\n%s❌ 失败: %s%s\n' "$RED" "$*" "$RST"; printf '\n❌ 失败: %s\n' "$*" >> "$LOG_FILE" 2>/dev/null || true; exit 1; }
+#
+# 探测命令一律走 try(): 拿不到值就返回空, 绝不让非零退出码顺着 set -e /
+# pipefail 爬到命令替换里把整个脚本干掉。真正的判断留给调用方。
+try() { "$@" 2>/dev/null || true; }
+
+# udev 已经把识别好的分区信息写在 /run/udev/data/<主>:<次> 里了, 而且是全局可读的。
+# 分区名/标签/文件系统类型从这里拿, 普通用户也能拿到 —— 不依赖任何外部命令。
+udev_prop() {   # udev_prop <主:次> <ID_FS_LABEL 之类的键>
+  local f="/run/udev/data/${1}" k="E: ${2}="
+  [[ -r "$f" ]] || return 0
+  awk -v k="$k" 'index($0, k) == 1 { print substr($0, length(k) + 1); exit }' "$f" 2>/dev/null || true
+}
+
+# 解析 `sgdisk -p` 的输出(从 stdin 读), 归一化成一行一个:
+#     分区号 起始扇区 结束扇区 分区名
+# sgdisk -p 的分区行长这样, 第一列是纯数字的才是分区行(表头、磁盘信息、
+# 可用扇区那几行第一列都是英文, 天然被排除); 没有分区名的写个 - 占位。
+#    Number  Start (sector)    End (sector)  Size       Code  Name
+#         1            2048            4095   1024.0 KiB  EF02  BIOS-BOOT
+#         3         1052672        13635583   6.0 GiB     8300  DEBIAN_ROOT
+sgdisk_rows() {
+  awk 'NF>=6 && $1 ~ /^[0-9]+$/ {print $1, $2, $3, (NF>=7 ? $7 : "-")}'
+}
+
+to_gib() { awk -v s="${1:-0}" 'BEGIN{printf "%.2f", s*512/1073741824}'; }
+
+# ---------------- 在 PART_TABLE 上做查询 ----------------
+# PART_TABLE 每行: 分区号 主:次 设备节点 GPT名字 FS标签 文件系统类型 起始扇区 结束扇区
+# 这几个函数一律"认不出就返回空字符串", 绝不返回非零 —— 命令替换在
+# set -e + pipefail 下被非零退出码带走, 是这个脚本以前最大的坑。
+part_num_by_label() {   # GPT 分区名 或 文件系统标签 -> 分区号
+  awk -v l="$1" '$4==l || $5==l {print $1}' <<<"$PART_TABLE"
+}
+part_num_by_fstype() {  # 文件系统类型(ext4/vfat/...) -> 分区号
+  awk -v l="$1" '$6==l {print $1}' <<<"$PART_TABLE"
+}
+part_num_by_mount() {   # 挂载点 -> 分区号
+  local src
+  src="$(try findmnt -no SOURCE "$1")"; src="${src%%$'\n'*}"
+  [[ -n "$src" ]] || return 0
+  src="$(try readlink -f "$src")"
+  [[ -n "$src" ]] || return 0
+  awk -v d="$src" '$3==d {print $1}' <<<"$PART_TABLE"
+}
+part_field() {          # 分区号 -> 那一列(3=设备 7=起始扇区 8=结束扇区)
+  awk -v n="$1" -v i="$2" '$1==n {print $i}' <<<"$PART_TABLE"
+}
+part_last_num() {       # 最后一个分区号(兜底用)
+  awk 'NF {a=$1} END {print a}' <<<"$PART_TABLE"
+}
+
+# ---------------- 分区识别自测 ----------------
+# 为什么专门写这个: "认分区"这一段全是 awk 字符串处理, 错了在真机上的表现
+# 要么是扩容脚本自己没了, 要么是认错分区把分区表改了 —— 后者不可逆。
+# 好在这一段不需要碰磁盘, 拿一份真实的 sgdisk -p 输出就能在构建期验完。
+SELFTEST_FAILED=0
+st_case() {   # st_case <说明> <期望> <实际>
+  if [[ "$2" == "$3" ]]; then
+    printf '  ✅ %s\n' "$1"
+  else
+    printf '  ❌ %s\n       期望: [%s]\n       实际: [%s]\n' "$1" "$2" "$3"
+    SELFTEST_FAILED=$((SELFTEST_FAILED + 1))
+  fi
+  return 0
+}
+st_rows() { printf '%s\n' "$1" | sgdisk_rows | wc -l | tr -d '[:space:]'; }
+
+self_test() {
+  local sg free
+
+  # 这段是从真机上原样抄下来的 sgdisk -p 输出: 8GiB 镜像写进 64G U 盘时的样子
+  sg='Disk /dev/sdb: 122880000 sectors, 58.6 GiB
+Model: HighSpeed USB
+Sector size (logical/physical): 512/512 bytes
+Disk identifier (GUID): 3C966FB7-CDAE-4B3E-BD54-6FE5CB3C3DFA
+Partition table holds up to 128 entries
+Main partition table begins at sector 2 and ends at sector 33
+First usable sector is 34, last usable sector is 16777182
+Partitions will be aligned on 2048-sector boundaries
+Total free space is 2014 sectors (1007.0 KiB)
+
+Number  Start (sector)    End (sector)  Size       Code  Name
+   1            2048            4095   1024.0 KiB  EF02  BIOS-BOOT
+   2            4096         1052671   512.0 MiB  EF00  EFI
+   3         1052672        13635583   6.0 GiB     8300  DEBIAN_ROOT
+   4        13635584        16777182   1.5 GiB     8300  MUSIC'
+
+  st_case "只挑出 4 个分区行(表头/磁盘信息那几行不能被当成分区)" "4" "$(st_rows "$sg")"
+  st_case "root 分区行解析正确" "3 1052672 13635583 DEBIAN_ROOT" \
+          "$(printf '%s\n' "$sg" | sgdisk_rows | awk '$1==3')"
+  st_case "EFI 分区行解析正确" "2 4096 1052671 EFI" \
+          "$(printf '%s\n' "$sg" | sgdisk_rows | awk '$1==2')"
+  st_case "空输入不产生任何分区行" "0" "$(st_rows '')"
+  st_case "sgdisk 自己的报错信息不会被当成分区" "0" "$(st_rows 'sgdisk: bad header')"
+  st_case "没有分区名的行也能解析(名字位置写 -)" "-" \
+          "$(printf '   9         34          2047   1007.0 KiB  8300\n' | sgdisk_rows | awk '$1==9{print $4}')"
+
+  # 用同一份数据拼一张 PART_TABLE(分区号 主:次 设备 名字 标签 类型 起始 结束),
+  # 文件系统类型照实际情况填: BIOS-BOOT 是 FAT16, EFI 是 vfat, 后两个才是 ext4
+  PART_TABLE="$(printf '%s\n' "$sg" | sgdisk_rows |
+    awk '{t = ($1==2 ? "vfat" : ($1==1 ? "fat16" : "ext4"));
+          printf "%s 8:%d /dev/sdb%s %s - %s %s %s\n", $1, $1, $1, $4, t, $2, $3}')"
+
+  st_case "按 GPT 分区名认出 root"       "3"       "$(part_num_by_label DEBIAN_ROOT)"
+  st_case "按 GPT 分区名认出 MUSIC"      "4"       "$(part_num_by_label MUSIC)"
+  st_case "认出 root 的设备节点"        "/dev/sdb3" "$(part_field 3 3)"
+  st_case "认出 MUSIC 的设备节点"       "/dev/sdb4" "$(part_field 4 3)"
+  st_case "认出 root 的起始扇区"         "1052672"  "$(part_field 3 7)"
+  st_case "认出 MUSIC 的结束扇区"        "16777182" "$(part_field 4 8)"
+  st_case "按文件系统类型认出 ext4 分区"  "3 4"     "$(part_num_by_fstype ext4 | tr '\n' ' ' | sed 's/ $//')"
+  st_case "认不出的名字返回空(而不是非零退出码)" "" "$(part_num_by_label NOSUCHPART)"
+  st_case "兜底取最后一个分区"           "4"       "$(part_last_num)"
+  st_case "空分区表时兜底也返回空"        ""        "$(PART_TABLE=; part_last_num)"
+
+  # 未分配空间 = 总扇区 - 最后一个分区的结束扇区 - 1
+  free=$(( 122880000 - 16777182 - 1 ))
+  st_case "未分配空间算得对(122880000 - 16777182 - 1 扇区 ≈ 50.59 GiB)" "50.59" "$(to_gib "$free")"
+
+  echo
+  if (( SELFTEST_FAILED == 0 )); then
+    echo "✅ 分区识别自测全部通过"
+    return 0
+  fi
+  echo "❌ 分区识别自测失败 ${SELFTEST_FAILED} 项 —— usb-grow.sh 在真机上会认错分区"
+  return 1
+}
+
+# 踩过的坑: 原来是 `printf ... >> "$LOG_FILE" 2>/dev/null || true`。
+# bash 的重定向是按书写顺序生效的, `>>file` 先做 —— 打开失败时那句
+# "权限不够" 是在 stderr 还指着终端的时候打出来的, 2>/dev/null 根本来不及兜底。
+# 于是普通用户跑一次 usb-grow.sh, 屏幕上就是十几行 /var/log/usb-grow.log: 权限不够。
+# 现在先 init_log 挑一个真能写的路径, 写日志时也把 2>/dev/null 放到前面。
+init_log() {
+  local f d sz
+  for f in /var/log/usb-grow.log "${HOME:-/root}/.local/state/usb-grow.log" "/tmp/usb-grow.$(id -u).log"; do
+    d="$(dirname "$f")"
+    { mkdir -p "$d"; } 2>/dev/null || continue
+    { : ; } 2>/dev/null >>"$f" || continue
+    # U 盘上日志无上限地长会慢慢吃掉根分区, 超过 512KB 就重新开始
+    sz="$(try wc -c <"$f")"; sz="${sz:-0}"
+    if [[ "$sz" =~ ^[0-9]+$ ]] && (( sz > 524288 )); then
+      { : >"$f"; } 2>/dev/null || true
+    fi
+    LOG_FILE="$f"
+    return 0
+  done
+  LOG_FILE=""
+  return 0
+}
+init_log
+
+log_line() {
+  [[ -n "$LOG_FILE" ]] || return 0
+  { printf '%s\n' "[grow] $*"; } 2>/dev/null >>"$LOG_FILE" || true
+  return 0
+}
+
+say()  { printf '%s[grow]%s %s\n' "$BLU" "$RST" "$*"; log_line "$*"; }
+step(){ printf '\n%s==> %s%s\n' "$BLU" "$*" "$RST"; log_line ""; log_line "==> $*"; }
+ok()  { printf '  %s✅%s %s\n' "$GRN" "$RST" "$*"; log_line "  ✅ $*"; }
+warn(){ printf '  %s⚠️ %s%s\n' "$YEL" "$*" "$RST"; log_line "  ⚠️  $*"; }
+die() { printf '\n%s❌ 失败: %s%s\n' "$RED" "$*" "$RST" >&2; log_line "❌ 失败: $*"; exit 1; }
+
+# 日志路径可能是空的(哪都写不了), 这时候就别再提"完整日志在哪儿"
+log_hint() { [[ -n "$LOG_FILE" ]] && say "完整日志: $LOG_FILE"; return 0; }
 
 # ---------------- 绝不静默退出 ----------------
 # 之前这个脚本最大的毛病: set -e + pipefail 下, 任何一个外部命令(lsblk/sgdisk/
@@ -69,8 +233,10 @@ on_err() {
   trap - ERR
   printf '\n%s❌ 第 %s 行失败(退出码 %s)%s\n' "$RED" "$line" "$rc" "$RST" >&2
   printf '   失败的命令: %s\n' "$cmd" >&2
-  printf '\n下面是最后 15 行日志(完整日志在 %s):\n' "$LOG_FILE" >&2
-  tail -n 15 "$LOG_FILE" 2>/dev/null | sed 's/^/   | /' >&2
+  if [[ -n "$LOG_FILE" && -s "$LOG_FILE" ]]; then
+    printf '\n下面是最后 15 行日志(完整日志在 %s):\n' "$LOG_FILE" >&2
+    tail -n 15 "$LOG_FILE" 2>/dev/null | sed 's/^/   | /' >&2
+  fi
   printf '\n排查建议:\n' >&2
   printf '   1) 报错涉及 sgdisk/partprobe: 分区表可能正在被占用, 插到别的电脑重启一次再跑\n' >&2
   printf '   2) 报错涉及 umount: 关掉正在访问 /mnt/songdisk 的程序(播放器/文件管理器)再重试\n' >&2
@@ -80,16 +246,12 @@ on_err() {
 }
 trap 'on_err "$?" "$LINENO" "$BASH_COMMAND"' ERR
 
-# 跑外部命令并把它的输出原样显示出来, 失败时也不立刻退出, 由调用方决定。
-run() {
-  local label="$1"; shift
-  printf '    $ %s\n' "$*" >&2
-  if ! "$@"; then
-    warn "${label} 返回非零(继续往下走)"
-    return 1
-  fi
-  return 0
-}
+# 自测不需要 root, 也不碰磁盘, 所以放在自动提权之前。
+# 用 if 而不是 `self_test; exit $?`: set -e 会在 self_test 返回非零时
+# 先触发 ERR 陷阱, 把一段自测失败变成一场"脚本崩了"的假象。
+if [[ "$MODE" == "selftest" ]]; then
+  if self_test; then exit 0; else exit 1; fi
+fi
 
 # ---------------- 自动提权 ----------------
 # 说清楚"为什么"要 root: 改分区表要往整块磁盘的 GPT 里写, 内核只允许 root 做。
@@ -114,90 +276,118 @@ say "脚本        : $(readlink -f "$0")"
 say "执行用户    : $(id -un) (uid=$(id -u))"
 say "内核/架构   : $(uname -sr) / $(uname -m)"
 
-for c in sgdisk lsblk findmnt resize2fs partprobe partx; do
-  command -v "$c" >/dev/null 2>&1 || die "缺少命令 [$c]。安装: sudo apt-get install -y gdisk e2fsprogs util-linux parted"
+for c in sgdisk findmnt resize2fs partprobe partx awk; do
+  command -v "$c" >/dev/null 2>&1 || die "缺少命令 [$c]。安装: sudo apt-get install -y gdisk e2fsprogs util-linux"
 done
 ok "依赖命令齐全 (sgdisk / resize2fs / partprobe / partx)"
 
-ROOT_SRC="$(findmnt -no SOURCE / 2>/dev/null || true)"
+ROOT_SRC="$(try findmnt -no SOURCE /)"
 [[ -n "$ROOT_SRC" ]] || die "找不到根分区的挂载来源(findmnt -no SOURCE / 返回空)"
-DISK_NAME="$(lsblk -no PKNAME "$ROOT_SRC" 2>/dev/null | head -1)"
-[[ -n "$DISK_NAME" ]] || die "无法从 $ROOT_SRC 推断出物理磁盘(lsblk -no PKNAME 返回空)"
+ROOT_SRC="$(try readlink -f "$ROOT_SRC")"
+
+# 从 /dev/sdb3 反推物理磁盘 sdb: 顺着 sysfs 的 .../block/sdb/sdb3 往上数一级。
+# 刻意不走 lsblk —— 它认分区靠的是 PARTN/PARTLABEL/FSTYPE 这些列名, 版本一老
+# 就变成 "lsblk: unknown column: ..." 并返回非零, 整个脚本会被 pipefail 带走。
+ROOT_KNAME="$(basename "$ROOT_SRC")"
+DISK_NAME="$(try basename "$(try readlink -f "/sys/class/block/${ROOT_KNAME}/..")")"
+if [[ -z "$DISK_NAME" || ! -e "/sys/block/${DISK_NAME}" ]]; then
+  # 兜底: lsblk 只用单列 PKNAME(没有逗号, 各版本都认)
+  DISK_NAME="$(try lsblk -no PKNAME "$ROOT_SRC")"; DISK_NAME="${DISK_NAME%%$'\n'*}"
+fi
+[[ -n "$DISK_NAME" && -e "/sys/block/${DISK_NAME}" ]] \
+  || die "无法从 ${ROOT_SRC} 推断出物理磁盘(/sys 和 lsblk 都没给出结果)"
 DISK="/dev/${DISK_NAME}"
 
-TOTAL_SECTORS="$(cat "/sys/block/${DISK_NAME}/size" 2>/dev/null || true)"
-[[ -n "$TOTAL_SECTORS" ]] || die "读不到 ${DISK} 的扇区数(/sys/block/${DISK_NAME}/size)"
+TOTAL_SECTORS="$(try cat "/sys/block/${DISK_NAME}/size")"
+[[ "$TOTAL_SECTORS" =~ ^[0-9]+$ ]] || die "读不到 ${DISK} 的扇区数(/sys/block/${DISK_NAME}/size)"
 
-to_gib() { awk -v s="${1:-0}" 'BEGIN{printf "%.2f", s*512/1073741824}'; }
-
-PART_TYPE="$(lsblk -dn -o PTTYPE "$DISK" 2>/dev/null || true)"
+PART_TYPE="$(try lsblk -dn -o PTTYPE "$DISK")"; PART_TYPE="${PART_TYPE%%$'\n'*}"
 say "根分区      : $ROOT_SRC  (挂载点 /)"
 say "物理磁盘    : $DISK"
 say "磁盘容量    : $(to_gib "$TOTAL_SECTORS") GiB"
-say "分区表      : ${PART_TYPE:-未知}"
+say "分区表      : ${PART_TYPE:-gpt(按 sgdisk 推断)}"
+[[ -n "$LOG_FILE" ]] && say "日志        : $LOG_FILE"
 
 say "当前分区表:"
-# 注意: 这条管道必须包在 || true 里。之前是裸管道, 一旦 lsblk/sed 返回非零,
-# set -e + pipefail 会让整个脚本当场消失 —— 屏幕上就停在"当前分区表:"这一行,
-# 看起来像"跑起来没有任何反馈"。这里顺带把 sgdisk 的分区表也打出来。
-{
-  printf '    ---- lsblk ----\n'
-  lsblk -no NAME,PARTN,PARTLABEL,FSTYPE,SIZE "$DISK" 2>&1 | sed 's/^/    /'
-  printf '    ---- sgdisk -p ----\n'
-  sgdisk -p "$DISK" 2>&1 | sed 's/^/    /'
-} >> "$LOG_FILE" 2>&1 || true
-{
-  lsblk -no NAME,PARTN,PARTLABEL,FSTYPE,SIZE "$DISK" 2>&1 | sed 's/^/    /'
-  sgdisk -p "$DISK" 2>&1 | sed 's/^/    /'
-} || warn "读取分区表明细有出入, 完整内容见 ${LOG_FILE}"
+# 这里不再用 lsblk。踩过的坑: lsblk 认分区靠 PARTN/PARTLABEL/FSTYPE 这些列名,
+# 一旦这台机器上的 lsblk 不认(版本/发行版差异), 它会打一行
+# "unknown column: ..." 并返回非零; 而这个脚本开着 pipefail + set -e,
+# 非零退出码会顺着命令替换把整个脚本干掉 —— 真机上表现就是 usb-grow.sh
+# 跑到一半自己没了, 报出来的"失败命令"还是管道里的 awk, 极具误导性。
+SG_RAW="$(try sgdisk -p "$DISK")"
+[[ -n "$SG_RAW" ]] || warn "sgdisk 读不到 ${DISK}(普通用户常没有读整盘权限), 分区名只能靠 udev 数据库"
+SG_ROWS="$(sgdisk_rows <<<"$SG_RAW")"
+
+# 归一化成分区表, 每行: 分区号 主:次 设备节点 GPT名字 FS标签 文件系统类型 起始扇区 结束扇区
+# 三个来源互补: sysfs 给分区号和设备节点, sgdisk -p 给扇区范围和 GPT 名字,
+# /run/udev/data 给标签和文件系统类型(普通用户也读得到, lsblk 认标签靠的就是它)。
+PART_TABLE="$(
+  for _sys in /sys/block/"${DISK_NAME}"/"${DISK_NAME}"*; do
+    [[ -r "${_sys}/partition" ]] || continue
+    _p="$(try cat "${_sys}/partition")"
+    _mm="$(try cat "${_sys}/dev")"
+    [[ -n "$_p" && -n "$_mm" ]] || continue
+    _dev="/dev/${_sys##*/}"
+    _name="$(awk -v n="$_p" '$1==n{print $4}' <<<"$SG_ROWS")"
+    [[ -n "$_name" ]] || _name="$(udev_prop "$_mm" ID_PART_ENTRY_NAME)"
+    _lbl="$(udev_prop "$_mm" ID_FS_LABEL)"
+    _fst="$(udev_prop "$_mm" ID_FS_TYPE)"
+    _st="$(awk -v n="$_p" '$1==n{print $2}' <<<"$SG_ROWS")"
+    _en="$(awk -v n="$_p" '$1==n{print $3}' <<<"$SG_ROWS")"
+    # 注意: 拿不到的字段一律写 "-" 占位, 不能留空 ——
+    # 下面用 `read` 逐行拆表, 默认 IFS 会把连续的空格折叠掉, 一留空整行就错位。
+    printf '%s %s %s %s %s %s %s %s\n' "$_p" "$_mm" "$_dev" \
+      "${_name:--}" "${_lbl:--}" "${_fst:--}" "${_st:--}" "${_en:--}"
+  done
+)"
+
+if [[ -n "$PART_TABLE" ]]; then
+  printf '    %-5s %-11s %-15s %-7s %-12s %s\n' 分区 设备 名称 类型 起始扇区 结束扇区
+  while read -r _p _mm _dev _name _lbl _fst _st _en; do
+    [[ -n "$_p" ]] || continue
+    printf '    p%-4s %-11s %-15s %-7s %-12s %s\n' \
+      "$_p" "$_dev" "$_name" "$_fst" "$_st" "$_en"
+  done <<<"$PART_TABLE"
+else
+  warn "在 ${DISK} 上一个分区都没认出来, 后面大概率会失败"
+fi
+if [[ -n "$LOG_FILE" ]]; then
+  { printf '\n==> 当前分区表(sgdisk -p)\n%s\n' "$SG_RAW"; } >>"$LOG_FILE" 2>/dev/null || true
+fi
 
 # ---------------- 定位 root / music 分区 ----------------
-part_num_by_label() {
-  lsblk -ln -o PARTN,PARTLABEL "$DISK" 2>/dev/null | awk -v l="$1" '$2==l {print $1; exit}'
-}
-part_num_by_fstype() {
-  lsblk -ln -o PARTN,FSTYPE "$DISK" 2>/dev/null | awk -v l="$1" '$2==l {print $1; exit}'
-}
-part_path() { lsblk -ln -o PATH,PARTN "$DISK" 2>/dev/null | awk -v n="$1" '$2==n {print $1; exit}'; }
-# sgdisk -i 输出形如: "First sector: 2048 (at 1024.0 KiB)" / "Last sector: 1234"
-info_field() {
-  sgdisk -i "$1" "$DISK" 2>/dev/null | awk -v k="$2" 'index($0,k){for(i=1;i<=NF;i++) if($i ~ /^[0-9]+$/){print $i; exit}}'
-}
-
 ROOT_PART="$(part_num_by_label DEBIAN_ROOT)"
+[[ -n "$ROOT_PART" ]] || ROOT_PART="$(part_num_by_mount /)"
 [[ -n "$ROOT_PART" ]] || ROOT_PART="$(part_num_by_fstype ext4)"
-if [[ -z "$ROOT_PART" ]]; then
-  # 兜底: 根分区挂载点对应的分区号
-  ROOT_PART="$(lsblk -ln -o PARTN,MOUNTPOINT "$DISK" 2>/dev/null | awk '$2=="/" {print $1; exit}')"
-fi
 
 MUSIC_PART="$(part_num_by_label MUSIC)"
+[[ -n "$MUSIC_PART" ]] || MUSIC_PART="$(part_num_by_mount /mnt/songdisk)"
 if [[ -z "$MUSIC_PART" ]]; then
-  # 兜底 1: 挂载点
-  MUSIC_PART="$(lsblk -ln -o PARTN,MOUNTPOINT "$DISK" 2>/dev/null | awk '$2=="/mnt/songdisk" {print $1; exit}')"
-fi
-if [[ -z "$MUSIC_PART" ]]; then
-  # 兜底 2: 取最后一个分区
-  MUSIC_PART="$(lsblk -ln -o PARTN "$DISK" 2>/dev/null | awk 'NF{a=$1} END{print a}')"
-  [[ -n "$MUSIC_PART" ]] && warn "按标签没认出 MUSIC 分区, 已改用磁盘上的最后一个分区 p${MUSIC_PART}"
+  # 兜底: 取最后一个分区
+  MUSIC_PART="$(part_last_num)"
+  [[ -n "$MUSIC_PART" ]] && warn "按名字没认出 MUSIC 分区, 已改用磁盘上的最后一个分区 p${MUSIC_PART}"
 fi
 
-[[ -n "$ROOT_PART" ]]  || die "识别不出 root 分区。请手动指定: ROOT_PART=<编号> usb-grow.sh"
-[[ -n "$MUSIC_PART" ]] || die "识别不出 MUSIC 分区。请手动指定: MUSIC_PART=<编号> usb-grow.sh"
+[[ -n "$ROOT_PART" ]]  || die "识别不出 root 分区(找过: GPT 名 DEBIAN_ROOT / 挂载点 / / ext4)"
+[[ -n "$MUSIC_PART" ]] || die "识别不出 MUSIC 分区(找过: GPT 名 MUSIC / 挂载点 /mnt/songdisk / 最后一个分区)"
 [[ "$ROOT_PART" != "$MUSIC_PART" ]] || die "root 与 MUSIC 被识别成了同一个分区(p${ROOT_PART}), 已中止"
 
-ROOT_DEV="$(part_path "$ROOT_PART")"
-MUSIC_DEV="$(part_path "$MUSIC_PART")"
+ROOT_DEV="$(part_field "$ROOT_PART" 3)"
+MUSIC_DEV="$(part_field "$MUSIC_PART" 3)"
 [[ -n "$ROOT_DEV" && -n "$MUSIC_DEV" ]] || die "找不到分区设备节点(p${ROOT_PART}=${ROOT_DEV:-空} p${MUSIC_PART}=${MUSIC_DEV:-空})"
 
-# 注意: 每个探测都补 || true —— 命令替换失败在 set -e 下会直接干掉脚本,
-# 而下面本来就有更清楚的 [[ -n ... ]] || die 提示, 不该被抢先退出。
-ROOT_START="$(info_field "$ROOT_PART" 'First sector' || true)"
-ROOT_LAST="$(info_field "$ROOT_PART" 'Last sector' || true)"
-MUSIC_START="$(info_field "$MUSIC_PART" 'First sector' || true)"
-MUSIC_LAST="$(info_field "$MUSIC_PART" 'Last sector' || true)"
-[[ -n "$ROOT_START" && -n "$ROOT_LAST" && -n "$MUSIC_START" && -n "$MUSIC_LAST" ]] \
-  || die "用 sgdisk 读取分区扇区范围失败(分区表可能已损坏)。先跑 --check 看完整信息"
+ROOT_START="$(part_field "$ROOT_PART" 7)"
+ROOT_LAST="$(part_field "$ROOT_PART" 8)"
+MUSIC_START="$(part_field "$MUSIC_PART" 7)"
+MUSIC_LAST="$(part_field "$MUSIC_PART" 8)"
+# 扇区信息只来自 sgdisk -p, 而读整块磁盘要 root 权限 —— 这里把两种失败分开说清楚
+# (表里读不到的字段是 "-", 所以空和 "-" 都要当成"没读到")
+for _v in "$TOTAL_SECTORS" "$ROOT_START" "$ROOT_LAST" "$MUSIC_START" "$MUSIC_LAST"; do
+  if [[ -z "$_v" || "$_v" == "-" ]]; then
+    die "读不到 ${DISK} 的分区扇区范围。最常见的原因是权限: 读整块磁盘需要 root, 请跑 sudo usb-grow.sh --check"
+  fi
+  [[ "$_v" =~ ^[0-9]+$ ]] || die "分区扇区范围里出现非数字($_v), 分区表可能已损坏, 先跑 --check 看完整信息"
+done
 
 ok "root 分区 : p${ROOT_PART} = ${ROOT_DEV}  (扇区 ${ROOT_START}..${ROOT_LAST})"
 ok "MUSIC 分区: p${MUSIC_PART} = ${MUSIC_DEV}  (扇区 ${MUSIC_START}..${MUSIC_LAST})"
@@ -213,7 +403,7 @@ if [[ "$MODE" == "check" ]]; then
   else
     say "有 $(to_gib "$FREE_SECTORS") GiB 未分配。执行 usb-grow.sh 可以把它分给 root / MUSIC"
   fi
-  say "完整日志: ${LOG_FILE}"
+  log_hint
   exit 0
 fi
 
@@ -321,4 +511,4 @@ else
   warn "或者手动执行: sudo partprobe ${DISK} && sudo resize2fs ${MUSIC_DEV}"
 fi
 ok "root 分区: $(df -h / 2>/dev/null | awk 'NR==2{print $2}' || echo '?')"
-say "完整日志: ${LOG_FILE}"
+log_hint

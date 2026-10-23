@@ -226,7 +226,10 @@ cmd_status() {
   if [[ -n "${http_proxy:-}${https_proxy:-}${all_proxy:-}${HTTP_PROXY:-}${ALL_PROXY:-}" ]]; then
     echo "${G}已设置${N} ${http_proxy:-${https_proxy:-$all_proxy}}"
   else
-    echo "${Y}未设置${N}(终端环境变量靠 ${PROFILE_D} 探测后自动设置)"
+    # 这个"未设置"曾经长期挂着当正常现象, 其实是个真 bug: /etc/profile.d 只有
+    # 登录 shell 读, 而 xfce4-terminal 开的是非登录 shell。现在 ~/.bashrc 里也
+    # source 了同一份脚本, 开一个新终端就一定有(端口通不通除外)。
+    echo "${Y}未设置${N}(开一个新终端试试: ~/.bashrc 与 ${PROFILE_D} 都会加载它)"
   fi
 
   echo -n "  apt        : "

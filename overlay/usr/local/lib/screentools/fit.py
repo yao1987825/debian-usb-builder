@@ -97,7 +97,7 @@ def parse_xrandr(text):
     每个 output:
         connected   是否已连接
         primary     是否主屏
-        current     (w,h,rate) 当前模式
+        current     (w,h,rate) 当前模式(以 xrandr 打的 * 标记为准)
         modes       [(w,h,rate,label), ...]  该屏支持的所有模式
         resolution  xrandr 报的头部尺寸串(仅供显示)
     """
@@ -124,7 +124,8 @@ def parse_xrandr(text):
             outputs[name] = {
                 "connected": state == "connected",
                 "primary": "primary" in rest.split(),
-                "current": cur,
+                "current": None,
+                "current_header": cur,
                 "modes": [],
                 "resolution": res,
             }
@@ -143,6 +144,16 @@ def parse_xrandr(text):
             w, h = int(mm.group(1)), int(mm.group(2))
             rate = float(mm.group(3)) if mm.group(3) else None
             outputs[current_output]["modes"].append((w, h, rate, s))
+            # xrandr 在"当前正在用"的模式后面打 *, 这个比头部那行可靠:
+            # 头部只有 640x480+0+0 这种写法, 带不出刷新率, 而同一个分辨率
+            # 常常挂着好几个刷新率, 认错当前模式就会白设一次。
+            if "*" in s and outputs[current_output]["current"] is None:
+                outputs[current_output]["current"] = (w, h, rate)
+
+    # 一个 * 都没标(有些驱动不给标)时, 才退回头部那行
+    for o in outputs.values():
+        if o["connected"] and o["current"] is None:
+            o["current"] = o["current_header"]
 
     return {"outputs": outputs, "primary": primary}
 
@@ -232,6 +243,11 @@ def build_plan(query_text, verbose_text, force_fallback=False):
     return plan
 
 
+def plain_label(label):
+    """去掉 xrandr 给模式行末尾打的 * / + 标记, 顺手把多余空格压掉, 给人看。"""
+    return " ".join(re.sub(r"[*+]", "", label).split())
+
+
 def current_label(o):
     cur = o.get("current")
     if not cur:
@@ -239,18 +255,74 @@ def current_label(o):
     for m in o["modes"]:
         if m[0] == cur[0] and m[1] == cur[1]:
             if cur[2] is None or m[2] is None:
-                return m[3]
+                return plain_label(m[3])
             if abs(m[2] - cur[2]) < 0.01:
-                return m[3]
+                return plain_label(m[3])
     return f"{cur[0]}x{cur[1]}"
 
 
+def same_mode(cur, target):
+    """当前模式是不是已经是目标模式。
+
+    比的是 (宽, 高, 刷新率) 三元组, 不是 xrandr 打印出来的那一整行字符串 ——
+    那一行里带 * / + 标记和排版空格, 两块屏的缩进不一样就会把"已经是了"
+    误判成"需要设置", 于是对着当前模式再设一次。
+    两边只要有一边没读出刷新率(模式名里自带刷新率时就是这种情况),
+    就只比宽高。
+    """
+    if not cur or not target:
+        return False
+    if (cur[0], cur[1]) != (target[0], target[1]):
+        return False
+    if cur[2] is None or target[2] is None:
+        return True
+    return abs(cur[2] - target[2]) < 0.01
+
+
+def mode_name(target):
+    """从 xrandr 打印的那一行里取出真正的模式名。
+
+    xrandr --query 的一行模式长这样:
+        1920x1080     60.00*+
+        640x480       73.00*
+        1920x1080_60.00  59.94
+    只有第一个空白之前的那段才是模式名, 后面的刷新率和 * / + 只是给人看的标记。
+
+    踩过的坑: 之前把整行(含 "73.00*")原样塞给 --mode, xrandr 找不到这个模式,
+    报 "cannot find mode 640x480       73.00*", 结果一块屏都没设成。
+    """
+    w, h, _rate, label = target
+    if label:
+        name = label.split()[0]
+        if name:
+            return name
+    return f"{w}x{h}"
+
+
 def mode_cmd(item):
-    w, h, rate, label = item["target"]
-    cmd = ["xrandr", "--output", item["output"], "--mode", label]
+    rate = item["target"][2]
+    cmd = ["xrandr", "--output", item["output"], "--mode", mode_name(item["target"])]
     if rate is not None:
         cmd += ["--rate", f"{rate:g}"]
     return cmd
+
+
+def apply_mode(item):
+    """真正去设置一块屏, 返回 (成功?, 失败详情)。
+
+    带 --rate 失败时再退一步只设模式名: 有些驱动不接受显式 --rate,
+    但模式名本身已经把刷新率编进去了。
+    """
+    r = run(mode_cmd(item))
+    if r is not None and r.returncode == 0:
+        return True, ""
+    detail = (r.stdout if r else "") or ""
+    if item["target"][2] is not None:
+        retry = run(["xrandr", "--output", item["output"], "--mode", mode_name(item["target"])])
+        if retry is not None and retry.returncode == 0:
+            return True, ""
+        detail = detail or ((retry.stdout if retry else "") or "")
+    return False, detail.strip()[:200]
 
 
 # ---------------------------------------------------------------- 运行时
@@ -375,6 +447,7 @@ def main(argv):
 
     if not do_list:
         print(f"{BLU}[screen-fit]{RST} 检测到 {len(plan)} 块屏幕:")
+    failed = 0
     for item in plan:
         mark = f" {DIM}(主屏){RST}" if item["primary"] else ""
         who = f" {DIM}[{item['edid_name']}]{RST}" if item["edid_name"] else ""
@@ -389,26 +462,30 @@ def main(argv):
             print(f"  {YEL}⚠{RST}  {item['output']}: 这块屏没有可用模式, 跳过")
             continue
 
-        if item["current_label"] == item["target"][3]:
+        if same_mode(item["current"], item["target"]):
             print(f"  {GRN}✅{RST}  {item['output']}{mark} 已经是 {human_mode(item)}, 不用改{who}")
             continue
 
-        cmd = mode_cmd(item)
         if dry:
-            print(f"  {DIM}(试运行){RST} {' '.join(cmd)}")
+            print(f"  {DIM}(试运行){RST} {' '.join(mode_cmd(item))}")
             continue
 
-        r = run(cmd)
-        if r is not None and r.returncode == 0:
+        good, detail = apply_mode(item)
+        if good:
             print(f"  {GRN}✅{RST}  {item['output']}{mark} {item['current_label'] or '未知'} → {human_mode(item)}{who}")
         else:
-            detail = (r.stdout if r else "") or "xrandr 执行失败"
-            print(f"  {RED}❌{RST}  {item['output']} 设置失败: {detail.strip()[:200]}")
+            failed += 1
+            print(f"  {RED}❌{RST}  {item['output']} 设置失败: {detail or 'xrandr 执行失败'}")
 
     if not do_list and not dry:
         print()
+        if failed:
+            print(f"{RED}[screen-fit]{RST} {failed} 块屏没设成功。先跑 screen-fit --list 看这块屏到底支持哪些模式, "
+                  f"再手动设一次: xrandr --output <屏名> --mode <模式名>")
+            print()
         print(f"{DIM}提示: screen-fit --enable 可以开机自动匹配; --disable 关掉{RST}")
-    return 0
+    # 有一块屏没设成就不该报成功: --restore(开机自启)和 music-health 都靠退出码判断
+    return 1 if failed else 0
 
 
 def self_test():
@@ -472,6 +549,36 @@ def self_test():
                   fb is not None and fb[0] == 1920 and fb[1] == 1080,
                   fb[3] if fb else None))
 
+    # --mode 只能给"模式名", 不能把 xrandr 打印的整行(含 73.00* 这种标记)塞进去。
+    # 这条正是真机上 screen-fit 一块屏都设不成的直接原因。
+    item640 = {"output": "default", "target": (640, 480, 73.0, "640x480       73.00*")}
+    cases.append(("--mode 只取模式名, 刷新率走 --rate",
+                  mode_cmd(item640) == ["xrandr", "--output", "default",
+                                        "--mode", "640x480", "--rate", "73"],
+                  " ".join(mode_cmd(item640))))
+    item_i = {"output": "HDMI-1", "target": (1920, 1080, 60.0, "1920x1080i     60.00")}
+    cases.append(("隔行模式 1920x1080i 的名字原样保留",
+                  mode_cmd(item_i)[4] == "1920x1080i", " ".join(mode_cmd(item_i))))
+    item_named = {"output": "DP-1", "target": (1920, 1080, None, "1920x1080_60.00")}
+    cases.append(("模式名自带刷新率时不再加 --rate",
+                  mode_cmd(item_named) == ["xrandr", "--output", "DP-1",
+                                           "--mode", "1920x1080_60.00"],
+                  " ".join(mode_cmd(item_named))))
+    cases.append(("没有标签时退回按宽高拼模式名",
+                  mode_name((1280, 1024, 60.0, "")) == "1280x1024", mode_name((1280, 1024, 60.0, ""))))
+
+    # "已经是目标分辨率"的判断
+    cases.append(("当前就是目标(刷新率没读出来)不用重复设置",
+                  same_mode((640, 480, None), (640, 480, 73.0)) is True, None))
+    cases.append(("当前就是目标(两边都有刷新率)不用重复设置",
+                  same_mode((1920, 1080, 60.0), (1920, 1080, 60.0)) is True, None))
+    cases.append(("同宽高但刷新率不同不算已设置",
+                  same_mode((1920, 1080, 60.0), (1920, 1080, 144.0)) is False, None))
+    cases.append(("宽高不同不算已设置",
+                  same_mode((1024, 768, 60.0), (1920, 1080, 60.0)) is False, None))
+    cases.append(("读不到当前模式时不算已设置",
+                  same_mode(None, (1920, 1080, 60.0)) is False, None))
+
     qtext = (
         "Screen 0: minimum 320 x 200, current 1920 x 1080, maximum 16384 x 16384\n"
         "eDP-1 connected primary 1920x1080+0+0 (normal left inverted right x axis y axis) 344mm x 194mm\n"
@@ -496,6 +603,16 @@ def self_test():
     cases.append(("模式带刷新率",
                   info["outputs"]["HDMI-1"]["modes"][0][2] == 60.0,
                   info["outputs"]["HDMI-1"]["modes"][0][2]))
+    # 当前模式要认 xrandr 打的 * 标记: 头部那行只有 640x480+0+0, 带不出刷新率
+    cases.append(("当前模式取带 * 标记的那一行",
+                  info["outputs"]["HDMI-1"]["current"] == (1280, 1024, 60.0),
+                  info["outputs"]["HDMI-1"]["current"]))
+    cases.append(("当前模式显示时去掉 * 标记",
+                  current_label(info["outputs"]["HDMI-1"]) == "1280x1024 60.00",
+                  current_label(info["outputs"]["HDMI-1"])))
+    cases.append(("eDP-1 当前模式也是 * 那一行",
+                  info["outputs"]["eDP-1"]["current"] == (1920, 1080, 60.0),
+                  info["outputs"]["eDP-1"]["current"]))
 
     # 真实 EDID 片段: 第 1 个描述符是产品名 "LARI"(0x0000FC..),
     # 第 2 个才是详细时序 DTD(像素时钟 148.5MHz / 1920x1080)

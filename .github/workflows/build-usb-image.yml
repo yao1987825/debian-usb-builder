@@ -58,7 +58,7 @@ on:
   workflow_call:
 
 permissions:
-  contents: read
+  contents: write        # 打 tag 触发时要把产物发到 Release
   actions: write          # 用来主动取消同一分支上更早的构建(见下面的步骤)
 
 # 并发组必须按 run 唯一, 不能按分支。
@@ -187,6 +187,76 @@ jobs:
             out/BUILD-INFO.txt
           retention-days: 30
           if-no-files-found: error
+
+      # 只有打 tag 才发 Release; workflow_dispatch 的试构建只在 Artifacts 里留一份,
+      # 不去污染正式发布页。
+      - name: 取回产物(发 Release 用)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/download-artifact@v4
+        with:
+          name: debian-usb-image-${{ env.SUITE }}
+          path: out
+
+      - name: 生成 Release 说明
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          {
+            echo "### ${GITHUB_REF_NAME} · Debian ${SUITE} · 档位 ${PROFILE}"
+            echo
+            echo "#### 镜像信息"
+            echo
+            echo '```'
+            cat out/BUILD-INFO.txt
+            echo '```'
+            echo
+            echo "#### 校验"
+            echo
+            echo '```'
+            cat out/SHA256SUMS.txt
+            echo '```'
+            echo
+            echo "#### 写盘"
+            echo
+            echo "Windows 用 Rufus / balenaEtcher 选 \`$(basename out/*.img.xz)\`；Linux 直接 dd："
+            echo
+            echo '```bash'
+            echo "sha256sum -c SHA256SUMS.txt"
+            echo "sudo dd if=$(basename out/*.img.xz) of=/dev/sdX bs=4M status=progress conv=fsync"
+            echo '```'
+            echo
+            echo "#### 本次改动"
+            echo
+            if [ -f CHANGELOG.md ]; then
+              # 只取 CHANGELOG 里当前版本那一节, 别把整个历史都塞进说明里。
+              # 标题写成 "## v1.0.0 - 2026-10-23" 或 "## v1.0.0" 都认。
+              awk -v v="## ${GITHUB_REF_NAME}" '
+                index($0, v) == 1 { grab = 1; next }
+                grab && /^## / { exit }
+                grab { print }
+              ' CHANGELOG.md
+            fi
+          } > release-notes.md
+          cat release-notes.md
+
+      - name: 发布 GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # 同名 tag 被重复推送时(重跑 workflow)不要报错, 删掉旧的 release 重建
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG 已存在, 先删掉旧的"
+            gh release delete "$TAG" --yes --cleanup-tag
+          fi
+          gh release create "$TAG" \
+            --title "${TAG} · Debian ${SUITE} · 档位 ${PROFILE}" \
+            --notes-file release-notes.md \
+            --latest \
+            out/*.img.xz out/SHA256SUMS.txt out/BUILD-INFO.txt
+          gh release view "$TAG" --json url,tagName,isDraft,isPrerelease \
+            --jq '"发布完成: \(.tagName) (draft=\(.isDraft) prerelease=\(.isPrerelease))\n\(.url)"'
 
       - name: 构建摘要
         run: |

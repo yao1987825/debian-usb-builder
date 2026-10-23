@@ -69,6 +69,19 @@ SHA256SUMS.txt                   # 校验和
 BUILD-INFO.txt                   # 版本/UUID/分区信息
 ```
 
+### 3b. 或者直接用正式发布的版本（推荐）
+
+给仓库打个 `v*` tag 推上去，Actions 会构建完自动发布到
+[**Releases**](https://github.com/yao1987825/debian-usb-builder/releases)：
+
+```bash
+git tag v1.0.0 && git push origin v1.0.0
+```
+
+Release 页面上除了镜像文件，还有自动生成的说明：镜像信息（`BUILD-INFO.txt`）、
+SHA256 校验、写盘命令，以及本次改动（从 `CHANGELOG.md` 对应版本的小节摘出来的）。
+版本号规则和每个版本改了什么见 [CHANGELOG.md](CHANGELOG.md)。
+
 ### 4. 写入 U 盘
 
 **Windows（推荐 Rufus）**：Rufus 选设备 → 引导类型选 `DD 模式` → 选 `debian-usb-bookworm.img.xz` → 开始。
@@ -98,6 +111,7 @@ usb-grow.sh --check            # 先看诊断(不需要 root): 磁盘多大、�
 usb-grow.sh                    # 默认 root 拿 30%, MUSIC 拿 70%
 usb-grow.sh --root-percent 50  # 自己分配比例
 usb-grow.sh --dry-run          # 打印将执行的改动但不动分区表
+usb-grow.sh --self-test        # 认分区逻辑自测(构建期也会自动跑一遍)
 ```
 
 不用自己加 `sudo` —— 脚本会自己提权。跑之前它会先把环境全打印出来：
@@ -114,8 +128,24 @@ usb-grow.sh --dry-run          # 打印将执行的改动但不动分区表
 [grow] MUSIC  : 1.50 GiB  ->  25.50 GiB
 ```
 
-完整输出同时写到 `/var/log/usb-grow.log`。改分区表前会用 `sgdisk --backup` 备份一份 GPT。
-分区号识别走三级兜底（GPT 标签 → 挂载点 → 磁盘最后一个分区），所以即使标签丢了也能认出来。
+完整输出同时写到 `/var/log/usb-grow.log`（普通用户跑时若没权限写 `/var/log`，会自动退到
+`~/.local/state/usb-grow.log`，并在输出里告诉你写到哪儿了）。改分区表前会用
+`sgdisk --backup` 备份一份 GPT。
+
+分区号识别**不依赖 `lsblk`**：`lsblk` 认分区靠 `PARTN/PARTLABEL/FSTYPE` 这些列名，
+不同发行版/版本认得的列不一样，一旦不认，它会返回非零；再叠加脚本的 `set -e` +
+`pipefail`，整个扩容脚本就会在半路自己消失（而且报的"失败命令"是管道里的 `awk`，
+极具误导性）。现在的做法是：
+
+| 信息 | 来源 | 理由 |
+| --- | --- | --- |
+| 分区号 / 设备节点 | `/sys/block/<盘>/*/partition` | 内核给的，最可靠 |
+| 扇区范围 / GPT 分区名 | `sgdisk -p` | 自己写进去的分区表 |
+| 文件系统标签 / 类型 | `/run/udev/data/<主>:<次>` | udev 已经识别好了，普通用户也读得到 |
+
+识别顺序还有多层兜底：GPT 分区名 / 文件系统标签 → 挂载点（`/` 与 `/mnt/songdisk`）
+→ 文件系统类型 → 磁盘最后一个分区。任何一步失败都只是"这一条线索没用上"，
+不会再把整个脚本带走。
 
 扩容后 `df -h` 就能看到 `/mnt/songdisk` 变成几十 G，**不需要重装**。
 
@@ -359,7 +389,8 @@ sudo systemctl disable --now systemd-networkd   # 别让两个一起管网卡
 **Q：`usb-grow.sh` 跑起来没反应 / 不知道它做了什么**
 新版脚本会先打印完整的环境诊断再动手，输出同时写 `/var/log/usb-grow.log`。
 先用 `usb-grow.sh --check` 看诊断（不需要 root），确认它认出了正确的磁盘和分区再执行。
-如果分区识别错了，可以手动指定：`ROOT_PART=3 MUSIC_PART=4 usb-grow.sh`。
+普通用户看到"读不到分区扇区范围"是正常的 —— 读整块磁盘要 root，重新用 `sudo usb-grow.sh --check` 跑一遍。
+认分区这段逻辑可以脱离磁盘单测：`usb-grow.sh --self-test`。
 
 **Q：插到不同显示器上分辨率不对（画面拉伸 / 字糊 / 字特别小）**
 Xorg 开机经常随便挑一个模式（比如 1024x768），而不是这块屏自己的原生分辨率。
@@ -377,6 +408,16 @@ screen-fit --disable  # 不想要开机自动匹配时关掉（手动调过分�
 再在 xrandr 列出的模式里找同尺寸、刷新率最高的那一个，逐块屏单独设置。
 EDID 读不到时退回启发式（取刷新率 ≥60 的最大分辨率），会在输出里标明是推测值。
 
+两个容易踩的细节：
+- `--mode` 只能给**模式名**（`640x480`），不能把 `xrandr --query` 打印的那一整行
+  （`640x480       73.00*`）塞进去 —— 塞了 xrandr 就报 `cannot find mode`，
+  一块屏都设不成。刷新率走单独的 `--rate`。
+- "当前模式"以 xrandr 打在模式后面的 `*` 为准，而不是输出头部那行
+  （`640x480+0+0` 带不出刷新率）。同一分辨率挂着好几个刷新率时，
+  用头部那行判断会把"已经是了"误判成"需要设置"，对着当前模式白设一次。
+- 有一块屏没设成功时 `screen-fit` 返回**非零**退出码（开机自启的 `--restore` 与
+  `music-health` 都靠这个判断）。
+
 **Q：代理怎么用（默认 socks5://192.168.6.1:1070）**
 ```bash
 proxy                 # 等同 proxy status
@@ -390,6 +431,10 @@ proxy test            # 实测：真发一个请求看能不能出去
 镜像里预置了 `/etc/profile.d/99-proxy.sh`，它**先探测端口通不通，通了才 export `http_proxy`**。
 这一步是刻意的：代理没跑的时候如果还硬设 `http_proxy`，症状是"所有下载全部失败"，
 比压根没有代理更难查。`music proxy` 是同一个命令。
+
+注意 `/etc/profile.d` 只有**登录 shell** 才读，而 `xfce4-terminal` 开出来的是非登录 shell
+（只读 `~/.bashrc`）。所以镜像里同时在 `user` 与 `root` 的 `~/.bashrc` 里 source 了同一份脚本，
+两条路都通 —— 在桌面终端里新开一个窗口就能拿到 `http_proxy`。
 
 两个容易踩的点已经处理好了：
 - `apt` 用不了"先探后用"的写法，所以 apt 的代理由 `proxy on` / `off` 显式开关，
