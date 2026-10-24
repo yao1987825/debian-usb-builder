@@ -678,7 +678,11 @@ ok "rime-data-luna-pinyin: luna_pinyin_simp 方案已就位"
 grep -q "schema: luna_pinyin_simp" "$RIME_CFG" \
   || die "Rime 没指定简体方案 luna_pinyin_simp —— 打出来会是繁体字"
 ok "Rime 方案已锁定为简体 luna_pinyin_simp"
-if grep -qE 'ascii_composer/switch_key/(Shift_L|Shift_R): inline_ascii' "$RIME_CFG"; then
+# 注意正则里的 "?": YAML 里 key 是带引号的("ascii_composer/switch_key/Shift_L": 值),
+# 冒号**前面还有一个引号**。原来的正则写成 (Shift_L|Shift_R): inline_ascii
+# 少了这个引号, 永远匹配不上, 于是掉进 elif 分支直接 die ——
+# v1.0.5 的构建就是这么挂的(镜像其实一次都没构建成功过)。
+if grep -qE 'ascii_composer/switch_key/(Shift_L|Shift_R)"?: inline_ascii' "$RIME_CFG"; then
   ok "Rime Shift 切换中英文已用扁平键配置(inline_ascii)"
 elif grep -q 'ascii_composer/switch_key' "$RIME_CFG"; then
   die "Rime 的 ascii_composer 写成了字符串而不是 键->动作 映射, Shift 永远不会生效"

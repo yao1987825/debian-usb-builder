@@ -154,7 +154,8 @@ struct_check() {
     if [[ -z "$_rime" ]]; then
       die "Rime 用户目录里没有 default.custom.yaml(必须在 /home/user/.local/share/fcitx5/rime/), Rime 配置根本没被读到"
     fi
-    if grep -qE 'ascii_composer/switch_key/(Shift_L|Shift_R): inline_ascii' <<<"$_rime"; then
+    # 正则里的 "?" 不能省: YAML 的 key 带引号, 冒号前面还有一个引号
+    if grep -qE 'ascii_composer/switch_key/(Shift_L|Shift_R)"?: inline_ascii' <<<"$_rime"; then
       ok "Rime 的 Shift 切中英文已用扁平键配置(inline_ascii)"
     elif grep -q 'ascii_composer/switch_key' <<<"$_rime"; then
       die "Rime 的 ascii_composer 写成了字符串而不是 键->动作 映射, Shift 永远不会生效"
