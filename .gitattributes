@@ -19,3 +19,6 @@ overlay-n1/usr/local/bin/*        text eol=lf
 # Python 脚本同理: CRLF 会让 python3 报 SyntaxError
 overlay/usr/local/lib/**/*.py     text eol=lf
 *.py                            text eol=lf
+# 仓库自身的元文件也统一 LF, 免得混进 CRLF
+.gitignore                       text eol=lf
+.gitattributes                   text eol=lf
