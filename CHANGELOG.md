@@ -13,6 +13,102 @@ GitHub Actions 自动构建镜像并发布到 [Releases](https://github.com/yao1
 
 ---
 
+## 未发布 (v1.1.0 候选)
+
+- 2026-10-24 真机反馈: 标签页切换快捷键不明 / 关光后黑屏 / Ctrl+Alt+T 盖住整个屏幕
+  / Shift 切换偶尔失灵 / 基础命令行工具不够
+- 本次**不发版不打 tag**, 等代码评审后再决定版本号
+
+### 🔧 修构建: v1.0.5 的镜像其实一次都没构建成功过
+
+v1.0.5 的构建挂在**自家断言**上:
+
+```
+[fatal] Rime 的 ascii_composer 写成了字符串而不是 键->动作 映射, Shift 永远不会生效
+```
+
+但 Rime 配置明明是对的。真因是**断言的正则写错了**:
+
+```bash
+# 断言(错): 冒号前面少算了一个引号
+grep -qE 'ascii_composer/switch_key/(Shift_L|Shift_R): inline_ascii' "$RIME_CFG"
+
+# 文件里的实际内容: key 是带引号的, 冒号前面还有一个引号
+"ascii_composer/switch_key/Shift_L": inline_ascii
+```
+
+正则永远匹配不上 → 掉进 `elif` 分支 → 直接 die。
+而报出来的错("写成了字符串")和真因(正则少了个引号)完全对不上,
+于是日志把人引向错误的方向。
+
+修法: 正则里补上可选引号 `"?`, 三处一起改
+(`build-image.sh` / `verify-image.sh` / `music-health`)。
+**同样的错在 `music-health` 里更阴** —— 它会把配置正确的镜像
+误报成"Shift 永远不会生效", 让用户去反复折腾一个没坏的输入法。
+
+### 终端体系: 一个窗口 + 标签页 + 永不消失
+
+针对三条终端反馈:
+
+- **关掉所有标签页就黑屏**。这个桌面没有面板也没有桌面图标(用户明确不要),
+  所以终端窗口全没了就是真的什么都不剩。新增 `terminal-keepalive`:
+  每 3 秒查一次还有没有终端窗口, 没有就拉起一个。
+  开机有 10 秒宽限期, 免得和开机终端抢跑开两个窗口。
+  `music terminal on/off/status` 控制。
+- **标签页切换快捷键不明**。`~/.config/xfce4/terminal/terminalrc` 里
+  **显式写死** NewTab / NextTab / PrevTab / CloseTab, 不依赖默认值;
+  再加上 `~/.bashrc` 里让**标签页标题跟随当前目录**
+  (标签上显示 `user@deb: Downloads`, 一眼看出是哪个标签)。
+- **Ctrl+Alt+T 盖住整个屏幕**。新增 `terminal-new`(`xfce4-terminal --tab`:
+  已有窗口就加标签页, 没窗口才开新窗口)和 `terminal-setup`:
+  开机时用 `xfconf-query` 把 XFCE 里所有指向终端的快捷键改成 `terminal-new`,
+  **改完复查一遍**; 兜底再改桌面项的 `Exec` ——
+  只用 sed 换 `Exec=` 那一行, Name/Icon/Categories 原样保留
+  (`exo-open --launch TerminalEmulator` 是按 Name 匹配的, 改名字就找不到了)。
+  两个桌面项都处理: `xfce4-terminal-emulator.desktop`(`xfce4-settings` 装的,
+  XFCE 快捷项走这个)和 `xfce4-terminal.desktop`。
+- **开机就是终端**。接在上游已有的 `xfce-terminal.desktop` 自启项上
+  (它负责等 fcitx5 就绪), 用 `-e /usr/local/bin/terminal-welcome` 先打一张
+  键位速查表再进 shell。**不另开自启项**, 免得开机弹出两个终端窗口。
+- 预置 `~/.tmux.conf`(进阶用, 默认不启用 —— 多个终端 attach 同一 tmux 会话
+  反而看到同一个画面, 只会更乱)。
+
+### 中英文切换: 加一条不看状态的开关
+
+真机反馈"偶尔按 Shift 切不动"。真因是**状态**, 不是配置:
+
+fcitx5 处于 `Inactive`(英文态)时按键根本不经过输入法, Rime 收不到 Shift;
+中文态下一切正常 —— 合起来看就成了"偶尔失灵"。
+(另外 Rime 的 `ascii_composer` 只在**没有预编辑**时才处理 Shift。)
+
+- 新增 `music im-toggle`: 先读 `fcitx5-remote` 状态再决定发 `-c` 还是 `-C`,
+  **不看当前状态**都能切
+- Rime 另配 `Caps_Lock` 切换键(比 Shift 少一类误判)
+- `music health` 直接报出当前是中文态还是英文态, 并说明此时按 Shift 无效
+- README 写清 `Ctrl+Space` / `music im-toggle` / `Shift` / `CapsLock` 的可靠性排序
+
+### 基础命令行工具
+
+新增 ripgrep fd-find bat fzf ncdu jq tree less nano bash-completion
+p7zip-full zstd unzip zip lsof procps psmisc diffutils patch net-tools
+traceroute mtr-tiny whois tcpdump pciutils usbutils lm-sensors smartmontools
+hdparm btop shellcheck plocate bsdextrautils tmux screen wmctrl xdotool
+
+- Debian 把 `fd` / `bat` 装成 `fdfind` / `batcat`, 镜像里补了软链,
+  直接敲 `fd` / `bat` 就行
+- **没有装 man**: 第 8 步瘦身会把 `/usr/share/man` 整个删掉,
+  装一个查不到东西的 `man` 命令比不装更误导, 统一用 `--help`
+
+### 校验
+
+- 构建期断言: 终端脚本齐全 / terminalrc 写了标签页快捷键 / 自启项在 /
+  开机终端接上了速查表 / `.tmux.conf` 在 / Rime 有 CapsLock
+- 结构校验同样断言, 外加 10 个命令行工具 + `fd`/`bat` 软链
+- 回归测试新增: `music keys` / `music terminal on|off|status|new` /
+  未知子命令返回 2 / `im-toggle` 三种状态
+
+---
+
 ## v1.0.5
 
 - 2026-10-24 真机反馈: "开机自启的终端里按 Shift 切不了中英文, 打出来还是繁体字"
