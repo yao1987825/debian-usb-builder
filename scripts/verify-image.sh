@@ -147,14 +147,24 @@ struct_check() {
 
     # 输入法: Rime 的 Shift 切换曾经写成字符串而不是映射, 真机只表现为
     # "按 Shift 没反应", 极难定位 —— 所以直接查文件内容。
+    # 路径必须是 Rime 用户目录 ~/.local/share/fcitx5/rime/(真机 v1.0.4 的坑:
+    # 配置放在 ~/.config/fcitx5/rime/ 下 Rime 根本不看)。
     local _rime
-    _rime="$($SUDO debugfs -R "cat /home/user/.config/fcitx5/rime/default.custom.yaml" "$p3" 2>/dev/null || true)"
-    if grep -qE 'ascii_composer/switch_key/(Shift_L|Shift_R)' <<<"$_rime"; then
-      ok "Rime 的 Shift 切中英文已用扁平键配置"
+    _rime="$($SUDO debugfs -R "cat /home/user/.local/share/fcitx5/rime/default.custom.yaml" "$p3" 2>/dev/null || true)"
+    if [[ -z "$_rime" ]]; then
+      die "Rime 用户目录里没有 default.custom.yaml(必须在 /home/user/.local/share/fcitx5/rime/), Rime 配置根本没被读到"
+    fi
+    if grep -qE 'ascii_composer/switch_key/(Shift_L|Shift_R): inline_ascii' <<<"$_rime"; then
+      ok "Rime 的 Shift 切中英文已用扁平键配置(inline_ascii)"
     elif grep -q 'ascii_composer/switch_key' <<<"$_rime"; then
       die "Rime 的 ascii_composer 写成了字符串而不是 键->动作 映射, Shift 永远不会生效"
     else
-      warn "Rime 没配 Shift 切中英文(不是致命的, Ctrl+Space 依然能激活输入法)"
+      die "Rime 没配 Shift 切中英文(按 Shift 不会有反应)"
+    fi
+    if grep -q "schema: luna_pinyin_simp" <<<"$_rime"; then
+      ok "Rime 已锁定简体方案 luna_pinyin_simp"
+    else
+      die "Rime 没指定简体方案 luna_pinyin_simp —— 打出来会是繁体字"
     fi
     if $SUDO debugfs -R "cat /home/user/.xprofile" "$p3" 2>/dev/null | grep -q "GTK_IM_MODULE=fcitx"; then
       ok "已写入 ~/.xprofile 的 IM 环境变量(不依赖 im-config 钩子)"

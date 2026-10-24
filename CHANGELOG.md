@@ -13,6 +13,52 @@ GitHub Actions 自动构建镜像并发布到 [Releases](https://github.com/yao1
 
 ---
 
+## v1.0.5
+
+- 2026-10-24 真机反馈: "开机自启的终端里按 Shift 切不了中英文, 打出来还是繁体字"
+- 用户要求: 只保留一个输入法、Shift 切中英、输出简体
+
+### 输入法重构: 只留 Rime(简体) + Shift 切中英
+
+三个连环坑，逐个挖出来的：
+
+1. **Rime 的配置从没被读过**。fcitx5-rime 的"用户目录"是
+   `~/.local/share/fcitx5/rime/`，而我们把 `default.custom.yaml` 放在了
+   `~/.config/fcitx5/rime/` —— Rime 根本不看那个目录。真机表现是"Shift
+   按了没反应"，而构建期断言查的也是这个错路径，一直绿灯自欺。
+   现已移到正确目录，并在 build-image.sh / verify-image.sh 里断言真实路径。
+2. **右 Shift 不切换**。Rime 共享 default.yaml 里 `Shift_R: commit_text`
+   （只提交不切换），习惯按右 Shift 的人会觉得"切换不了"。左右统一改成
+   `inline_ascii`：预编辑为空时按一下进 ASCII 直写，再按一下回中文。
+   注意 Rime 的 ascii_composer 只在"没有预编辑"时处理 Shift —— 正在打拼音
+   想临时切英文，先按 Esc 清掉预编辑再按 Shift。
+3. **开机默认是键盘直写态**。fcitx5 起来后当前输入法落在 `keyboard-us`
+   （rime 是 on-demand addon，DefaultIM 不生效），此时按 Shift 根本没人
+   接管按键 —— 这才是"Shift 完全没反应"的直接原因。现在：
+   - profile 里只留 `rime` + `keyboard-us` 两项，rime 排第一；
+   - 新增自启项 `fcitx5-default.desktop`，等 fcitx5 就绪后
+     `fcitx5-remote -s rime`，开机即中文态。
+
+### 繁体字问题
+
+原来 profile 里的 fcitx5 内置拼音(pinyin 引擎)首候选是繁体("國家")，
+而且它不吃单键 Shift。按用户要求"删掉其它输入法，只留一个"：
+镜像与真机都已卸载 `fcitx5-chinese-addons`(-bin/-data)，只保留 Rime，
+并用 `luna_pinyin_simp` 方案锁死简体输出(首候选"国家")。
+
+### 关于搜狗
+
+Debian 12 仓库里没有搜狗包(`sogoupinyin`/`fcitx-sogoupinyin` 候选为空)，
+搜狗 Linux 版基于已淘汰的 fcitx4，与 fcitx5 混装必炸。等价替代是 Rime
+(可定制、纯简体、Shift 可切)。
+
+### 附带
+
+- `~/.config/autostart` 目录原本是 root:root，用户连自启项都加不了 → 构建期
+  改为归用户。
+- `music-health` 修 Rime 路径误报，并新增"当前输入法是不是 rime"检查
+  (不是 rime 就提示 Shift 不会有反应)。
+
 ## v1.0.4
 
 - 2026-10-23 真机（v1.0.3 + 64G U 盘）实测发现两个"扩了但文件系统永远不补"的连环 bug

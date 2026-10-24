@@ -6,6 +6,10 @@
 # 改完直接保存即可 —— Fcitx5 的 Rime 插件会检测到配置目录变化并自动重新部署;
 # 若想手动触发: rime_deployer --build
 #
+# 注意: 当前方案 luna_pinyin_simp 用的是 prism(简体音节表), 不查 dictionary 列表,
+# 所以这份自定义词库目前不会自动上屏。要让它生效, 得在 default.custom.yaml 里
+# 给 translator 补上 dictionary 列表并引到 user 词典。
+#
 name: user
 version: "0.1"
 sort: by_weight

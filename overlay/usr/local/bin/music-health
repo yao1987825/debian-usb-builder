@@ -138,13 +138,27 @@ else
   tip "im-config -n fcitx5   然后注销重登(改完必须重登, 不重登不生效)"
 fi
 
-RIME="${HOMEDIR}/.config/fcitx5/rime"
+# Rime 的用户目录是 ~/.local/share/fcitx5/rime/ —— 放在 ~/.config/fcitx5/rime/
+# 下 Rime 根本不看(真机 v1.0.4 的坑: 配置从没生效过)。
+RIME="${HOMEDIR}/.local/share/fcitx5/rime"
 if [[ -f "${HOMEDIR}/.config/fcitx5/profile" ]]; then
   ok "fcitx5 profile 存在"
   grep -E '^(DefaultIM|Enable)=' "${HOMEDIR}/.config/fcitx5/profile" 2>/dev/null | sed 's/^/       /'
 else
   bad "fcitx5 profile 不存在"
 fi
+# 当前输入法: 真机 v1.0.4 的坑 —— fcitx5 起来后默认是 keyboard-us(直写态),
+# 这时按 Shift 根本没人接管, 用户只会觉得"输入法坏了"。
+if command -v fcitx5-remote >/dev/null 2>&1; then
+  _im="$(fcitx5-remote -n 2>/dev/null || true)"
+  if [[ "$_im" == "rime" ]]; then
+    ok "当前输入法是 rime(按 Shift 可切中英)"
+  elif [[ -n "$_im" ]]; then
+    bad "当前输入法是 ${_im}, 不是 rime —— 按 Shift 不会有反应(跑 music im-fix 或重登)"
+    tip "切到中文态: fcitx5-remote -s rime"
+  fi
+fi
+
 for f in default.custom.yaml user.dict.yaml; do
   if [[ -f "${RIME}/${f}" ]]; then
     ok "Rime 配置 ${f} 存在"
@@ -154,12 +168,12 @@ for f in default.custom.yaml user.dict.yaml; do
 done
 # Shift 切中英文靠的是 Rime 的 ascii_composer 开关, 这一项最容易被忽略
 if [[ -f "${RIME}/default.custom.yaml" ]]; then
-  # 正确写法是扁平键 "ascii_composer/switch_key/Shift_L": commit_code
-  if grep -qE 'ascii_composer/switch_key/(Shift_L|Shift_R)' "${RIME}/default.custom.yaml"; then
-    ok "Rime 的 Shift 切中英文: 已配置(扁平键写法)"
+  # 正确写法是扁平键 "ascii_composer/switch_key/Shift_L": inline_ascii
+  if grep -qE 'ascii_composer/switch_key/(Shift_L|Shift_R): inline_ascii' "${RIME}/default.custom.yaml"; then
+    ok "Rime 的 Shift 切中英文: 已配置(inline_ascii, 扁平键写法)"
   elif grep -q 'ascii_composer/switch_key' "${RIME}/default.custom.yaml"; then
     bad "Rime 的 ascii_composer 写成了字符串而不是键->动作映射, Shift 永远不会生效"
-    tip '正确写法: "ascii_composer/switch_key/Shift_L": commit_code'
+    tip '正确写法: "ascii_composer/switch_key/Shift_L": inline_ascii'
     GUESSED_HINTS="${GUESSED_HINTS}Rime 的 Shift 切换配置写错了(应该是扁平键 switch_key/Shift_L)\n"
   else
     warn "Rime 配置里没有 ascii_composer —— 按 Shift 不会切中英文"

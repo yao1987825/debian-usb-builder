@@ -1,0 +1,33 @@
+# Rime 全局配置补丁: 简体拼音 + Shift 切中英文
+#
+# 位置很关键: fcitx5-rime 的"用户目录"是 ~/.local/share/fcitx5/rime/,
+# 放在 ~/.config/fcitx5/rime/ 下 Rime 根本不看 —— 踩过这个坑:
+# 配置写了很久从没生效过, 表现就是"按 Shift 没反应"。
+# 改完这个文件要重新部署(删 build 目录或重启 fcitx5), 否则还是旧方案。
+
+patch:
+  # 候选词数量
+  "menu/page_size": 7
+  # 上屏第一个候选
+  "switcher/select_first": true
+
+  # ---- 左右 Shift 都能切中英文 ----
+  # 必须是扁平写法 "路径/键名": 值; 写成 "ascii_composer/switch_key": "Shift_L"
+  # 是给整个键赋了个字符串, Rime 不认, Shift 永远不会生效。
+  # 动作选 inline_ascii: 预编辑为空时按一下进 ASCII 直写(英文), 再按一下回中文。
+  # 共享 default.yaml 里右 Shift 默认是 commit_text(只提交不切换),
+  # 习惯按右 Shift 的人会觉得"切换不了", 这里左右统一成 inline_ascii。
+  # 注意: Rime 的 ascii_composer 只在"没有预编辑"时才处理 Shift —— 正在打拼音
+  # 想临时切英文, 先按 Esc 清掉预编辑, 再按 Shift。
+  "ascii_composer/switch_key/Shift_L": inline_ascii
+  "ascii_composer/switch_key/Shift_R": inline_ascii
+  # Control 不参与切换, 免得 Ctrl+字母被误吞
+  "ascii_composer/switch_key/Control_L": noop
+  "ascii_composer/switch_key/Control_R": noop
+
+  # ascii_mode 开关显示在 F4 方案菜单里, reset: 0 = 每次启动都是中文
+  "switches/@0/reset": 0
+
+  # 默认使用简体中文方案(luna_pinyin_simp 走简体表, 默认的 luna_pinyin 是繁体)
+  "schema_list":
+    - schema: luna_pinyin_simp

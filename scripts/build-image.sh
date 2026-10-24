@@ -228,12 +228,15 @@ FONT_PKGS="fonts-wqy-zenhei"
 # ---- 必需组件 ----
 # 网络: 必须装 NetworkManager。Debian 12 + Xfce 默认不带任何网卡配置服务,
 # 没有它开机就没人给网卡分配 IP(DHCP), 表现为"完全连不上网"。
-# 输入法: fcitx5-chinese-addons 和 rime-data-luna-pinyin 必须显式列出 --
-# 这里的 --no-install-recommends 会跳过它们。fcitx5-rime 只硬 Depends 一个
+# 输入法: rime-data-luna-pinyin 必须显式列出 --
+# 这里的 --no-install-recommends 会跳过它。fcitx5-rime 只硬 Depends 一个
 # 几 KB 的 librime-data 元包, 真正的拼音词库 rime-data-luna-pinyin 只是
 # Recommends; 不装它 Rime 部署不出拼音方案, 表现是"装了输入法但哪里都
-# 打不出中文"。fcitx5-chinese-addons 让 profile 里的 pinyin 引擎真实存在,
-# 作为 Rime 失效时的兜底。
+# 打不出中文"。
+# 只保留 Rime 一个中文输入法: 用户明确要求"删掉其它输入法, 只留一个,
+# Shift 切中英文"。fcitx5-chinese-addons(内置拼音)已从镜像里去掉 ——
+# 它默认输出繁体(首候选"國家"), 而且实测不吃单键 Shift; Rime 用
+# luna_pinyin_simp 方案是纯简体, Shift 在空预编辑时可切中英。
 # 桌面只保留"终端优先"的最小集合。
 # 之前装的是 xfce4 元包, 它会连带装进 xfce4-panel(顶部/底部面板)和
 # xfdesktop4(桌面图标 dock)—— 用户明确说"不需要 dock 栏, 只要终端",
@@ -247,7 +250,7 @@ chroot_run apt-get install -y --no-install-recommends \
   xfce4-session xfwm4 xfce4-settings xfce4-terminal \
   lightdm \
   fcitx5 fcitx5-rime fcitx5-config-qt im-config \
-  fcitx5-chinese-addons rime-data-luna-pinyin \
+  rime-data-luna-pinyin \
   fcitx5-frontend-gtk3 fcitx5-frontend-qt5 \
   openssh-client \
   ${FONT_PKGS} \
@@ -622,25 +625,26 @@ log "镜像内脚本语法检查通过"
 
 # 输入法: 光"文件在"不够, Rime 的 Shift 配置写错过一次(把映射写成了字符串),
 # 真机表现是"按 Shift 没反应", 根本看不出是配置问题。所以直接检查内容。
-RIME_CFG="${ROOTFS}/home/${USER_NAME}/.config/fcitx5/rime/default.custom.yaml"
-[[ -f "$RIME_CFG" ]] || die "Rime 配置缺失: ${RIME_CFG}"
+# 路径必须是 Rime 的"用户目录" ~/.local/share/fcitx5/rime/ —— 放在
+# ~/.config/fcitx5/rime/ 下 Rime 根本不看(真机 v1.0.4 的坑: 配置从没生效)。
+RIME_CFG="${ROOTFS}/home/${USER_NAME}/.local/share/fcitx5/rime/default.custom.yaml"
+[[ -f "$RIME_CFG" ]] || die "Rime 配置缺失: ${RIME_CFG}(必须在 Rime 用户目录里)"
 # 拼音词库必须真实存在: default.custom.yaml 要求 luna_pinyin_simp 方案,
 # 但 --no-install-recommends 不会带 rime-data-luna-pinyin(见上面装包注释),
 # 词库缺失时 Rime 部署失败, 整个镜像一个中文字都打不出来 —— 构建期就拦下。
 [[ -f "${ROOTFS}/usr/share/rime-data/luna_pinyin_simp.schema.yaml" ]] \
   || die "拼音词库缺失: ${ROOTFS}/usr/share/rime-data/luna_pinyin_simp.schema.yaml 未找到(rime-data-luna-pinyin 没装进去), Rime 将无法部署拼音方案"
 ok "rime-data-luna-pinyin: luna_pinyin_simp 方案已就位"
-# profile 里引用了 pinyin 引擎(fcitx5-chinese-addons 提供), 它也必须真实存在,
-# 否则 Rime 万一挂了连兜底都没有
-[[ -f "${ROOTFS}/usr/share/fcitx5/addon/pinyin.conf" ]] \
-  || die "pinyin 引擎缺失: ${ROOTFS}/usr/share/fcitx5/addon/pinyin.conf 未找到(fcitx5-chinese-addons 没装进去), profile 里的 pinyin 引用是悬空的"
-ok "fcitx5-chinese-addons: pinyin 引擎已就位"
-if grep -qE 'ascii_composer/switch_key/(Shift_L|Shift_R)' "$RIME_CFG"; then
-  ok "Rime Shift 切换中英文已用扁平键配置"
+# 简体方案必须选中, 否则默认是繁体 luna_pinyin(真机 v1.0.4: 用户打出繁体字)
+grep -q "schema: luna_pinyin_simp" "$RIME_CFG" \
+  || die "Rime 没指定简体方案 luna_pinyin_simp —— 打出来会是繁体字"
+ok "Rime 方案已锁定为简体 luna_pinyin_simp"
+if grep -qE 'ascii_composer/switch_key/(Shift_L|Shift_R): inline_ascii' "$RIME_CFG"; then
+  ok "Rime Shift 切换中英文已用扁平键配置(inline_ascii)"
 elif grep -q 'ascii_composer/switch_key' "$RIME_CFG"; then
   die "Rime 的 ascii_composer 写成了字符串而不是 键->动作 映射, Shift 永远不会生效"
 else
-  warn "Rime 没配 Shift 切中英文(按 Shift 不会有反应)"
+  die "Rime 没配 Shift 切中英文(按 Shift 不会有反应)"
 fi
 # 真机 v1.0.2 "输入法切不动"的根因: profile/config 属主是 root, 用户写不进去,
 # fcitx5 切换时要写状态, 写不进去就没反应。构建期直接断言属主, 不给这种坑
@@ -669,6 +673,19 @@ Terminal=false
 NoDisplay=true
 X-GNOME-Autostart-enabled=true
 EOF
+  # 开机把输入法切到 rime(中文态)。真机 v1.0.4 的坑: fcitx5 起来后当前输入法
+  # 是 keyboard-us(直写), 此时按 Shift 没有任何反应, 用户只会觉得"输入法坏了"。
+  # 这里等 fcitx5 就绪后主动切一次, 开机就能直接打中文、按 Shift 切英文。
+  cat > "${ROOTFS}/home/${USER_NAME}/.config/autostart/fcitx5-default.desktop" <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=Fcitx 5 Default Input Method
+Comment=开机把输入法切到 rime(中文态), 否则 Shift 切换没反应
+Exec=sh -c 'for i in $(seq 1 60); do fcitx5-remote >/dev/null 2>&1 && break; sleep 0.2; done; sleep 1; fcitx5-remote -s rime'
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
+EOF
   cat > "${ROOTFS}/home/${USER_NAME}/.xprofile" <<'EOF'
 # --- fcitx5 ---
 # im-config 靠 Xsession.d 钩子, lightdm 自动登录时经常断链;
@@ -679,8 +696,14 @@ export XMODIFIERS=@im=fcitx
 EOF
   chown "${USER_UID}:${USER_GID}" \
         "${ROOTFS}/home/${USER_NAME}/.config/autostart/fcitx5.desktop" \
+        "${ROOTFS}/home/${USER_NAME}/.config/autostart/fcitx5-default.desktop" \
         "${ROOTFS}/home/${USER_NAME}/.xprofile" 2>/dev/null || true
-  log "已写入 fcitx5 自启项与 ~/.xprofile 环境变量"
+  # autostart 目录本身也要归用户 —— 真机上它曾是 root:root, 普通用户想自己加
+  # 个自启项都写不进去("权限不够")。
+  chown "${USER_UID}:${USER_GID}" "${ROOTFS}/home/${USER_NAME}/.config/autostart" 2>/dev/null || true
+  grep -q "fcitx5-remote -s rime" "${ROOTFS}/home/${USER_NAME}/.config/autostart/fcitx5-default.desktop" \
+    || die "缺少开机切 rime 的自启项 —— 开机默认是键盘直写态, 按 Shift 不会有任何反应"
+  log "已写入 fcitx5 自启项、开机切 rime 自启项与 ~/.xprofile 环境变量"
 fi
 
 # 对着"即将装进镜像的那份" music 跑一遍命令行回归测试。
@@ -698,7 +721,11 @@ fi
 rm -f "${ROOTFS}/etc/resolv.conf"
 ln -s /run/systemd/resolve/stub-resolv.conf "${ROOTFS}/etc/resolv.conf"
 
-# fcitx5 默认使用 rime
+# fcitx5 只保留一个中文输入法: Rime(简体)。用户明确要求"删掉其它输入法,
+# 只留一个, Shift 切中英文"。
+# 真机 v1.0.4 的坑: fcitx5 启动时当前输入法落在 keyboard-us(直写态),
+# 此时按 Shift 根本没人接管 —— 表现为"按 Shift 没反应"。profile 里把
+# rime 放第一位, 再配合下面的自启项开机主动切到 rime。
 mkdir -p "${ROOTFS}/home/${USER_NAME}/.config/fcitx5/rime"
 cat > "${ROOTFS}/home/${USER_NAME}/.config/fcitx5/profile" <<'EOF'
 [Groups/0]
@@ -709,15 +736,11 @@ Icon=/usr/share/icons/hicolor/scalable/apps/fcitx5.svg
 Enable On Keyboard Layout=0
 
 [Groups/0/Items/0]
-Name=keyboard-us
-Layout=
-
-[Groups/0/Items/1]
 Name=rime
 Layout=
 
-[Groups/0/Items/2]
-Name=pinyin
+[Groups/0/Items/1]
+Name=keyboard-us
 Layout=
 
 [GroupOrder]
@@ -752,8 +775,18 @@ for _f in "${FCITX_DIR}/profile" "${FCITX_DIR}/config"; do
     || die "fcitx5 配置属主 uid 是 ${_uid} 而不是 ${USER_UID}: $_f —— 普通用户写不进去, 输入法切换会失灵"
 done
 ok "fcitx5 profile/config 属主正确(uid=${USER_UID} ${USER_NAME}), 用户可写"
+# Rime 用户目录同样要归用户: Rime 要在里面写 build/ 缓存和 user.yaml,
+# 属主不对就部署不出方案(表现是"输入法起来了但打不出中文")。
+RIME_DIR="${ROOTFS}/home/${USER_NAME}/.local/share/fcitx5/rime"
+[[ -d "$RIME_DIR" ]] || die "Rime 用户目录缺失: ${RIME_DIR}"
+chown -R "${USER_UID}:${USER_GID}" "$RIME_DIR"
+_rime_uid="$(stat -c '%u' "${RIME_DIR}/default.custom.yaml")"
+[[ "$_rime_uid" == "$USER_UID" ]] \
+  || die "Rime 配置属主 uid 是 ${_rime_uid} 而不是 ${USER_UID} —— Rime 读不到/写不进用户目录"
+ok "Rime 用户目录与配置属主正确(uid=${USER_UID} ${USER_NAME})"
 
-# Rime 的简体拼音方案与自定义词库放在 overlay/home/user/.config/fcitx5/rime/ 下
+# Rime 的简体拼音方案与自定义词库放在 overlay/home/user/.local/share/fcitx5/rime/ 下
+# (Rime 的用户目录就是这里, 放错位置 Rime 根本不看 —— 真机 v1.0.4 的坑)
 
 # 登录后自动开一个终端(命令行优先)
 mkdir -p "${ROOTFS}/home/${USER_NAME}/.config/autostart"
