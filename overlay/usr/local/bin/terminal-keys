@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+#
+# terminal-keys —— 终端键位速查表
+#
+# 用户反馈的问题2: "终端的标签切换快捷键不明"
+#
+# 与其写在文档里等人去翻, 不如直接打印在终端里, 而且**每次开机都打印一次**。
+# 键位表也写在 ~/.bashrc 之外, 随时 `keys` 或 `music keys` 都能再看一遍。
+#
+set -uo pipefail
+
+cat <<'EOF'
+┌──────────────────────────────────────────────────────────────────────┐
+│  终端速查                                                            │
+├──────────────────────────────────────────────────────────────────────┤
+│  标签页                                                              │
+│    Ctrl+Shift+T      新建一个标签页                                   │
+│    Ctrl+Page_Down    切到下一个标签页                                 │
+│    Ctrl+Page_Up      切到上一个标签页                                 │
+│    Ctrl+Shift+W      关闭当前标签页(关到最后一个 = 关掉整个窗口)      │
+│    Ctrl+Alt+T        在当前窗口加标签页(不会盖住屏幕)                 │
+│    鼠标点标签栏      直接切过去                                       │
+│                                                                      │
+│  找不到终端了? 以下任意一个都能救回来:                                │
+│    Ctrl+Alt+T        再开一个(守护会自动拉起)                         │
+│    桌面上的「终端」图标                                               │
+│    菜单: 终端(当前窗口加标签页)                                      │
+│                                                                      │
+│  复制粘贴 / 其它                                                      │
+│    Ctrl+Shift+C/V    复制 / 粘贴                                      │
+│    Ctrl+Shift+F      搜索                                              │
+│    Alt+F10           菜单                                              │
+│    F11               全屏                                              │
+│                                                                      │
+│  中文输入                                                             │
+│    Ctrl+Space        中英文切换(任何时候都有效)                        │
+│    Shift             中文状态下快速切中英(有时会不灵, 就用 Ctrl+Space) │
+│    CapsLock          另一个快速切换键                                  │
+│    music im-toggle   命令行切换中英文                                  │
+│                                                                      │
+│  常用命令                                                             │
+│    music             下载器总入口(single / playlist / gui / doctor)    │
+│    music health      一键体检(输入法/分辨率/网络/分区/夸克)            │
+│    music keys        这张速查表                                        │
+│    music net         网络诊断                                         │
+│    music screen      按显示器原生分辨率调整                             │
+│    music quark-login 夸克网盘扫码登录(拿 cookie)                       │
+│    music terminal on|off|status  终端守护开关                         │
+│    proxy on|off|test 代理开关                                         │
+│    screen-fit        重新匹配分辨率                                   │
+│    music-im-fix      一键修好输入法                                   │
+│    usb-grow.sh --check 看看 U 盘剩余空间, --help 看全部用法            │
+└──────────────────────────────────────────────────────────────────────┘
+EOF

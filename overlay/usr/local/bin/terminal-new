@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+#
+# terminal-new —— 开一个新的终端标签页
+#
+# 用户反馈的问题6: "Ctrl+Alt+T 会把整个屏幕都给覆盖了, 把之前的 terminal 都占了"
+#
+# 所以这里不用 xfce4-terminal 的默认行为(默认开一个独立窗口), 而是 --tab:
+#   已经有终端窗口 -> 在那个窗口里加一个标签页
+#   一个窗口都没有 -> 退化成开一个新窗口
+#
+set -uo pipefail
+
+# --tab 必须在 --title 之类的前面还是后面无所谓, 但 --title 的值不能以 - 开头
+exec xfce4-terminal --tab "$@"

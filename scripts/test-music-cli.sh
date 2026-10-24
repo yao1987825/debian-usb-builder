@@ -44,7 +44,46 @@ EOF
 : > "$TMP/single.py"
 # 4) 假的 quark_login.py: 同样只占位, 用来验证"参数有没有原样透传过去"
 : > "$TMP/quark_login.py"
-chmod +x "$TMP/bin/mountpoint" "$TMP/home/.venvs/music/bin/python"
+# 5) 假的终端脚本: 记录收到的参数, 用来验证子命令分发没把参数吃掉
+cat > "$TMP/terminal-keys" <<'EOF'
+#!/bin/sh
+printf 'KEYS'
+for a in "$@"; do printf ' %s' "$a"; done
+printf '\n'
+EOF
+cat > "$TMP/terminal-keepalive" <<'EOF'
+#!/bin/sh
+printf 'KEEPALIVE'
+for a in "$@"; do printf ' %s' "$a"; done
+printf '\n'
+EOF
+cat > "$TMP/terminal-new" <<'EOF'
+#!/bin/sh
+printf 'NEW'
+for a in "$@"; do printf ' %s' "$a"; done
+printf '\n'
+EOF
+cat > "$TMP/terminal-setup" <<'EOF'
+#!/bin/sh
+printf 'SETUP'
+for a in "$@"; do printf ' %s' "$a"; done
+printf '\n'
+EOF
+# 6) 假的 fcitx5-remote: 状态存在文件里, 用来验证 im-toggle 的状态机
+cat > "$TMP/bin/fcitx5-remote" <<'EOF'
+#!/bin/sh
+# 状态码: 0=关闭 1=Inactive(英文态) 2=Active(中文态)
+ST="${FAKE_FCITX_STATE:?}"
+if [ $# -eq 0 ]; then cat "$ST"; exit 0; fi
+case "$1" in
+  -c) echo 2 > "$ST" ;;
+  -C) echo 1 > "$ST" ;;
+esac
+exit 0
+EOF
+chmod +x "$TMP/bin/mountpoint" "$TMP/home/.venvs/music/bin/python" \
+         "$TMP/terminal-keys" "$TMP/terminal-keepalive" "$TMP/terminal-new" "$TMP/terminal-setup" \
+         "$TMP/bin/fcitx5-remote"
 
 export PATH="$TMP/bin:$PATH"
 export HOME="$TMP/home"
@@ -52,6 +91,10 @@ export SONG_DIR="$TMP/songdisk"
 export VENV_MUSIC="$TMP/home/.venvs/music"
 export SINGLE_PY="$TMP/single.py"
 export QUARK_PY="$TMP/quark_login.py"
+export TERMINAL_KEYS_BIN="$TMP/terminal-keys"
+export TERMINAL_KEEPALIVE_BIN="$TMP/terminal-keepalive"
+export TERMINAL_NEW_BIN="$TMP/terminal-new"
+export TERMINAL_SETUP_BIN="$TMP/terminal-setup"
 
 run_music() { bash "$MUSIC_BIN" "$@"; }
 
@@ -162,6 +205,81 @@ if (( rc == 2 )); then
   ok "未知 quark 子命令返回 2"
 else
   bad "未知 quark 子命令退出码是 ${rc}(期望 2)"
+fi
+
+# ---- 8. 终端相关的子命令(用户实测反馈后新增) ----
+# 这一组盯的是: 终端/输入法是小白唯一能摸到的入口, 分发出错就等于没有。
+out="$(run_music keys)"
+if [[ "$out" == "KEYS" ]]; then
+  ok "music keys 打印键位速查表"
+else
+  bad "music keys 输出不对: [$(echo "$out" | tr '\n' ' ')]"
+fi
+
+out="$(run_music terminal status)"
+if [[ "$out" == "KEEPALIVE --status" ]]; then
+  ok "music terminal status 转发到 terminal-keepalive"
+else
+  bad "music terminal status 参数不对: [$(echo "$out" | tr '\n' ' ')]"
+fi
+
+out="$(run_music terminal off)"
+if [[ "$out" == "KEEPALIVE --pause" ]]; then
+  ok "music terminal off 转发成 --pause"
+else
+  bad "music terminal off 参数不对: [$(echo "$out" | tr '\n' ' ')]"
+fi
+
+out="$(run_music terminal on)"
+if [[ "$out" == "KEEPALIVE --resume" ]]; then
+  ok "music terminal on 转发成 --resume"
+else
+  bad "music terminal on 参数不对: [$(echo "$out" | tr '\n' ' ')]"
+fi
+
+out="$(run_music terminal new)"
+if [[ "$out" == "NEW" ]]; then
+  ok "music terminal new 转发到 terminal-new"
+else
+  bad "music terminal new 参数不对: [$(echo "$out" | tr '\n' ' ')]"
+fi
+
+set +e
+out="$(run_music terminal 不存在的子命令 2>&1)"; rc=$?
+set -e
+if (( rc == 2 )); then
+  ok "未知 terminal 子命令返回 2"
+else
+  bad "未知 terminal 子命令退出码是 ${rc}(期望 2)"
+fi
+
+# im-toggle: 没有 fcitx5-remote 时必须**明确报错并返回非 0**,
+# 而不是静默成功(否则用户以为切了其实没切)
+export FAKE_FCITX_STATE="$TMP/fcitx-state"
+echo 1 > "$FAKE_FCITX_STATE"   # 假装现在是英文态
+out="$(run_music im-toggle 2>&1)"
+if [[ "$out" == "已切到中文" && "$(cat "$FAKE_FCITX_STATE")" == "2" ]]; then
+  ok "im-toggle 英文态 -> 发 -c 切到中文"
+else
+  bad "im-toggle 英文态切换不对: [$(echo "$out" | tr '\n' ' ')] state=$(cat "$FAKE_FCITX_STATE")"
+fi
+
+echo 2 > "$FAKE_FCITX_STATE"   # 假装现在是中文态
+out="$(run_music im-toggle 2>&1)"
+if [[ "$out" == "已切到英文" && "$(cat "$FAKE_FCITX_STATE")" == "1" ]]; then
+  ok "im-toggle 中文态 -> 发 -C 切到英文"
+else
+  bad "im-toggle 中文态切换不对: [$(echo "$out" | tr '\n' ' ')] state=$(cat "$FAKE_FCITX_STATE")"
+fi
+
+echo 0 > "$FAKE_FCITX_STATE"   # fcitx5 没跑
+set +e
+out="$(run_music im-toggle 2>&1)"; rc=$?
+set -e
+if (( rc != 0 )) && grep -q "im-fix" <<<"$out"; then
+  ok "im-toggle 在 fcitx5 没运行时明确报错并指向 im-fix"
+else
+  bad "im-toggle 在 fcitx5 没运行时的行为不对(rc=${rc}): [$(echo "$out" | tr '\n' ' ')]"
 fi
 
 echo

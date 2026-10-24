@@ -4,12 +4,17 @@
 *.yaml text eol=lf
 *.desktop text eol=lf
 *.cfg  text eol=lf
+# 配置文件同理: CRLF 会让 tmux/xfce4-terminal 解析出奇怪的键值
+*.conf text eol=lf
+# 没有扩展名的配置文件
+overlay/home/user/.config/xfce4/terminal/terminalrc text eol=lf
 # 没有扩展名的可执行脚本也要 LF
 overlay/usr/local/bin/music       text eol=lf
 overlay/usr/local/bin/net-doctor  text eol=lf
 overlay/usr/local/bin/net-rescue  text eol=lf
 overlay/usr/local/bin/screen-fit  text eol=lf
 overlay/usr/local/bin/proxy       text eol=lf
+overlay/usr/local/bin/*           text eol=lf
 overlay-n1/usr/local/bin/*        text eol=lf
 # Python 脚本同理: CRLF 会让 python3 报 SyntaxError
 overlay/usr/local/lib/**/*.py     text eol=lf

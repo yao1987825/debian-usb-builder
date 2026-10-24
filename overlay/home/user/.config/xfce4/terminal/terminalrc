@@ -1,0 +1,60 @@
+[Configuration]
+# xfce4-terminal 配置(由 debian-usb-builder 预置)
+#
+# 目标只有一个: 让"标签页"这件事变得看得见、猜得到。
+#
+# 用户的原话是"终端的标签切换快捷键不明"、"关掉所有标签页就黑屏一片"。
+# 所以这里做了三件事:
+#   1) 把所有快捷键**写死**在配置里(而不是只依赖默认值), 方便随时查
+#   2) 标签页标题跟随当前目录(靠 ~/.bashrc 里的 OSC 0 序列), 一眼看出是哪个标签
+#   3) 初始窗口 120x32, 不再一上来就铺满屏幕
+
+# ---- 字体与配色 ----
+# 用 Monospace 而不是写死 Noto: slim 档没装 Noto CJK, 写死了就是一堆方块。
+# Pango 会自动回退到文泉驿正黑, 中文照样能显示。
+Font=Monospace 11
+FontAllowBold=true
+ColorScheme=Linux
+Opacity=100
+Transparency=0
+
+# ---- 光标 ----
+CursorShape=Block
+CursorBlinkMode=Blink
+
+# ---- 剪贴板 ----
+ClipboardEnable=true
+ClipboardPastePrimary=true
+
+# ---- 滚动 ----
+# 跑下载/编译时输出很长, 10000 行不够用
+Scrollback=100000
+ScrollOnKeystroke=true
+ScrollOnOutput=false
+
+# ---- 窗口与标签页 ----
+Title=Terminal
+TabsPosition=0
+TerminalColumns=120
+TerminalRows=32
+
+# ---- 快捷键(全部显式写出来) ----
+# 标签页:  新建 Ctrl+Shift+T | 关闭 Ctrl+Shift+W | 切换 Ctrl+Page_Down / Ctrl+Page_Up
+Shortcuts=NewTab;Shift+ctrl+t
+Shortcuts=NewWindow;Shift+ctrl+n
+Shortcuts=CloseTab;Shift+ctrl+w
+Shortcuts=NextTab;ctrl+Page_Down
+Shortcuts=PrevTab;ctrl+Page_Up
+Shortcuts=MoveTabRight;Shift+ctrl+Page_Down
+Shortcuts=MoveTabLeft;Shift+ctrl+Page_Up
+Shortcuts=ToggleMenu;Shift+F10
+Shortcuts=Copy;Shift+ctrl+c
+Shortcuts=Paste;Shift+ctrl+v
+Shortcuts=Search;Shift+ctrl+f
+Shortcuts=RenameTab;F2
+Shortcuts=Fullscreen;F11
+Shortcuts=Preferences;ctrl+shift+comma
+Shortcuts=ZoomIn;ctrl+plus
+Shortcuts=ZoomOut;ctrl+minus
+Shortcuts=ResetZoom;ctrl+0
+Shortcuts=ClearHistory;Shift+ctrl+k

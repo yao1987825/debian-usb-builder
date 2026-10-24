@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+#
+# terminal-welcome —— 开机自动弹出的那个终端
+#
+# 用户的设想: "插入u盘读取系统, 像黑客一样, 在终端下操作"
+# 所以登录进去第一眼就该是终端, 而且要把键位直接摆在眼前 ——
+# 不然小白面对一个空终端根本不知道能干什么。
+#
+# 注意: 终端的 autostart 项里已经等过 fcitx5 就绪
+# (等 org.fcitx.Fcitx5 出现在 session bus 上, 见 build-image.sh),
+# 那个等待解决的是"开机首个窗口终身打不出中文"的竞态问题。
+# 这里只负责开窗口 + 打键位速查表。
+#
+set -uo pipefail
+
+# 键位速查表打一次就够, 别刷屏
+/usr/local/bin/terminal-keys 2>/dev/null || true
+printf '\n'
+
+exec "${SHELL:-/bin/bash}"

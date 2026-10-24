@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=终端守护(窗口全没了自动拉起)
+Comment=保证桌面上永远至少有一个终端窗口
+Exec=/usr/local/bin/terminal-keepalive --daemon
+Icon=utilities-terminal
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true

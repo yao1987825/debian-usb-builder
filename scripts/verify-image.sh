@@ -177,11 +177,70 @@ struct_check() {
       die "缺少 fcitx5 自启项, 输入法开机不会自动启动"
     fi
 
+    # ---- 终端体系(用户实测反馈: 标签页快捷键不明 / 关光后黑屏 / Ctrl+Alt+T 盖屏) ----
+    # 注意: 路径必须是 Rime 用户目录 ~/.local/share/fcitx5/rime/
+    # (放在 ~/.config/fcitx5/rime/ 下 Rime 根本不看, 真机 v1.0.4 的坑)
+    local _r
+    _r="$($SUDO debugfs -R "cat /home/user/.local/share/fcitx5/rime/default.custom.yaml" "$p3" 2>/dev/null || true)"
+    if grep -q 'ascii_composer/switch_key/Caps_Lock' <<<"$_r"; then
+      ok "Rime 另配了 CapsLock 切换键(Shift 失灵时的第二条路)"
+    else
+      warn "Rime 没配 CapsLock 切换键(Shift 失灵时只能靠 Ctrl+Space / music im-toggle)"
+    fi
+    local _trc
+    _trc="$($SUDO debugfs -R "cat /home/user/.config/xfce4/terminal/terminalrc" "$p3" 2>/dev/null || true)"
+    if grep -q 'Shortcuts=NewTab' <<<"$_trc" \
+       && grep -q 'Shortcuts=NextTab' <<<"$_trc" \
+       && grep -q 'Shortcuts=PrevTab' <<<"$_trc"; then
+      ok "终端配置里显式写了标签页的 建/切/关 快捷键"
+    else
+      die "终端配置里没有显式写标签页快捷键, 用户猜不到怎么切标签页"
+    fi
+    local _a
+    for _a in terminal-keepalive terminal-setup; do
+      if $SUDO debugfs -R "cat /home/user/.config/autostart/${_a}.desktop" "$p3" 2>/dev/null | grep -q "Exec="; then
+        ok "自启项存在: ${_a}.desktop"
+      else
+        die "缺少自启项 ${_a}.desktop —— 终端守护/键位设置都不会生效"
+      fi
+    done
+    # 开机那个终端必须接上键位速查表(小白面对空终端不知道能干什么)
+    if $SUDO debugfs -R "cat /home/user/.config/autostart/xfce-terminal.desktop" "$p3" 2>/dev/null | grep -q "terminal-welcome"; then
+      ok "开机终端已接上键位速查表"
+    else
+      die "开机终端没接 terminal-welcome —— 登录后是个空终端, 用户不知道能干什么"
+    fi
+    if $SUDO debugfs -R "cat /home/user/.bashrc" "$p3" 2>/dev/null | grep -q "_music_set_title"; then
+      ok "终端标签页标题跟随当前目录"
+    else
+      warn "没写标签页标题(标签页上只有编号, 不好分辨)"
+    fi
+    # 基础命令行工具(用户要求"未来加新功能, 基础命令行工具要具备")
+    local _tool
+    for _tool in /usr/bin/rg /usr/bin/fdfind /usr/bin/batcat /usr/bin/fzf /usr/bin/jq \
+                 /usr/bin/tree /usr/bin/tmux /usr/bin/screen /usr/bin/wmctrl /usr/bin/xdotool; do
+      if $SUDO debugfs -R "stat ${_tool}" "$p3" 2>/dev/null | grep -q "Inode:"; then
+        ok "命令行工具已装: ${_tool}"
+      else
+        die "缺少命令行工具 ${_tool}"
+      fi
+    done
+    for _tool in /usr/local/bin/fd /usr/local/bin/bat; do
+      if $SUDO debugfs -R "stat ${_tool}" "$p3" 2>/dev/null | grep -q "Inode:"; then
+        ok "命令名软链已补: ${_tool}"
+      else
+        die "缺少 ${_tool} 软链(用户敲 fd/bat 会找不到命令)"
+      fi
+    done
+
     # 网络: 没有 NetworkManager 就是一台没有网络的机器, 必须卡住
     local _f
     for _f in /usr/local/bin/net-doctor /usr/local/bin/net-rescue /usr/local/bin/usb-grow.sh \
               /usr/local/bin/screen-fit /usr/local/bin/proxy \
-              /usr/local/bin/music-health /usr/local/bin/music-im-fix /usr/bin/nmcli; do
+              /usr/local/bin/music-health /usr/local/bin/music-im-fix /usr/bin/nmcli \
+              /usr/local/bin/terminal-keepalive /usr/local/bin/terminal-new \
+              /usr/local/bin/terminal-keys /usr/local/bin/terminal-setup \
+              /usr/local/bin/terminal-welcome; do
       if $SUDO debugfs -R "stat ${_f}" "$p3" 2>/dev/null | grep -q "Inode:"; then
         ok "根分区存在 ${_f}"
       else
@@ -193,7 +252,10 @@ struct_check() {
     local _s _d
     for _s in /usr/local/bin/music /usr/local/bin/net-doctor /usr/local/bin/net-rescue /usr/local/bin/usb-grow.sh \
                /usr/local/bin/screen-fit /usr/local/bin/proxy \
-               /usr/local/bin/music-health /usr/local/bin/music-im-fix; do
+               /usr/local/bin/music-health /usr/local/bin/music-im-fix \
+               /usr/local/bin/terminal-keepalive /usr/local/bin/terminal-new \
+               /usr/local/bin/terminal-keys /usr/local/bin/terminal-setup \
+               /usr/local/bin/terminal-welcome; do
       _d="$(mktemp -d)"
       if $SUDO debugfs -R "dump ${_s} ${_d}/probe" "$p3" 2>/dev/null && [[ -s "${_d}/probe" ]]; then
         if bash -n "${_d}/probe" 2>/dev/null; then

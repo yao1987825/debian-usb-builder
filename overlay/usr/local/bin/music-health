@@ -91,6 +91,18 @@ if command -v fcitx5-remote >/dev/null 2>&1; then
   else
     warn "输入法处于关闭状态 —— 按 Ctrl+Space 激活"
   fi
+  # fcitx5-remote 不带参数会返回状态码, 用来解释"按 Shift 没反应":
+  #   0 = 关闭       1 = Inactive(英文态)   2 = Active(中文态)
+  # 关键: 处于 **英文态(1)** 时按键根本不经过输入法, Rime 收不到 Shift,
+  # 所以"按 Shift 没反应"其实是状态问题, 不是配置问题(配置是逐项校验过的)。
+  _st="$(fcitx5-remote 2>/dev/null || echo 0)"
+  case "$_st" in
+    2) ok "当前是中文态(Active) —— 此时按 Shift 可以快速切中英" ;;
+    1) warn "当前是英文态(Inactive) —— 此时按 Shift/CapsLock 都不会切换, 因为按键不经过输入法"
+       tip "按 Ctrl+Space 切回中文, 或执行: music im-toggle(不看你当前状态, 直接切)" ;;
+    0) warn "fcitx5 当前是关闭状态(0) —— 任何切换键都没用, 先按 Ctrl+Space 或跑 music im-fix" ;;
+    *) warn "fcitx5 状态码异常: ${_st}" ;;
+  esac
 fi
 
 info "环境变量:"
@@ -180,8 +192,88 @@ if [[ -f "${RIME}/default.custom.yaml" ]]; then
   fi
 fi
 
-############################## 2. 显示器分辨率 ##############################
-sect "2. 显示器分辨率"
+############################## 2. 终端 ##############################
+# 用户实测反馈的三条都跟终端有关:
+#   "终端的标签切换快捷键不明" / "关掉所有标签页就黑屏" / "Ctrl+Alt+T 盖住整个屏幕"
+# 这一节就是让用户一眼看出"现在终端是什么状态、少了哪一环"。
+sect "2. 终端(标签页 / 守护 / 键位)"
+
+for _t in terminal-keepalive terminal-new terminal-keys terminal-setup terminal-welcome; do
+  if [[ -x "/usr/local/bin/${_t}" ]]; then
+    ok "/usr/local/bin/${_t} 存在"
+  else
+    bad "/usr/local/bin/${_t} 不存在 —— 终端体系没装全"
+  fi
+done
+
+if [[ -f "${HOMEDIR}/.config/xfce4/terminal/terminalrc" ]]; then
+  if grep -q 'Shortcuts=NextTab' "${HOMEDIR}/.config/xfce4/terminal/terminalrc" \
+     && grep -q 'Shortcuts=PrevTab' "${HOMEDIR}/.config/xfce4/terminal/terminalrc"; then
+    ok "标签页切换快捷键已显式配置(Ctrl+Page_Down / Ctrl+Page_Up)"
+  else
+    bad "终端配置里没有标签页切换快捷键"
+    tip "跑 music terminal setup 重新生成"
+  fi
+else
+  bad "没有终端配置 terminalrc"
+fi
+
+if [[ -f "${HOMEDIR}/.config/autostart/terminal-keepalive.desktop" ]]; then
+  ok "终端守护自启项在(窗口全没了会自动拉起)"
+else
+  bad "终端守护自启项不在 —— 关掉所有终端后会黑屏"
+fi
+if pgrep -f "terminal-keepalive --daemon" >/dev/null 2>&1; then
+  ok "终端守护进程正在运行"
+else
+  warn "终端守护进程没在运行"
+  if [[ -f "${HOMEDIR}/.config/terminal-keepalive.paused" ]]; then
+    tip "是被你手动关掉的(music terminal on 恢复)"
+  else
+    tip "跑 music terminal on 打开"
+  fi
+fi
+
+# Ctrl+Alt+T 到底被绑成了什么
+if command -v xfconf-query >/dev/null 2>&1; then
+  _ks="$(xfconf-query -c xfce4-keyboard-shortcuts -l 2>/dev/null \
+         | grep '/commands/custom/.*/command$' \
+         | while read -r _p; do
+             _v="$(xfconf-query -c xfce4-keyboard-shortcuts -p "$_p" 2>/dev/null || true)"
+             case "$_v" in *Terminal*|*terminal*) printf '%s = %s\n' "${_p##*/}" "$_v" ;; esac
+           done)"
+  if grep -q 'terminal-new' <<<"$_ks"; then
+    ok "Ctrl+Alt+T 已改成「同窗口新标签页」(不再盖住屏幕)"
+  elif grep -qi 'terminal' <<<"$_ks"; then
+    warn "Ctrl+Alt+T 仍然是「开新窗口」, 会盖住整个屏幕"
+    tip "跑 music terminal setup 改成同窗口加标签页"
+  else
+    info "没找到终端相关的全局快捷键(可能 XFCE 版本不同)"
+  fi
+  [[ -n "$_ks" ]] && printf '%s\n' "$_ks" | sed 's/^/       /'
+fi
+
+if [[ -x /usr/local/bin/terminal-keys ]]; then
+  tip "键位速查: music keys"
+fi
+
+# 桌面项的 Exec 兜底: 这个桌面既没有面板也没有桌面图标,
+# 所以"开新终端"的入口只剩快捷键和命令 —— 桌面项必须已经指向 terminal-new。
+_te="${HOMEDIR}/.local/share/applications/xfce4-terminal-emulator.desktop"
+if [[ -f "$_te" ]]; then
+  if grep -q '^Exec=/usr/local/bin/terminal-new' "$_te"; then
+    ok "终端桌面项已指向 terminal-new(快捷键走 exo-open 也会开标签页)"
+  else
+    bad "终端桌面项的 Exec 没改 —— Ctrl+Alt+T 可能还是会盖住整个屏幕"
+    tip "跑 music terminal setup 重新改"
+  fi
+else
+  warn "没找到终端桌面项覆盖(快捷键可能还是会盖住屏幕)"
+  tip "跑 music terminal setup 重新生成"
+fi
+
+############################## 3. 显示器分辨率 ##############################
+sect "3. 显示器分辨率"
 if ! command -v xrandr >/dev/null 2>&1; then
   bad "没有 xrandr 命令"
   tip "sudo apt-get install -y x11-xserver-utils"
@@ -210,8 +302,8 @@ else
   fi
 fi
 
-############################## 3. 磁盘与权限 ##############################
-sect "3. 磁盘、分区与权限"
+############################## 4. 磁盘与权限 ##############################
+sect "4. 磁盘、分区与权限"
 df -h / /mnt/songdisk 2>/dev/null | sed 's/^/     /' || warn "df 失败"
 
 ROOT_SRC="$(findmnt -no SOURCE / 2>/dev/null || true)"
@@ -317,8 +409,8 @@ if command -v sudo >/dev/null 2>&1; then
   fi
 fi
 
-############################## 4. 网络与代理 ##############################
-sect "4. 网络与代理"
+############################## 5. 网络与代理 ##############################
+sect "5. 网络与代理"
 info "网卡: $(ip -br -4 addr show scope global 2>/dev/null | awk '{print $1" "$4}' | tr '\n' ' ' || echo '读不到')"
 info "默认路由: $(ip route show default 2>/dev/null | head -1 || echo '没有')"
 if getent hosts www.baidu.com >/dev/null 2>&1; then
@@ -339,8 +431,8 @@ if [[ -x /usr/local/bin/proxy ]]; then
   /usr/local/bin/proxy status 2>&1 | sed 's/^/       /' || warn "proxy status 跑失败"
 fi
 
-############################## 5. 夸克 Cookie ##############################
-sect "5. 夸克 Cookie(决定能不能下歌)"
+############################## 6. 夸克 Cookie ##############################
+sect "6. 夸克 Cookie(决定能不能下歌)"
 CFG="/home/user/projects/gequhai-downloader/config.json"
 if [[ -f "$CFG" ]]; then
   info "配置文件: ${CFG}"

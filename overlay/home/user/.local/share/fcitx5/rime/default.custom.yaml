@@ -25,6 +25,13 @@ patch:
   "ascii_composer/switch_key/Control_L": noop
   "ascii_composer/switch_key/Control_R": noop
 
+  # ---- CapsLock 也当切换键(Shift 失灵时的第二条路) ----
+  # 真机反馈"偶尔按 Shift 切不动"。除了状态原因(见 music im-toggle),
+  # 还有一个纯手感问题: Shift 要和其它键区分开(独按)才生效,
+  # 而 CapsLock 不会和任何键组合, 单独按更容易被识别成"修饰键独按"。
+  # 动作和 Shift 保持一致, 别搞出第三种行为。
+  "ascii_composer/switch_key/Caps_Lock": inline_ascii
+
   # ascii_mode 开关显示在 F4 方案菜单里, reset: 0 = 每次启动都是中文
   "switches/@0/reset": 0
 

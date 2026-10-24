@@ -102,6 +102,55 @@ sudo dd if=debian-usb-bookworm.img of=/dev/sdX bs=4M status=progress conv=fsync
 
 登录用户 `user` / 密码 `user`（Xfce 会自动登录，直接进桌面）。
 
+桌面是**精简过的**：没有面板、没有桌面图标，登录进去**直接就是一个终端**。
+这是刻意的设计（面板和桌面图标用户明确说不需要），但也带来一个必须解决的问题——
+**终端窗口全关掉之后，屏幕上就真的什么都不剩了**。下面这一节就是解决它的。
+
+### 0. 终端：只有一个窗口，标签页自己管
+
+开机自动弹出的那个终端里，已经预先打好了**键位速查表**，不知道能干什么的话看一眼就知道。
+
+| 想做什么 | 怎么做 |
+| --- | --- |
+| 新建一个标签页 | `Ctrl+Shift+T`（或 `Ctrl+Alt+T`，同窗口加标签页） |
+| 切到下一个 / 上一个标签页 | `Ctrl+Page_Down` / `Ctrl+Page_Up` |
+| 关闭当前标签页 | `Ctrl+Shift+W`（直接敲 `exit` 也一样） |
+| 切回刚才那个标签页 | 标签栏上直接点，或用上面的切换键 |
+| 终端不见了 / 黑屏了 | `Ctrl+Alt+T`；等几秒也会自己回来（见下） |
+
+几个刻意做出来的决定：
+
+- **终端窗口全没了会自动拉起**。`terminal-keepalive` 每 3 秒查一次，
+  没有终端窗口就重新开一个。因为这个桌面既没有面板也没有桌面图标，
+  守护进程是**唯一**的兜底 —— 不会再出现"关光之后黑乎乎一片不知道怎么办"。
+  不想被拉起（比如想省资源）：`music terminal off`；恢复：`music terminal on`。
+- **`Ctrl+Alt+T` 不再开新窗口**。原来的行为是弹一个独立窗口把整个屏幕盖住，
+  之前的终端被压到后面。现在改成「在当前窗口里加一个标签页」。
+  实现方式是开机时用 `xfconf-query` 找出 XFCE 里所有指向终端的快捷键，
+  把命令换成 `/usr/local/bin/terminal-new`（`xfce4-terminal --tab`），
+  改完复查一遍；兜底再把桌面项的 `Exec` 换掉（**只换 Exec，Name 一个字不改** ——
+  `exo-open --launch TerminalEmulator` 是按 Name 匹配的，改了名就找不到）。
+- **标签页标题 = 当前目录**。标签上显示 `user@deb: Downloads` 这种，
+  一眼就知道哪个标签在干什么，不用靠编号猜。
+- **标签页的快捷键是显式写死的**（`~/.config/xfce4/terminal/terminalrc`），
+  不依赖"默认值碰巧是什么"。
+
+随时想再看一遍键位表：
+
+```bash
+music keys
+```
+
+<details>
+<summary>进阶：tmux（可选，默认不启用）</summary>
+
+镜像里预装了 `tmux` 和一份配置（`~/.tmux.conf`），但**默认不启用** ——
+xfce4-terminal 的标签页对日常已经够了。直接敲 `tmux` 就会进，
+好处是状态栏常驻显示所有标签页和快捷键提示，适合跑长任务。
+前缀键 `Ctrl+b`，之后 `c` 新标签、`n`/`p` 切换、数字直达、`x` 关闭、`d` 脱离。
+
+</details>
+
 ### 1. 把 U 盘剩余空间用起来 —— 不用你动手
 
 镜像只有 8GiB，U 盘通常是 64G / 128G。**开机时 `usb-grow.service` 会自动把剩下的
@@ -166,10 +215,10 @@ usb-grow.sh --self-test        # 认分区逻辑自测(构建期也会自动跑�
 
 ### 2. 中文输入法
 
-- 默认已配置好 Fcitx5 + Rime 简体拼音，`Ctrl+Space` 切换输入法，`Shift+左Shift` 切中英文。
+- 默认已配置好 Fcitx5 + Rime 简体拼音，`Ctrl+Space` 切换输入法，`Shift` 切中英文。
 - 镜像里已经预置了 70 多条歌手/歌名词库（`周杰伦`、`五月天`、`夜曲`…），
   打 `zhoujielun` 就能出「周杰伦」。
-- 想加自己的词：编辑 `~/.config/fcitx5/rime/user.dict.yaml`，格式是
+- 想加自己的词：编辑 `~/.local/share/fcitx5/rime/user.dict.yaml`，格式是
   `词语<TAB>拼音编码`（编码用空格分音节）：
 
   ```yaml
@@ -181,12 +230,60 @@ usb-grow.sh --self-test        # 认分区逻辑自测(构建期也会自动跑�
   想手动触发可以执行 `rime_deployer --build`。
 - 改了输入法配置完全没反应时：`im-config -n fcitx5` 然后注销重登。
 
+> ⚠️ **Rime 的配置目录是 `~/.local/share/fcitx5/rime/`，不是 `~/.config/fcitx5/rime/`。**
+> 放错目录 Rime 根本不会读，症状是"Shift 按了没反应"，而构建期断言查的也是
+> 那个错路径，于是**一直绿灯自欺**。老镜像按下面修：
+
+> ```bash
+> mkdir -p ~/.local/share/fcitx5/rime
+> mv ~/.config/fcitx5/rime/* ~/.local/share/fcitx5/rime/ 2>/dev/null
+> music im-fix     # 让 fcitx5 重新部署
+> ```
+
+#### 「按 Shift 没反应 / 偶尔失灵」到底是怎么回事
+
+真机反馈里说过"偶尔出现使用 shift 键切换失灵"。这里把原因说清楚，
+免得以为是配置坏了反复折腾。**有两个独立的原因**：
+
+**原因一：状态不对。** Rime 的 `ascii_composer` 只在**输入法接管按键**的时候才管用。
+fcitx5 有三种状态：`关闭(0)` / `英文态 Inactive(1)` / `中文态 Active(2)`。
+处于**英文态**时按键根本不经过输入法，Rime 自然收不到 Shift —— 表现就是
+"按了没反应"。而中文态下按 Shift 一切正常，合起来看就成了"偶尔失灵"。
+
+镜像里已经用一个自启项在开机时把输入法切到 rime（中文态），所以开机就是对的；
+但运行中切到英文态之后，Shift 就会"失灵"。
+
+**原因二：正在打拼音。** Rime 的 `ascii_composer` 只在**没有预编辑**时才处理 Shift。
+正在打拼音想临时切英文，先按 `Esc` 清掉预编辑再按 Shift。
+
+所以真正的开关是这几个，按可靠性从高到低：
+
+| 方式 | 可靠性 | 说明 |
+| --- | --- | --- |
+| `Ctrl+Space` | ★★★ 永远有效 | fcitx5 的触发键，英文态/中文态都能切 |
+| `music im-toggle` | ★★★ 永远有效 | 命令行开关，先读状态再决定动作，不看当前态 |
+| `Shift` | ★★ 看状态 | 中文态下快速切；英文态下无效 |
+| `CapsLock` | ★★ 看状态 | 第二条快速切换路（比 Shift 少一类误判） |
+
+```bash
+music im-toggle     # 中英切换, 不看你当前是什么状态
+music health        # 体检时会直接告诉你现在是中文态还是英文态
+```
+
+`music health` 现在会明确报出状态：如果是英文态，它会直接告诉你
+"此时按 Shift/CapsLock 都不会切换，因为按键不经过输入法"。
+
+> 顺带一提：Rime 的切换键必须写成**扁平键映射**
+> （`"ascii_composer/switch_key/Shift_L": inline_ascii`），
+> 写成 `"ascii_composer/switch_key": "Shift_L"` 是给键赋了个字符串，Shift 永远不会生效。
+> 这个坑踩过一次，构建校验里现在会断言写法是否正确。
+
 > **打不出中文自查**：fcitx5 图标亮着但哪里都输不了中文？多半是拼音词库
 > `rime-data-luna-pinyin` 没装（Debian 里它只是 fcitx5-rime 的推荐依赖，
 > 不用 `--no-install-recommends` 覆盖装不出来）。老镜像提前一行修好：
 >
 > ```bash
-> sudo apt-get install -y rime-data-luna-pinyin fcitx5-chinese-addons
+> sudo apt-get install -y rime-data-luna-pinyin
 > music im-fix     # 清掉失败的部署产物并让 fcitx5 重新部署
 > ```
 >
@@ -307,6 +404,36 @@ GET https://pan.quark.cn/account/info?st=<ticket>&lw=scan   → 写入 cookie
 图形版默认代理指向 Clash，但 U 盘机器上通常没跑 Clash → 直接在图形界面里把代理清空即可
 （配置文件 `~/projects/gequhai-downloader/config.json`，镜像预置的是空代理版本）。
 `music single` 读的是同一份 config，所以夸克 Cookie 配一次两边都能用。
+
+### 5. 基础命令行工具（以后往里加新功能用）
+
+需求是"以后会再这个 u 盘系统中添加各种新功能，主要是终端命令方面，
+所以基础的命令行工具需要具备"。所以镜像里预装了这几类：
+
+| 类别 | 命令 |
+| --- | --- |
+| 找文件 | `rg`(ripgrep) `fd` `bat` `fzf` `tree` `locate` |
+| 看内容 | `less` `cat` `head` `tail` `jq` `column` `diff` `patch` `file` |
+| 跑起来 | `tmux` `screen` `htop` `btop` `ncdu` `watch` `time` |
+| 打包解压 | `tar` `zip` `unzip` `7z` `xz` `zstd` `bzip2` `rsync` |
+| 磁盘分区 | `lsblk` `blkid` `fdisk` `sfdisk` `sgdisk` `parted` `wipefs` `mount` `fsck` |
+| 硬件状态 | `lspci` `lsusb` `lsmod` `lsof` `dmesg` `smartctl` `hdparm` `sensors` |
+| 网络 | `ip` `ss` `ping` `dig` `nslookup` `traceroute` `mtr` `whois` `tcpdump` `netstat` `arp` |
+| 写脚本 | `bash` `python3` `pip` `vim` `nano` `shellcheck` `git` `curl` `wget` |
+
+两个便利处理，以及一个**要知道的例外**：
+
+- Debian 把 `fd` / `bat` 装成了 `fdfind` / `batcat`（避免和别的包撞名），
+  镜像里补了软链，**你直接敲 `fd` / `bat` 就行**，不用记 Debian 的怪名字。
+- 终端字体用 `Monospace`，中文靠 Pango 自动回退到文泉驿正黑，
+  slim 档没装 Noto CJK 也不会出现方块字。
+- **没有 `man`**。镜像为了省空间在构建第 8 步把 `/usr/share/man` 整个删了
+  （几十 MB 起步，而日常几乎不查手册页），所以 `man` 这个命令也一起没装 ——
+  装一个查不到东西的命令比不装更误导。**统一用 `--help`**：
+  `music --help`、`usb-grow.sh --help`、`screen-fit --help` 都有。
+
+> 想在 U 盘里加自己的东西，直接往 `~/projects/` 放脚本，再在
+> `/usr/local/bin/` 放个软链就能全局调用；改完 `bash -n` 一下再用。
 
 ---
 
@@ -540,15 +667,23 @@ debian-usb-builder/
 │   │   ├── net-rescue                       # 没网时的应急联网(只用 systemd 自带能力)
 │   │   ├── screen-fit                       # 按 EDID 自动匹配每块显示器的原生分辨率
 │   │   ├── proxy                            # 代理开关(status/on/off/test)
-│   │   ├── music-health                     # 一次性体检(会话/输入法/分辨率/分区/网络/夸克)
+│   │   ├── music-health                     # 一次性体检(会话/输入法/终端/分辨率/分区/网络/夸克)
 │   │   ├── music-im-fix                     # 输入法一条命令修好(装包→im-config→自启→拉起)
-│   │   └── music                             # 下载器快捷入口(single/playlist/gui/doctor/net/screen/proxy)
+│   │   ├── terminal-keepalive               # 终端窗口全没了自动拉起(桌面没面板没图标, 唯一的兜底)
+│   │   ├── terminal-new                     # 在当前终端窗口加一个标签页(xfce4-terminal --tab)
+│   │   ├── terminal-keys                    # 键位速查表
+│   │   ├── terminal-setup                   # 改 Ctrl+Alt+T 键位 + 桌面项 Exec
+│   │   ├── terminal-welcome                 # 开机那个终端: 先打键位速查表再进 shell
+│   │   └── music                             # 下载器快捷入口(single/playlist/gui/doctor/net/screen/proxy/keys/im-toggle/terminal)
 │   ├── usr/local/lib/musictools/
 │   │   ├── single.py                         # 命令行单曲搜索下载(纯 requests, 不用 PyQt6)
 │   │   └── quark_login.py                    # 夸克网盘纯 HTTP 扫码登录(不需要浏览器)
 │   ├── usr/local/lib/screentools/
 │   │   └── fit.py                            # EDID/xrandr 解析 + 分辨率方案(support --self-test)
-│   └── home/user/.config/fcitx5/rime/        # Rime 简体拼音方案 + 73 条歌名词库
+│   ├── home/user/.local/share/fcitx5/rime/   # Rime 配置(注意: 必须在 Rime 用户目录里)
+│   ├── home/user/.config/xfce4/terminal/     # 终端配置(字体/滚动/标签页快捷键)
+│   ├── home/user/.config/autostart/          # 开机自启: 终端守护/键位设置
+│   └── home/user/.tmux.conf                  # tmux 预置配置(进阶用, 默认不启用)
 ├── overlay-n1/                               # 仅 N1 使用
 │   └── usr/local/bin/n1-grow.sh              # N1: 把卡的剩余空间扩给歌曲分区(只改 MBR 4 字节)
 ├── .gitattributes                            # 强制 LF 换行(CRLF 会让 Linux 跑不了脚本)

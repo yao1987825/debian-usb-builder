@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=终端设置(改键位)
+Comment=把 Ctrl+Alt+T 改成同窗口新标签页, 并建立桌面/菜单入口
+Exec=/usr/local/bin/terminal-setup --quiet
+Icon=utilities-terminal
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true

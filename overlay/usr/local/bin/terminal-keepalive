@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+#
+# terminal-keepalive —— 保证桌面上永远至少有一个终端窗口
+#
+# 背景(用户实测反馈原文):
+#   "如果把所有的终端标签页关闭, 也就是关闭这个 terminal, 整个画面只有黑乎乎的
+#    一片不知道怎么处理。如果是小白不知道快捷键的话, 就一头雾水。
+#    我希望能不能一直强制一个 terminal 显示。"
+#
+# 做法: 每隔几秒查一次还有没有终端窗口, 没有就重新拉起一个。
+#
+# 不想被拉起(比如想省点资源)时:
+#   music terminal off     # 暂停
+#   music terminal on      # 恢复
+#   music terminal status  # 看当前状态
+#
+set -uo pipefail
+
+CONF_DIR="${XDG_CONFIG_HOME:-$HOME/.config}"
+PAUSE_FILE="${CONF_DIR}/terminal-keepalive.paused"
+LOG_FILE="${CONF_DIR}/terminal-keepalive.log"
+INTERVAL=3
+LAUNCH_DELAY=2
+
+log() {
+  printf '%s %s\n' "$(date '+%F %T')" "$*" >> "$LOG_FILE" 2>/dev/null || true
+}
+
+# 当前有没有终端窗口?
+# wmctrl -lx 的输出形如: "host 0x123456 xfce4-terminal.user 终端"
+# 优先用 wmctrl; 没装就退化成 xdotool; 两个都没有就返回"有"(宁可不管也不要乱拉起)
+have_terminal() {
+  if command -v wmctrl >/dev/null 2>&1; then
+    local out
+    out="$(wmctrl -lx 2>/dev/null || true)"
+    if printf '%s' "$out" | grep -qiE 'xfce4-terminal|gnome-terminal|konsole|xterm'; then
+      return 0
+    fi
+    # wmctrl 在但没列出来 -> 真的一个都没有
+    return 1
+  fi
+  if command -v xdotool >/dev/null 2>&1; then
+    xdotool search --class -- 'xfce4-terminal' >/dev/null 2>&1 && return 0
+    return 1
+  fi
+  return 0
+}
+
+session_alive() {
+  # 桌面会话还在吗? 注销/关机后就没必要再拉终端了
+  pgrep -x xfce4-session >/dev/null 2>&1 || pgrep -x xfwm4 >/dev/null 2>&1
+}
+
+launch_terminal() {
+  local title="${1:-终端}"
+  if command -v xfce4-terminal >/dev/null 2>&1; then
+    xfce4-terminal --title="${title}" >/dev/null 2>&1 &
+  else
+    xterm -title "${title}" >/dev/null 2>&1 &
+  fi
+  log "已拉起新的终端窗口(${title})"
+}
+
+case "${1:-daemon}" in
+  --status|status)
+    if [[ -f "$PAUSE_FILE" ]]; then
+      echo "守护: 已暂停(删除 ${PAUSE_FILE} 或跑 music terminal on 可恢复)"
+    else
+      echo "守护: 运行中"
+    fi
+    if have_terminal; then
+      echo "当前: 有终端窗口"
+    else
+      echo "当前: 没有终端窗口"
+    fi
+    pgrep -af "terminal-keepalive" | grep -v "pgrep" || echo "守护进程: 没在运行"
+    exit 0
+    ;;
+  --pause|off)
+    mkdir -p "$CONF_DIR" 2>/dev/null || true
+    : > "$PAUSE_FILE"
+    pkill -f "terminal-keepalive --daemon" 2>/dev/null || true
+    log "用户暂停了终端守护"
+    echo "已暂停: 以后不会再自动拉起终端窗口(music terminal on 恢复)"
+    exit 0
+    ;;
+  --resume|on)
+    rm -f "$PAUSE_FILE" 2>/dev/null || true
+    log "用户恢复了终端守护"
+    echo "已恢复: 终端窗口全没了会自动拉起"
+    # 自己起来一个
+    if ! have_terminal; then launch_terminal; fi
+    exit 0
+    ;;
+  --once)
+    if [[ -f "$PAUSE_FILE" ]]; then echo "已暂停, 什么都不做"; exit 0; fi
+    session_alive || { echo "桌面会话不在, 什么都不做"; exit 0; }
+    if ! have_terminal; then launch_terminal; fi
+    exit 0
+    ;;
+  --daemon|daemon) ;;
+  *) echo "用法: terminal-keepalive [--daemon|--status|--pause|--resume|--once]" >&2; exit 2 ;;
+esac
+
+# ---------------- 守护主循环 ----------------
+log "终端守护启动(间隔 ${INTERVAL}s)"
+# 开机宽限期: 登录时 terminal-welcome 也在开终端, 抢跑会开出两个窗口。
+# 所以先老实等一会儿再开始查。
+sleep 10
+while :; do
+  if [[ -f "$PAUSE_FILE" ]]; then
+    sleep "$INTERVAL"
+    continue
+  fi
+  if ! session_alive; then
+    log "桌面会话已退出, 守护结束"
+    break
+  fi
+  if ! have_terminal; then
+    log "没有终端窗口了, 准备拉起"
+    launch_terminal
+    # 等它真的出来再进入下一轮, 免得连着拉起好几个
+    sleep "$LAUNCH_DELAY"
+  fi
+  sleep "$INTERVAL"
+done
+log "终端守护退出"

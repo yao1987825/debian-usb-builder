@@ -255,13 +255,20 @@ chroot_run apt-get install -y --no-install-recommends \
   openssh-client \
   ${FONT_PKGS} \
   python3 python3-venv python3-pip \
-  git curl wget ca-certificates \
-  ffmpeg aria2 vim tmux htop \
+  git curl wget ca-certificates openssh-client \
+  ffmpeg aria2 vim tmux screen htop \
   cloud-guest-utils gdisk parted dosfstools e2fsprogs rsync \
   grub-efi-amd64-bin grub-efi-amd64-signed shim-signed \
   systemd-resolved \
   network-manager wpasupplicant iproute2 iputils-ping dnsutils \
-  x11-xserver-utils
+  x11-xserver-utils \
+  bash-completion less nano tree file jq \
+  ripgrep fd-find bat fzf ncdu unzip zip p7zip-full zstd xz-utils bzip2 \
+  lsof procps psmisc diffutils patch \
+  net-tools traceroute mtr-tiny whois tcpdump \
+  pciutils usbutils lm-sensors smartmontools hdparm \
+  btop shellcheck plocate bsdextrautils \
+  wmctrl xdotool
 
 # ---- 可选组件: 装不上不影响系统, 但少了会影响输入法/桌面体验 ----
 apt_optional() {
@@ -283,6 +290,11 @@ apt_optional \
   lightdm-gtk-greeter
 
 chroot_run dpkg --configure -a
+
+# Debian 把 fd / bat 装成 fdfind / batcat(避免和别的包撞名)。
+# 用户敲 "fd" / "bat" 是肌肉记忆, 这里补上软链, 不然还得记 Debian 的怪名字。
+ln -sf /usr/bin/fdfind "${ROOTFS}/usr/local/bin/fd"
+ln -sf /usr/bin/batcat "${ROOTFS}/usr/local/bin/bat"
 
 # ---- 换软件源 ----
 # 放在"重活都干完之后"再换: 构建机在 GitHub 的美国节点, 走 deb.debian.org 反而快;
@@ -512,6 +524,33 @@ EOF
 done
 log "预置代理: ${PROXY_URL_DEFAULT}(proxy status / proxy on / proxy off)"
 
+# ---- 终端标签页标题 = 当前目录 ----
+# 真机反馈"终端的标签切换快捷键不明" —— 光给快捷键还不够,
+# 标签页上得**写清楚现在在哪个目录**, 否则切过去也不知道切到哪了。
+# 做法是在每个提示符前发一个 OSC 0 序列改窗口标题(xfce4-terminal 靠它显示标签名)。
+#
+# 注意: 必须**追加**到 .bashrc, 不能整个覆盖 —— Debian 的 .bashrc 里有
+# 交互式判断、PATH 设置、历史记录配置等, 覆盖了就全没了。
+if [[ -n "${USER_NAME}" ]]; then
+  _user_bashrc="${ROOTFS}/home/${USER_NAME}/.bashrc"
+  if [[ -f "$_user_bashrc" ]] && ! grep -q '_music_set_title' "$_user_bashrc"; then
+    cat >> "$_user_bashrc" <<'EOF'
+
+# --- debian-usb-builder: 终端标签页标题显示当前目录 ---
+# 效果: 标签页上显示 "user@deb: Downloads", 一眼看出这个标签在干什么
+_music_set_title() {
+  printf '\033]0;%s@%s: %s\007' "${USER:-user}" "${HOSTNAME%%.*}" "${PWD##*/}"
+}
+case "${TERM}" in
+  xterm*|rxvt*|screen*|tmux*)
+    PROMPT_COMMAND="_music_set_title${PROMPT_COMMAND:+;${PROMPT_COMMAND}}"
+    ;;
+esac
+EOF
+    log "已写入终端标签页标题(跟随当前目录)"
+  fi
+fi
+
 # ---- 显示分辨率: 每次图形登录自动匹配每块屏的原生分辨率 ----
 [[ -x "${ROOTFS}/usr/bin/xrandr" ]] || die "xrandr 没装上, screen-fit 无法工作(x11-xserver-utils)"
 [[ -f "${ROOTFS}/usr/local/bin/screen-fit" ]] || die "overlay 里缺 screen-fit"
@@ -646,6 +685,41 @@ elif grep -q 'ascii_composer/switch_key' "$RIME_CFG"; then
 else
   die "Rime 没配 Shift 切中英文(按 Shift 不会有反应)"
 fi
+# CapsLock 作为第二条切换路(Shift 失灵时的备份)
+if grep -q 'ascii_composer/switch_key/Caps_Lock' "$RIME_CFG"; then
+  ok "Rime 另配了 CapsLock 切换键"
+else
+  warn "Rime 没配 CapsLock 切换键(Shift 失灵时只能靠 Ctrl+Space / music im-toggle)"
+fi
+
+# ---- 终端体系(真机反馈: 标签页快捷键不明 / 关光后黑屏 / Ctrl+Alt+T 盖屏) ----
+# 这几项直接决定"小白能不能用", 缺了就卡构建, 别等刷完盘才发现。
+# 注意: 上游把 xfce4 面板和桌面图标都去掉了(用户明确不要), 所以桌面上
+# 没有任何可点的入口 —— 终端窗口全没了就真的是一片黑, 守护进程是唯一的兜底。
+for _t in terminal-keepalive terminal-new terminal-keys terminal-setup terminal-welcome; do
+  [[ -x "${ROOTFS}/usr/local/bin/${_t}" ]] || die "overlay 里缺 /usr/local/bin/${_t}"
+done
+ok "终端脚本齐全(keepalive/new/keys/setup/welcome)"
+TRC="${ROOTFS}/home/${USER_NAME}/.config/xfce4/terminal/terminalrc"
+[[ -f "$TRC" ]] || die "缺终端配置: ${TRC}"
+if grep -q 'Shortcuts=NewTab' "$TRC" && grep -q 'Shortcuts=NextTab' "$TRC" && grep -q 'Shortcuts=PrevTab' "$TRC"; then
+  ok "终端配置里显式写了标签页的 建/切/关 快捷键"
+else
+  die "终端配置里没写标签页快捷键, 用户猜不到怎么切标签页"
+fi
+for _a in terminal-keepalive terminal-setup; do
+  _ad="${ROOTFS}/home/${USER_NAME}/.config/autostart/${_a}.desktop"
+  [[ -f "$_ad" ]] || die "缺自启项: ${_ad}"
+  grep -q "Exec=" "$_ad" || die "自启项没有 Exec: ${_ad}"
+done
+ok "终端自启项齐全(守护/键位设置)"
+# 开机那个终端必须先打键位速查表 —— 用户说"像黑客一样在终端下操作",
+# 而小白面对一个空终端根本不知道能干什么。
+grep -q "terminal-welcome" "${ROOTFS}/home/${USER_NAME}/.config/autostart/xfce-terminal.desktop" 2>/dev/null \
+  || die "开机终端没有接 terminal-welcome(键位速查表不会出现)"
+ok "开机终端已接上键位速查表"
+[[ -f "${ROOTFS}/home/${USER_NAME}/.tmux.conf" ]] || die "缺 ~/.tmux.conf"
+ok "tmux 配置已预置(进阶用, 默认不开)"
 # 真机 v1.0.2 "输入法切不动"的根因: profile/config 属主是 root, 用户写不进去,
 # fcitx5 切换时要写状态, 写不进去就没反应。构建期直接断言属主, 不给这种坑
 # 再流到用户手上的机会。
@@ -801,7 +875,7 @@ cat > "${ROOTFS}/home/${USER_NAME}/.config/autostart/xfce-terminal.desktop" <<'E
 Type=Application
 Name=Terminal
 Comment=启动终端
-Exec=sh -c 'for i in $(seq 1 75); do dbus-send --session --dest=org.freedesktop.DBus --type=method_call --print-reply / org.freedesktop.DBus.NameHasOwner string:org.fcitx.Fcitx5 >/dev/null 2>&1 && break; sleep 0.2; done; exec xfce4-terminal --title=debian-usb --geometry=120x32'
+Exec=sh -c 'for i in $(seq 1 75); do dbus-send --session --dest=org.freedesktop.DBus --type=method_call --print-reply / org.freedesktop.DBus.NameHasOwner string:org.fcitx.Fcitx5 >/dev/null 2>&1 && break; sleep 0.2; done; exec xfce4-terminal --title=debian-usb --geometry=120x32 -e /usr/local/bin/terminal-welcome'
 Icon=utilities-terminal
 Terminal=false
 X-GNOME-Autostart-enabled=true

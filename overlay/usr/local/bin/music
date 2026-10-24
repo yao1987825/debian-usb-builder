@@ -18,6 +18,9 @@
 #   music screen                    自动匹配显示器原生分辨率
 #   music health                    一键体检(不确定哪里坏了就跑这个)
 #   music im-fix                    修复中文输入法
+#   music im-toggle                 切换中英文(Shift 失灵时用这个)
+#   music keys                      终端键位速查表
+#   music terminal [on|off|status]  终端守护(窗口全没了自动拉起)
 #   music doctor                    环境自检
 #   music setup-gui                 补装 PyQt6 (启用图形界面)
 #   music setup-playwright          补装 Playwright Chromium
@@ -33,6 +36,11 @@ VENV_GUI="${VENV_GUI:-${HOME_DIR}/.venvs/gequhai-gui}"
 VENV_LIST="${VENV_LIST:-${HOME_DIR}/.venvs/playlist}"
 SINGLE_PY="${SINGLE_PY:-/usr/local/lib/musictools/single.py}"
 QUARK_PY="${QUARK_PY:-/usr/local/lib/musictools/quark_login.py}"
+# 终端相关的几个脚本也做成可覆盖的, 这样回归测试能在没有真实桌面环境的地方跑
+TERMINAL_KEYS_BIN="${TERMINAL_KEYS_BIN:-/usr/local/bin/terminal-keys}"
+TERMINAL_KEEPALIVE_BIN="${TERMINAL_KEEPALIVE_BIN:-/usr/local/bin/terminal-keepalive}"
+TERMINAL_NEW_BIN="${TERMINAL_NEW_BIN:-/usr/local/bin/terminal-new}"
+TERMINAL_SETUP_BIN="${TERMINAL_SETUP_BIN:-/usr/local/bin/terminal-setup}"
 export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-${HOME_DIR}/.cache/ms-playwright}"
 
 usage() {
@@ -55,6 +63,10 @@ usage() {
   music health                  一键体检: 输入法/分辨率/分区/权限/网络/夸克Cookie
   music health --fix            体检 + 自动修能安全修的
   music im-fix                  修复中文输入法(装了但打不出中文/Shift 没反应)
+  music im-toggle                切换中英文(Shift 失灵时用这个, 不看当前状态)
+  music keys                     终端键位速查表(标签页怎么切、终端没了怎么找回来)
+  music terminal [on|off|status] 终端守护: 窗口全没了自动拉起 / 暂停 / 看状态
+  music terminal new             在当前终端窗口加一个标签页
   music setup-proxy [地址]        设置代理 (等同 music proxy on <地址>)
   music setup-proxy off           清空代理 (等同 music proxy off)
   music out                       打印歌曲分区路径
@@ -268,6 +280,63 @@ cmd_im_fix() {
   exec /usr/local/bin/music-im-fix "$@"
 }
 
+# ---------------- 中英文切换 ----------------
+# 真机反馈: "偶尔出现使用 shift 键切换失灵"。
+#
+# 状态机(fcitx5-remote 不带参数返回):
+#   0 = 关闭   1 = Inactive(英文态)   2 = Active(中文态)
+#
+# 关键: Rime 的 ascii_composer 只在**输入法接管按键**的时候才管用。
+# 处于英文态(1)时按键根本不经过输入法, Shift 自然收不到 ——
+# 中文态下按 Shift 好使, 英文态下按 Shift 没反应, 合起来就是"偶尔失灵"。
+# 所以这里给一个**不依赖当前状态**的开关: 先读状态, 再决定发哪个动作。
+cmd_im_toggle() {
+  if ! command -v fcitx5-remote >/dev/null 2>&1; then
+    echo "错误: 找不到 fcitx5-remote(输入法没装好, 跑 music im-fix)" >&2
+    return 1
+  fi
+  local state after
+  state="$(fcitx5-remote 2>/dev/null || echo 0)"
+  case "$state" in
+    1) fcitx5-remote -c >/dev/null 2>&1 || true; after=2 ;;   # 英文 -> 中文
+    2) fcitx5-remote -C >/dev/null 2>&1 || true; after=1 ;;   # 中文 -> 英文
+    *) echo "错误: fcitx5 没在运行(状态码 ${state}), 先跑 music im-fix" >&2
+       return 1 ;;
+  esac
+  if [[ "$after" == "2" ]]; then
+    echo "已切到中文"
+  else
+    echo "已切到英文"
+  fi
+}
+
+# ---------------- 终端键位速查 ----------------
+cmd_keys() {
+  if [[ ! -x "$TERMINAL_KEYS_BIN" ]]; then
+    echo "错误: 找不到 ${TERMINAL_KEYS_BIN}" >&2
+    return 1
+  fi
+  exec "$TERMINAL_KEYS_BIN" "$@"
+}
+
+# ---------------- 终端守护开关 ----------------
+cmd_terminal() {
+  local sub="${1:-status}"
+  shift 2>/dev/null || true
+  if [[ ! -x "$TERMINAL_KEEPALIVE_BIN" ]]; then
+    echo "错误: 找不到 ${TERMINAL_KEEPALIVE_BIN}" >&2
+    return 1
+  fi
+  case "$sub" in
+    on|resume)  exec "$TERMINAL_KEEPALIVE_BIN" --resume "$@" ;;
+    off|pause)  exec "$TERMINAL_KEEPALIVE_BIN" --pause "$@" ;;
+    status)     exec "$TERMINAL_KEEPALIVE_BIN" --status "$@" ;;
+    setup)      exec "$TERMINAL_SETUP_BIN" "$@" ;;
+    new|tab)    exec "$TERMINAL_NEW_BIN" "$@" ;;
+    *) echo "用法: music terminal [on|off|status|setup|new]" >&2; return 2 ;;
+  esac
+}
+
 # 把下载时留在歌盘根目录的平铺文件("歌名-歌手.mp3") 归档到歌手子目录。
 # 在"自动归类"上线之前下载的文件还是平铺的, 用这一条命令断后生成目录。
 # 文件名必须有"歌名-歌手"这种以最后一个 - 分隔的识别式, 缺减号时跳过。
@@ -416,6 +485,9 @@ case "${1:-}" in
   screen|display|res)  shift; cmd_screen "$@" ;;
   health|check-all)    shift; cmd_health "$@" ;;
   im-fix|imfix)        shift; cmd_im_fix "$@" ;;
+  im-toggle|中英)      shift; cmd_im_toggle "$@" ;;
+  keys|键位|help-keys) shift; cmd_keys "$@" ;;
+  terminal|term)       shift; cmd_terminal "$@" ;;
   setup-proxy)         shift; cmd_setup_proxy "$@" ;;
   setup-gui)           cmd_setup_gui ;;
   setup-playwright)    cmd_setup_playwright ;;
