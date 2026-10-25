@@ -15,9 +15,72 @@ GitHub Actions 自动构建镜像并发布到 [Releases](https://github.com/yao1
 
 ## 未发布 (v1.1.0 候选)
 
+- 2026-10-25 真机反馈: **开机后第一个终端输入法没激活, 只有开新标签页才能打中文**
+  / **按 Print 弹"无法打开…"警告框**
 - 2026-10-24 真机反馈: 标签页切换快捷键不明 / 关光后黑屏 / Ctrl+Alt+T 盖住整个屏幕
   / Shift 切换偶尔失灵 / 基础命令行工具不够
 - 本次**不发版不打 tag**, 等代码评审后再决定版本号
+
+### 🐛 修开机输入法: 第一个终端也能直接打中文
+
+真机现象: 开机后第一个终端窗口里打字直接进 shell, `Ctrl+Space` 没反应,
+**开一个新标签页输入法才活**。定位到三个环环相扣的原因:
+
+1. **切 rime 的时机太早, 而且没人重试**。老写法是"等 fcitx5 有应答 →
+   `sleep 1` → `-s rime`", 而 fcitx5-remote 能应答时 rime 引擎往往还没注册完
+   —— 此刻发切换会**静默失败**, 开机就永远停在 keyboard-us 直写态。
+   现在自启项在后台**反复重试**(最多 120 次, 每次最多等 10 秒), 直到
+   `fcitx5-remote -n` 真的报 `rime` 才算完, 并往 `~/.config/fcitx5-boot.log`
+   写一行开机结果(以后再出问题一眼能看出卡在哪)。
+2. **开机终端开得太早**。它只等"名字上 dbus 总线"就开窗, 那一刻 fcitx5 的
+   **输入法模块还没应答**, GTK 端的 im-fcitx5 握手失败后不会恢复 —— 这个窗口
+   就终身绕不过输入法。现在改成等 `fcitx5-remote -n` 能返回输入法名
+   (模块活了) 才开第一个窗口(有上限, 超时照样开, 不把桌面卡死)。
+   **注意不是等"引擎已经切成 rime"**: 真机实测 profile 的 `DefaultIM` 会在运行中
+   被 fcitx5 改写(用户上次停在英文态, 下次开机 `DefaultIM` 就变回 keyboard-us),
+   而**新建 IM 上下文时会按 `DefaultIM` 重置整组** —— 等引擎再开窗反而会被重置回
+   英文。反过来: 先开窗, 引擎随后切到 rime, **已建立的上下文会跟着切**
+   (真机实测: 同一个窗口手动 `-s rime` 后立刻就出候选)。
+3. **第二个 fcitx5 实例**。老的 `fcitx5-default.desktop` 用 `fcitx5-remote` 轮询
+   探测"fcitx5 起没起", 而这个探测本身会触发 dbus 按 `.service` **再拉起一个实例**,
+   两个实例抢同一个 IM context。现在: 自启项合并成一个, 构建期把
+   `/usr/share/dbus-1/services/org.fcitx.Fcitx5.service` 改名禁用。
+
+配套: 终端守护的开机宽限期 10s → 45s(别跟"等输入法模块应答的终端"抢出两个窗口)。
+
+真机复验(重启后全程不碰键盘): fcitx5 单实例、`im=rime`、**开机第一个窗口
+直接打出中文候选**、Shift 中英切换正常、屏幕只有一个终端窗口。
+
+顺带把 Rime 的 CapsLock 从 `switch_key/Caps_Lock: inline_ascii` 改成
+`good_old_caps_lock: true` —— 前者在 librime 1.8.5 上会把 CapsLock 降级成
+"临时西文"(要按两次才回来), 比默认还难用。
+
+### ⌨️ 修快捷键警告框: 按 Print 不再弹"无法打开…"
+
+真机反馈: "无法打开 print 快捷键这样的警告提示"。真因是这个镜像故意极简
+(不要面板/桌面图标/文件管理器/浏览器), 但 **XFCE 默认快捷键还绑着一堆没装的程序**:
+
+| 按键 | 原绑定 | 状态 |
+| --- | --- | --- |
+| Print / Shift+Print / Alt+Print | `xfce4-screenshooter` | 没装 |
+| Super+e / Ctrl+Alt+F | `thunar` | 没装 |
+| Super+r / Alt+F2 / Alt+F3 | `xfce4-appfinder` | 没装 |
+| Alt+F1 | `xfce4-popup-applicationsmenu` | 没装 |
+| Ctrl+Shift+Esc | `xfce4-taskmanager` | 没装 |
+| Ctrl+Esc | `xfdesktop --menu` | 没装 |
+| Alt+Super+s | `orca` | 没装 |
+| XF86WWW / HomePage / XF86Mail | `exo-open --launch WebBrowser/MailReader` | 没浏览器/邮件客户端 |
+
+按下去 XFCE 就去执行一个不存在的命令, 随即弹"无法打开…"的警告框。
+
+- 失效绑定**直接废掉**(改绑 `/bin/true`: 按了没反应, 但不再弹警告);
+- 截图键例外: 镜像里已有 `scrot`(依赖极小), 套一层 `/usr/local/bin/screenshot` ——
+  **Print=全屏 / Shift+Print=框选 / Alt+Print=当前窗口**, 存到 `~/Pictures`;
+- 新增 `/usr/local/bin/keyboard-fix`: 登录时自动跑一遍, 把通道里**所有**
+  指向缺失程序的绑定统统废掉(XFCE 插件自带的默认表不只在文件里, 登录时会
+  同步进通道, 只改文件压不住), 顺带把截图键和窗口快捷键写上;
+- 顺手把用户要的窗口操作写进用户级快捷键: **Super+←/→ 左右平铺, Super+↑ 最大化,
+  Super+↓ 还原**, 开机终端也改成**直接最大化**。
 
 ### 🔧 修构建: v1.0.5 的镜像其实一次都没构建成功过
 

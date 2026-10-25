@@ -25,12 +25,16 @@ patch:
   "ascii_composer/switch_key/Control_L": noop
   "ascii_composer/switch_key/Control_R": noop
 
-  # ---- CapsLock 也当切换键(Shift 失灵时的第二条路) ----
-  # 真机反馈"偶尔按 Shift 切不动"。除了状态原因(见 music im-toggle),
-  # 还有一个纯手感问题: Shift 要和其它键区分开(独按)才生效,
-  # 而 CapsLock 不会和任何键组合, 单独按更容易被识别成"修饰键独按"。
-  # 动作和 Shift 保持一致, 别搞出第三种行为。
-  "ascii_composer/switch_key/Caps_Lock": inline_ascii
+  # ---- CapsLock: 用 Rime 的经典行为, 别自己定义 ----
+  # 真机实测: librime 1.8.5 的默认 yaml 里 good_old_caps_lock 就是 true,
+  # 此时 CapsLock 由 Rime 单独接管 —— **直接切中西文状态**(按一下切, 再按一下回),
+  # 不需要回车, 也不受"有没有预编辑"影响, 是三种切换里最稳的一条。
+  #
+  # 之前这里写的是 "ascii_composer/switch_key/Caps_Lock": inline_ascii,
+  # 那是多余且有害的: switch_key/Caps_Lock 只在 good_old_caps_lock 为 false
+  # 时才生效, 写了反而把 CapsLock 降级成"临时西文"(要按两次才回来),
+  # 比默认还难用。现在只把 good_old_caps_lock 显式写成 true, 语义写清楚。
+  "ascii_composer/good_old_caps_lock": true
 
   # ascii_mode 开关显示在 F4 方案菜单里, reset: 0 = 每次启动都是中文
   "switches/@0/reset": 0

@@ -268,7 +268,7 @@ chroot_run apt-get install -y --no-install-recommends \
   net-tools traceroute mtr-tiny whois tcpdump \
   pciutils usbutils lm-sensors smartmontools hdparm \
   btop shellcheck plocate bsdextrautils \
-  wmctrl xdotool
+  wmctrl xdotool scrot
 
 # ---- 可选组件: 装不上不影响系统, 但少了会影响输入法/桌面体验 ----
 apt_optional() {
@@ -690,8 +690,8 @@ else
   die "Rime 没配 Shift 切中英文(按 Shift 不会有反应)"
 fi
 # CapsLock 作为第二条切换路(Shift 失灵时的备份)
-if grep -q 'ascii_composer/switch_key/Caps_Lock' "$RIME_CFG"; then
-  ok "Rime 另配了 CapsLock 切换键"
+if grep -q 'ascii_composer/good_old_caps_lock' "$RIME_CFG"; then
+  ok "Rime 另配了 CapsLock 切换键(good_old_caps_lock)"
 else
   warn "Rime 没配 CapsLock 切换键(Shift 失灵时只能靠 Ctrl+Space / music im-toggle)"
 fi
@@ -711,7 +711,7 @@ if grep -q 'Shortcuts=NewTab' "$TRC" && grep -q 'Shortcuts=NextTab' "$TRC" && gr
 else
   die "终端配置里没写标签页快捷键, 用户猜不到怎么切标签页"
 fi
-for _a in terminal-keepalive terminal-setup; do
+for _a in terminal-keepalive terminal-setup keyboard-fix; do
   _ad="${ROOTFS}/home/${USER_NAME}/.config/autostart/${_a}.desktop"
   [[ -f "$_ad" ]] || die "缺自启项: ${_ad}"
   grep -q "Exec=" "$_ad" || die "自启项没有 Exec: ${_ad}"
@@ -744,22 +744,9 @@ if [[ -n "${USER_NAME}" ]]; then
 [Desktop Entry]
 Type=Application
 Name=Fcitx 5
-Comment=启动 fcitx5 输入法
-Exec=fcitx5 -d --replace
+Comment=启动 fcitx5 并切到 rime(中文态), 切不动就一直重试
+Exec=sh -c 'fcitx5 -d --replace; for i in $(seq 1 100); do dbus-send --session --dest=org.freedesktop.DBus --type=method_call --print-reply / org.freedesktop.DBus.NameHasOwner string:org.fcitx.Fcitx5 2>/dev/null | grep -q "boolean true" && break; sleep 0.2; done; for i in $(seq 1 120); do [ "$(timeout 3 fcitx5-remote -n 2>/dev/null)" = rime ] && break; timeout 10 fcitx5-remote -s rime >/dev/null 2>&1; sleep 1; done; timeout 5 fcitx5-remote -o >/dev/null 2>&1; printf "%s im=%s\n" "$(date +%FT%T)" "$(timeout 3 fcitx5-remote -n 2>/dev/null)" >> "$HOME/.config/fcitx5-boot.log" 2>/dev/null || true'
 Icon=fcitx
-Terminal=false
-NoDisplay=true
-X-GNOME-Autostart-enabled=true
-EOF
-  # 开机把输入法切到 rime(中文态)。真机 v1.0.4 的坑: fcitx5 起来后当前输入法
-  # 是 keyboard-us(直写), 此时按 Shift 没有任何反应, 用户只会觉得"输入法坏了"。
-  # 这里等 fcitx5 就绪后主动切一次, 开机就能直接打中文、按 Shift 切英文。
-  cat > "${ROOTFS}/home/${USER_NAME}/.config/autostart/fcitx5-default.desktop" <<'EOF'
-[Desktop Entry]
-Type=Application
-Name=Fcitx 5 Default Input Method
-Comment=开机把输入法切到 rime(中文态), 否则 Shift 切换没反应
-Exec=sh -c 'for i in $(seq 1 60); do fcitx5-remote >/dev/null 2>&1 && break; sleep 0.2; done; sleep 1; fcitx5-remote -s rime'
 Terminal=false
 NoDisplay=true
 X-GNOME-Autostart-enabled=true
@@ -774,14 +761,32 @@ export XMODIFIERS=@im=fcitx
 EOF
   chown "${USER_UID}:${USER_GID}" \
         "${ROOTFS}/home/${USER_NAME}/.config/autostart/fcitx5.desktop" \
-        "${ROOTFS}/home/${USER_NAME}/.config/autostart/fcitx5-default.desktop" \
         "${ROOTFS}/home/${USER_NAME}/.xprofile" 2>/dev/null || true
   # autostart 目录本身也要归用户 —— 真机上它曾是 root:root, 普通用户想自己加
   # 个自启项都写不进去("权限不够")。
   chown "${USER_UID}:${USER_GID}" "${ROOTFS}/home/${USER_NAME}/.config/autostart" 2>/dev/null || true
-  grep -q "fcitx5-remote -s rime" "${ROOTFS}/home/${USER_NAME}/.config/autostart/fcitx5-default.desktop" \
-    || die "缺少开机切 rime 的自启项 —— 开机默认是键盘直写态, 按 Shift 不会有任何反应"
-  log "已写入 fcitx5 自启项、开机切 rime 自启项与 ~/.xprofile 环境变量"
+  # 旧的 fcitx5-default.desktop 必须删掉(真机 v1.0.5 的坑, 2026-10-25 实测):
+  #   1) 它用 fcitx5-remote 轮询来"等 fcitx5 就绪", 而 fcitx5-remote 探测
+  #      本身就会触发 dbus 按 .service 拉起**第二个** fcitx5 实例;
+  #      两个实例抢同一个 IM context, 表现是"开了新窗口输入法反而坏了"。
+  #   2) 它"等 daemon 响应 → sleep 1 → -s rime"正好踩在 rime 引擎还没注册完
+  #      的窗口期里, 切换失败后没人重试 → 开机永远停在 keyboard-us 直写态。
+  # 现在只留一个自启项: 等名字上总线, 再反复重试 -s rime 直到 -n 真的报 rime。
+  rm -f "${ROOTFS}/home/${USER_NAME}/.config/autostart/fcitx5-default.desktop"
+  # 构建期直接禁用 dbus 自动激活(改名), 从根上杜绝第二个 fcitx5 实例
+  _fcitx_svc="${ROOTFS}/usr/share/dbus-1/services/org.fcitx.Fcitx5.service"
+  if [[ -f "$_fcitx_svc" ]]; then
+    mv "$_fcitx_svc" "${_fcitx_svc}.disabled"
+  fi
+  grep -q "fcitx5-remote -s rime" "${ROOTFS}/home/${USER_NAME}/.config/autostart/fcitx5.desktop" \
+    || die "fcitx5 自启项没有切 rime —— 开机默认是键盘直写态, 按 Shift 不会有任何反应"
+  grep -q "fcitx5-remote -n" "${ROOTFS}/home/${USER_NAME}/.config/autostart/fcitx5.desktop" \
+    || die "fcitx5 自启项没有校验切换结果 —— 引擎没注册完时切换会静默失败, 必须重试"
+  [[ ! -e "${ROOTFS}/home/${USER_NAME}/.config/autostart/fcitx5-default.desktop" ]] \
+    || die "旧的 fcitx5-default.desktop 还在 —— 它会拉起第二个 fcitx5 实例, 抢 IM context"
+  [[ -f "${_fcitx_svc}.disabled" ]] \
+    || die "fcitx5 的 dbus 自动激活没禁用 —— fcitx5-remote 探测时会拉起第二个实例"
+  log "已写入 fcitx5 自启项(带 rime 切换重试)、禁用 dbus 自动激活与 ~/.xprofile 环境变量"
 fi
 
 # 对着"即将装进镜像的那份" music 跑一遍命令行回归测试。
@@ -872,21 +877,67 @@ mkdir -p "${ROOTFS}/home/${USER_NAME}/.config/autostart"
 # autostart 项, terminal(666) 抢在 fcitx5(675) 之前启动 —— GTK 端 im-fcitx5
 # 连接 fcitx5 的 dbus 握手失败后不会再恢复, 这个窗口就终身绕不过输入法,
 # 表现为"打字直接进 shell、ctrl+space 没反应", 但凡手动新开的终端窗口都正常,
-# 极难定位。这里让 terminal 等 org.fcitx.Fcitx5 出现在 session bus 上再启动,
-# 最长约 15 秒, 超时也照样开终端, 不会把桌面卡死。
+# 极难定位。
+# 2026-10-25 又实测到第二层(真机 v1.0.5): 光等"名字上总线"还不够 ——
+# 真正决定"这个窗口能不能打中文"的是 fcitx5 的**输入法模块有没有应答**。
+# 这里等到 fcitx5-remote -n 能返回输入法名(模块活了)才开窗口, 有上限,
+# 超时照样开, 不把桌面卡死。
+# 为什么不等"引擎已经切到 rime"再开窗: 真机实测 profile 的 DefaultIM 会
+# 在运行中被 fcitx5 改写(用户上次停在英文态 → 下次开机 DefaultIM 变回
+# keyboard-us), 而**新建 IM 上下文时会按 DefaultIM 重置整组** —— 等引擎
+# 再开窗反而会被重置回英文。反过来: 先开窗, 引擎随后切到 rime, 已建的
+# 上下文会跟着切(真机实测: 同一窗口手动 -s rime 后立刻就能出候选)。
+# 引擎切换由 fcitx5 自启项在后台耐心重试, 终端不必等它。
+# 顺带: 开机终端直接最大化, 少一步鼠标操作。
 cat > "${ROOTFS}/home/${USER_NAME}/.config/autostart/xfce-terminal.desktop" <<'EOF'
 [Desktop Entry]
 Type=Application
 Name=Terminal
 Comment=启动终端
-Exec=sh -c 'for i in $(seq 1 75); do dbus-send --session --dest=org.freedesktop.DBus --type=method_call --print-reply / org.freedesktop.DBus.NameHasOwner string:org.fcitx.Fcitx5 >/dev/null 2>&1 && break; sleep 0.2; done; exec xfce4-terminal --title=debian-usb --geometry=120x32 -e /usr/local/bin/terminal-welcome'
+Exec=sh -c 'for i in $(seq 1 150); do [ -n "$(timeout 3 fcitx5-remote -n 2>/dev/null)" ] && break; sleep 0.4; done; exec xfce4-terminal --maximize --title=debian-usb --geometry=120x32 -e /usr/local/bin/terminal-welcome'
 Icon=utilities-terminal
 Terminal=false
 X-GNOME-Autostart-enabled=true
 EOF
 grep -q "NameHasOwner string:org.fcitx.Fcitx5" \
+  "${ROOTFS}/home/${USER_NAME}/.config/autostart/fcitx5.desktop" \
+  || die "fcitx5 自启项没有等 fcitx5 出现在 dbus 总线上 —— 切 rime 会打空"
+grep -q 'fcitx5-remote -n' \
   "${ROOTFS}/home/${USER_NAME}/.config/autostart/xfce-terminal.desktop" \
-  || die "terminal 自启项没有等待 fcitx5 就绪 —— 开机首个窗口会因 IM 握手竞态永远打不出中文(真机 v1.0.3 的坑)"
+  || die "terminal 自启项没有等 fcitx5 输入法模块应答 —— 开机首个窗口会因 IM 握手竞态永远打不出中文(真机 v1.0.3 的坑)"
+grep -q -- "--maximize" \
+  "${ROOTFS}/home/${USER_NAME}/.config/autostart/xfce-terminal.desktop" \
+  || die "开机终端没有最大化 —— 用户开机第一眼看到的是小窗口, 还得手动拉大"
+
+# ---- 快捷键: 摘掉指向缺失程序的默认绑定 + 下发用户级覆盖(截图/窗口操作) ----
+# 真机反馈(2026-10-25): "无法打开 print 快捷键这样的警告提示"。
+# XFCE 默认快捷键绑着 xfce4-screenshooter / thunar / xfce4-appfinder / orca …
+# 这些程序在极简镜像里根本没装, 按一下就弹"无法打开…"的警告框, 用户以为
+# 系统坏了。处理: 失效绑定直接删掉; 截图键改绑镜像里已有的 scrot(套一层
+# /usr/local/bin/screenshot); 顺便把 Super 方向键窗口操作写进用户级覆盖。
+python3 "${SCRIPT_DIR}/fix-keyboard-shortcuts.py" "${ROOTFS}" --home "home/${USER_NAME}"
+[[ -x "${ROOTFS}/usr/local/bin/screenshot" ]] \
+  || die "缺 /usr/local/bin/screenshot —— Print 截图键会变成又一条失效绑定"
+[[ -x "${ROOTFS}/usr/local/bin/keyboard-fix" ]] \
+  || die "缺 /usr/local/bin/keyboard-fix —— 登录后没人废掉那些指向缺失程序的快捷键"
+grep -q "^Package: scrot$" "${ROOTFS}/var/lib/dpkg/status" \
+  || die "镜像里没装 scrot —— 截图键没有后端, 按了会报错"
+_ks_user="${ROOTFS}/home/${USER_NAME}/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-keyboard-shortcuts.xml"
+[[ -f "$_ks_user" ]] || die "没写用户级快捷键覆盖文件: ${_ks_user}"
+grep -q "/usr/local/bin/screenshot" "$_ks_user" \
+  || die "用户级快捷键里没有截图键绑定 —— Print 会弹'无法打开'警告"
+grep -q "tile_left_key" "$_ks_user" \
+  || die "用户级快捷键里没有窗口平铺快捷键(Super+←/→)"
+_ks_default="${ROOTFS}/etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-keyboard-shortcuts.xml"
+for _bad in xfce4-screenshooter thunar xfce4-appfinder orca xfce4-taskmanager xfdesktop xfce4-popup-applicationsmenu; do
+  if grep -q "$_bad" "$_ks_default" 2>/dev/null; then
+    die "默认快捷键里还绑着 ${_bad} —— 这个程序镜像里没装, 按了会弹'无法打开'警告"
+  fi
+done
+chown "${USER_UID}:${USER_GID}" "$_ks_user" 2>/dev/null || true
+chown -R "${USER_UID}:${USER_GID}" \
+  "${ROOTFS}/home/${USER_NAME}/.config/xfce4/xfconf" 2>/dev/null || true
+ok "快捷键已清理(失效绑定清零 + Print 截图键改绑 scrot + Super 方向键可用)"
 
 # 图形版下载器默认走 Clash(127.0.0.1:7897), 这里给一份清空代理的初始配置
 if [[ -f "${ROOTFS}/home/${USER_NAME}/projects/gequhai-downloader/utils.py" ]]; then

@@ -177,13 +177,32 @@ struct_check() {
     else
       die "缺少 fcitx5 自启项, 输入法开机不会自动启动"
     fi
+    # 真机 v1.0.5 的坑: 只启动不校验, 引擎切不过去就永远停在 keyboard-us,
+    # 表现为"开机第一个终端打不出中文, 开新标签页才行"。
+    local _fc
+    _fc="$($SUDO debugfs -R "cat /home/user/.config/autostart/fcitx5.desktop" "$p3" 2>/dev/null || true)"
+    if grep -q "fcitx5-remote -n" <<<"$_fc" && grep -q "fcitx5-remote -s rime" <<<"$_fc"; then
+      ok "fcitx5 自启项会校验并重试切到 rime(引擎没注册完也不会卡在直写态)"
+    else
+      die "fcitx5 自启项没有'重试切 rime 直到 -n 报 rime'的逻辑 —— 开机输入法会停在英文直写态"
+    fi
+    if $SUDO debugfs -R "stat /home/user/.config/autostart/fcitx5-default.desktop" "$p3" 2>/dev/null | grep -q "Inode:"; then
+      die "还留着 fcitx5-default.desktop —— 它会拉起第二个 fcitx5 实例抢 IM context"
+    else
+      ok "没有多余的 fcitx5-default.desktop(不会出现第二个 fcitx5 实例)"
+    fi
+    if $SUDO debugfs -R "stat /usr/share/dbus-1/services/org.fcitx.Fcitx5.service" "$p3" 2>/dev/null | grep -q "Inode:"; then
+      die "fcitx5 的 dbus 自动激活没禁用 —— 探测名字时会被拉起第二个实例"
+    else
+      ok "fcitx5 的 dbus 自动激活已禁用"
+    fi
 
     # ---- 终端体系(用户实测反馈: 标签页快捷键不明 / 关光后黑屏 / Ctrl+Alt+T 盖屏) ----
     # 注意: 路径必须是 Rime 用户目录 ~/.local/share/fcitx5/rime/
     # (放在 ~/.config/fcitx5/rime/ 下 Rime 根本不看, 真机 v1.0.4 的坑)
     local _r
     _r="$($SUDO debugfs -R "cat /home/user/.local/share/fcitx5/rime/default.custom.yaml" "$p3" 2>/dev/null || true)"
-    if grep -q 'ascii_composer/switch_key/Caps_Lock' <<<"$_r"; then
+    if grep -q 'ascii_composer/good_old_caps_lock' <<<"$_r"; then
       ok "Rime 另配了 CapsLock 切换键(Shift 失灵时的第二条路)"
     else
       warn "Rime 没配 CapsLock 切换键(Shift 失灵时只能靠 Ctrl+Space / music im-toggle)"
@@ -206,10 +225,60 @@ struct_check() {
       fi
     done
     # 开机那个终端必须接上键位速查表(小白面对空终端不知道能干什么)
-    if $SUDO debugfs -R "cat /home/user/.config/autostart/xfce-terminal.desktop" "$p3" 2>/dev/null | grep -q "terminal-welcome"; then
+    local _xt
+    _xt="$($SUDO debugfs -R "cat /home/user/.config/autostart/xfce-terminal.desktop" "$p3" 2>/dev/null || true)"
+    if grep -q "terminal-welcome" <<<"$_xt"; then
       ok "开机终端已接上键位速查表"
     else
       die "开机终端没接 terminal-welcome —— 登录后是个空终端, 用户不知道能干什么"
+    fi
+    if grep -q "fcitx5-remote -n" <<<"$_xt"; then
+      ok "开机终端会等 rime 引擎就绪再开(首个窗口就能打中文)"
+    else
+      die "开机终端没等 rime 引擎 —— 第一个窗口会是英文直写态, 只有开新标签页才能打中文"
+    fi
+    if grep -q -- "--maximize" <<<"$_xt"; then
+      ok "开机终端直接最大化"
+    else
+      die "开机终端没有最大化 —— 用户开机第一眼看到的是小窗口"
+    fi
+
+    # ---- 快捷键: 指向缺失程序的绑定会弹"无法打开…"警告(真机 2026-10-25 反馈) ----
+    local _ksd _ksu
+    _ksd="$($SUDO debugfs -R "cat /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-keyboard-shortcuts.xml" "$p3" 2>/dev/null || true)"
+    if [[ -n "$_ksd" ]]; then
+      local _bad _hit=""
+      for _bad in xfce4-screenshooter thunar xfce4-appfinder orca xfce4-taskmanager xfdesktop xfce4-popup-applicationsmenu; do
+        if grep -q "$_bad" <<<"$_ksd"; then _hit="$_bad"; break; fi
+      done
+      if [[ -n "$_hit" ]]; then
+        die "默认快捷键里还绑着 ${_hit} —— 镜像里没装这个程序, 按了会弹'无法打开'警告"
+      else
+        ok "默认快捷键里没有指向缺失程序的绑定(按这些键不再弹警告)"
+      fi
+    else
+      warn "没读到系统默认快捷键文件, 跳过失效绑定检查"
+    fi
+    _ksu="$($SUDO debugfs -R "cat /home/user/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-keyboard-shortcuts.xml" "$p3" 2>/dev/null || true)"
+    if grep -q "/usr/local/bin/screenshot" <<<"$_ksu"; then
+      ok "Print 截图键已改绑到 scrot 封装(按了真能截图, 不再报错)"
+    else
+      die "用户级快捷键里没有截图键绑定 —— Print 会变成失效绑定"
+    fi
+    if grep -q "tile_left_key" <<<"$_ksu"; then
+      ok "窗口快捷键(Super+←/→/↑/↓)已写进用户级快捷键"
+    else
+      die "用户级快捷键里没有窗口平铺快捷键"
+    fi
+    if $SUDO debugfs -R "stat /usr/local/bin/screenshot" "$p3" 2>/dev/null | grep -q "Inode:"; then
+      ok "截图脚本已就位: /usr/local/bin/screenshot"
+    else
+      die "缺少 /usr/local/bin/screenshot —— Print 截图键没有后端"
+    fi
+    if $SUDO debugfs -R "stat /usr/bin/scrot" "$p3" 2>/dev/null | grep -q "Inode:"; then
+      ok "截图后端已装: /usr/bin/scrot"
+    else
+      die "缺少 /usr/bin/scrot —— 截图键没有后端"
     fi
     if $SUDO debugfs -R "cat /home/user/.bashrc" "$p3" 2>/dev/null | grep -q "_music_set_title"; then
       ok "终端标签页标题跟随当前目录"

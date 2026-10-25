@@ -54,7 +54,8 @@ session_alive() {
 launch_terminal() {
   local title="${1:-终端}"
   if command -v xfce4-terminal >/dev/null 2>&1; then
-    xfce4-terminal --title="${title}" >/dev/null 2>&1 &
+    # --maximize: 和开机那个终端保持一致 —— 窗口都是满屏, 用户不用先拉大
+    xfce4-terminal --maximize --title="${title}" >/dev/null 2>&1 &
   else
     xterm -title "${title}" >/dev/null 2>&1 &
   fi
@@ -106,7 +107,11 @@ esac
 log "终端守护启动(间隔 ${INTERVAL}s)"
 # 开机宽限期: 登录时 terminal-welcome 也在开终端, 抢跑会开出两个窗口。
 # 所以先老实等一会儿再开始查。
-sleep 10
+# 45 秒不是随便写的: 开机那个终端要**等 fcitx5 的输入法模块应答**才开
+# (fcitx5-remote -n 能返回输入法名, 真机实测空闲时 2~3 秒, 开机负载高时
+# 可能 20~40 秒), 守护要是 10 秒就开跑, 会跟它抢出两个窗口。
+# 45 秒足够覆盖开机最坏情况, 又不至于让用户对着黑屏干等太久。
+sleep 45
 while :; do
   if [[ -f "$PAUSE_FILE" ]]; then
     sleep "$INTERVAL"

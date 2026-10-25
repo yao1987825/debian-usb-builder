@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=快捷键修复(废掉失效绑定)
+Comment=把指向没装程序的快捷键废掉, 并把 Print 截图键改绑到 scrot
+Exec=/usr/local/bin/keyboard-fix
+Icon=input-keyboard
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true

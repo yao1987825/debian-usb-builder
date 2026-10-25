@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+#
+# keyboard-fix —— 废掉"指向镜像里没有的程序"的快捷键, 并让截图键真正能用
+#
+# 用户实测反馈(2026-10-25): "无法打开 print 快捷键这样的警告提示"。
+#
+# 真因(踩过两次坑才定位准):
+#   这个镜像故意极简(不要面板/桌面图标/文件管理器/浏览器), 但 XFCE 的快捷键
+#   默认表里绑着一堆没装的程序:
+#       Print / Shift+Print / Alt+Print -> xfce4-screenshooter
+#       Super+e / Ctrl+Alt+F           -> thunar
+#       Super+r / Alt+F2 / Alt+F3      -> xfce4-appfinder
+#       Alt+F1                         -> xfce4-popup-applicationsmenu
+#       Ctrl+Shift+Escape              -> xfce4-taskmanager
+#       Ctrl+Escape                    -> xfdesktop --menu
+#       Alt+Super+s                    -> orca
+#       XF86WWW/HomePage/XF86Mail      -> exo-open --launch WebBrowser/MailReader
+#   按下去, XFCE 就去执行一个不存在的命令, 随即弹"无法打开…"的警告框。
+#
+# 为什么不能只改 /etc/xdg/.../xfce4-keyboard-shortcuts.xml:
+#   那些默认值不只在文件里, xfce4-keyboard-shortcuts 插件**自己内置了一份
+#   默认表**, 登录时会同步进通道。改文件只能改文件那份, 插件内置那份照样生效。
+#   唯一能压住它的位置是"用户级 custom 段"(custom 优先于 default)。
+#
+# 做法:
+#   1) 截图键: Print=全屏 / Shift+Print=框选 / Alt+Print=当前窗口,
+#      改绑到 /usr/local/bin/screenshot(内部是镜像里已有的 scrot);
+#   2) 其它失效绑定: 统一改绑 /bin/true —— 按了什么都不发生, 但**不再弹警告**;
+#   3) 顺手把窗口快捷键写上: Super+←/→ 左右平铺, Super+↑ 最大化, Super+↓ 还原;
+#   4) 每次登录都跑一遍(幂等), 插件把默认表重新同步进通道也不怕。
+#
+set -uo pipefail
+
+CHANNEL="xfce4-keyboard-shortcuts"
+LOG="${XDG_CONFIG_HOME:-$HOME/.config}/keyboard-fix.log"
+
+log() { printf '%s %s\n' "$(date '+%F %T')" "$*" >>"$LOG" 2>/dev/null || true; }
+
+command -v xfconf-query >/dev/null 2>&1 || exit 0
+
+# 这个程序在镜像里存在吗?
+program_exists() {
+  local exe="$1"
+  case "$exe" in
+    exo-open)
+      # exo-open --launch <App>: 真正要看那个应用在不在
+      local app="${2:-}"
+      case "$app" in
+        TerminalEmulator) command -v xfce4-terminal >/dev/null 2>&1 ;;
+        WebBrowser) command -v firefox >/dev/null 2>&1 || command -v chromium >/dev/null 2>&1 \
+                     || command -v x-www-browser >/dev/null 2>&1 || command -v epiphany >/dev/null 2>&1 ;;
+        MailReader) command -v thunderbird >/dev/null 2>&1 || command -v evolution >/dev/null 2>&1 ;;
+        *) return 1 ;;
+      esac
+      ;;
+    *) command -v "$exe" >/dev/null 2>&1 ;;
+  esac
+}
+
+set_prop() {
+  # set_prop <属性路径> <值>
+  xfconf-query -c "$CHANNEL" -p "$1" -n -t string -s "$2" 2>/dev/null
+}
+
+# ---- 1) 截图键改绑 scrot 封装 ----
+set_prop "/commands/custom/Print"                  "/usr/local/bin/screenshot"     && log "Print -> /usr/local/bin/screenshot"
+set_prop "/commands/custom/<Shift>Print"            "/usr/local/bin/screenshot -r" && log "Shift+Print -> /usr/local/bin/screenshot -r"
+set_prop "/commands/custom/<Alt>Print"              "/usr/local/bin/screenshot -w" && log "Alt+Print -> /usr/local/bin/screenshot -w"
+
+# ---- 2) 窗口快捷键(Super 方向键) ----
+set_prop "/xfwm4/custom/<Super>Left"  "tile_left_key"      && log "Super+Left -> tile_left_key"
+set_prop "/xfwm4/custom/<Super>Right" "tile_right_key"     && log "Super+Right -> tile_right_key"
+set_prop "/xfwm4/custom/<Super>Up"    "maximize_window_key" && log "Super+Up -> maximize_window_key"
+set_prop "/xfwm4/custom/<Super>Down"  "tile_down_key"      && log "Super+Down -> tile_down_key"
+
+# ---- 3) 把"指向缺失程序"的绑定统统废掉 ----
+# 遍历通道里所有 default 绑定, 逐个看目标程序在不在;
+# 不在的改绑 /bin/true(按了没反应, 但不再弹"无法打开"警告)。
+fixed=0
+while IFS= read -r prop; do
+  [[ -n "$prop" ]] || continue
+  val="$(xfconf-query -c "$CHANNEL" -p "$prop" 2>/dev/null || true)"
+  [[ -n "$val" ]] || continue
+  read -r -a parts <<<"$val"
+  exe="${parts[0]}"
+  app=""
+  if [[ "$exe" == "exo-open" ]]; then
+    for ((i = 0; i < ${#parts[@]}; i++)); do
+      if [[ "${parts[$i]}" == "--launch" && $((i + 1)) -lt ${#parts[@]} ]]; then
+        app="${parts[$((i + 1))]}"
+      fi
+    done
+  fi
+  if program_exists "$exe" "$app"; then
+    continue
+  fi
+  key="${prop##*/}"
+  # 已经废掉了就跳过
+  cur="$(xfconf-query -c "$CHANNEL" -p "/commands/custom/${key}" 2>/dev/null || true)"
+  [[ "$cur" == "/bin/true" ]] && continue
+  if set_prop "/commands/custom/${key}" "/bin/true"; then
+    log "废掉失效快捷键 ${key} -> ${val}"
+    fixed=$((fixed + 1))
+  fi
+done < <(xfconf-query -c "$CHANNEL" -l 2>/dev/null | grep '^/commands/default/' || true)
+
+[[ $fixed -gt 0 ]] && log "本次共废掉 ${fixed} 条失效快捷键"
+exit 0

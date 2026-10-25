@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+#
+# screenshot —— Print 键截图(scrot 封装)
+#
+# 为什么不用 xfce4-screenshooter:
+#   这个镜像故意极简(没有面板/桌面图标/文件管理器), xfce4-screenshooter
+#   没装, 而 XFCE 默认快捷键还绑着它 —— 按一下 Print 就弹"无法打开…"
+#   的警告框, 用户以为系统坏了。scrot 已经在镜像里(依赖极小),
+#   自己包一层就能让截图键真正可用。
+#
+# 用法:
+#   screenshot        全屏截图
+#   screenshot -w     当前窗口截图
+#   screenshot -r     框选区域截图
+#
+set -uo pipefail
+
+OUT_DIR="${XDG_PICTURES_DIR:-$HOME/Pictures}"
+mkdir -p "$OUT_DIR" 2>/dev/null || OUT_DIR="$HOME"
+
+mode="full"
+for arg in "$@"; do
+  case "$arg" in
+    -w|--window) mode="window" ;;
+    -r|--region) mode="region" ;;
+  esac
+done
+
+case "$mode" in
+  window) scrot_args=(-u) ;;
+  region) scrot_args=(-s) ;;
+  *)      scrot_args=() ;;
+esac
+
+# scrot 默认把文件写在当前目录, 用 -e 在拍完后搬到 ~/Pictures 并按时间命名。
+# 时间戳在**外面**算好再拼进去: scrot 处理 -e 的命令串时会吃掉里面的 %(...) 形式,
+# 直接把 $(date ...) 塞进去, 文件名会变成 "screenshot_(date +20261025_113644).png"。
+# $f 由 scrot 注入(在它启动的 shell 里展开)。
+TS="$(date +%Y%m%d_%H%M%S)"
+if ! scrot "${scrot_args[@]}" \
+      -e "mv \"\$f\" \"$OUT_DIR/screenshot_${TS}.png\"" 2>/dev/null; then
+  echo "截图失败: scrot 执行出错" >&2
+  exit 1
+fi
+exit 0
