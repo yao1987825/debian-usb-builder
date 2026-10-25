@@ -717,11 +717,10 @@ for _a in terminal-keepalive terminal-setup keyboard-fix; do
   grep -q "Exec=" "$_ad" || die "自启项没有 Exec: ${_ad}"
 done
 ok "终端自启项齐全(守护/键位设置)"
-# 开机那个终端必须先打键位速查表 —— 用户说"像黑客一样在终端下操作",
-# 而小白面对一个空终端根本不知道能干什么。
-grep -q "terminal-welcome" "${ROOTFS}/home/${USER_NAME}/.config/autostart/xfce-terminal.desktop" 2>/dev/null \
-  || die "开机终端没有接 terminal-welcome(键位速查表不会出现)"
-ok "开机终端已接上键位速查表"
+# 注意: 开机终端"接了 terminal-welcome"这条断言必须等**后面**把
+# xfce-terminal.desktop 写出来之后再查 —— 那个文件是本脚本在后面生成的
+# (overlay 里没有它)。放前面查就是查一个还不存在的文件, 必然 die:
+# v1.0.5 与 v1.1.0 的构建都是死在这条断言上(2026-10-25 实测)。
 [[ -f "${ROOTFS}/home/${USER_NAME}/.tmux.conf" ]] || die "缺 ~/.tmux.conf"
 ok "tmux 配置已预置(进阶用, 默认不开)"
 # 真机 v1.0.2 "输入法切不动"的根因: profile/config 属主是 root, 用户写不进去,
@@ -908,6 +907,13 @@ grep -q 'fcitx5-remote -n' \
 grep -q -- "--maximize" \
   "${ROOTFS}/home/${USER_NAME}/.config/autostart/xfce-terminal.desktop" \
   || die "开机终端没有最大化 —— 用户开机第一眼看到的是小窗口, 还得手动拉大"
+# 开机那个终端必须先打键位速查表 —— 用户说"像黑客一样在终端下操作",
+# 而小白面对一个空终端根本不知道能干什么。
+# (这条断言必须在 xfce-terminal.desktop 生成**之后**查 —— 那文件是本脚本
+#  上面才写出来的, 放前面查等于查一个还不存在的文件, v1.0.5/v1.1.0 就死在这。)
+grep -q "terminal-welcome" "${ROOTFS}/home/${USER_NAME}/.config/autostart/xfce-terminal.desktop" \
+  || die "开机终端没有接 terminal-welcome(键位速查表不会出现)"
+ok "开机终端已接上键位速查表"
 
 # ---- 快捷键: 摘掉指向缺失程序的默认绑定 + 下发用户级覆盖(截图/窗口操作) ----
 # 真机反馈(2026-10-25): "无法打开 print 快捷键这样的警告提示"。
