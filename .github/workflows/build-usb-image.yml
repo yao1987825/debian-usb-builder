@@ -148,6 +148,11 @@ jobs:
 
       - name: 构建镜像
         run: |
+          # 构建日志同时落一份到 build-image.log: 构建失败时作为 artifact 上传,
+          # 免得只能靠人去网页上翻日志(日志接口要 admin 权限才拉得到)。
+          # pipefail 必须显式开: 默认 bash 只看管道最后一个命令(tee)的退出码,
+          # 那样构建挂了这一步还会显示成功。
+          set -o pipefail
           sudo -E env \
             SUITE="$SUITE" \
             IMG_SIZE_MB="$IMG_SIZE_MB" \
@@ -158,7 +163,16 @@ jobs:
             APT_MIRROR="$APT_MIRROR" \
             PIP_INDEX_URL="$PIP_INDEX_URL" \
             PROXY_URL_DEFAULT="$PROXY_URL_DEFAULT" \
-            bash scripts/build-image.sh
+            bash scripts/build-image.sh 2>&1 | tee build-image.log
+
+      - name: 上传构建日志(仅失败时)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build-image.log
+          retention-days: 14
+          if-no-files-found: ignore
 
       - name: 结构校验
         run: bash scripts/verify-image.sh --struct out/debian-usb-${{ env.SUITE }}.img
