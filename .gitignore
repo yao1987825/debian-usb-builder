@@ -12,3 +12,6 @@ out/
 # Python 缓存
 __pycache__/
 *.pyc
+
+# 嵌套的 git 仓库(别当成普通目录提交进去)
+music-shell/

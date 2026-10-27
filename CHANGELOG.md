@@ -13,6 +13,47 @@ GitHub Actions 自动构建镜像并发布到 [Releases](https://github.com/yao1
 
 ---
 
+## 未发布 (v1.1.1 候选)
+
+- 2026-10-27 真机反馈: **有线网络没问题, wifi 无法使用**
+
+### 📶 修无线网: 装好固件、解锁、授权、给个能用的入口
+
+用户反馈"有线网络没问题, wifi 无法使用"。真机逐层查下来不是一个原因, 是四个叠在一起:
+
+1. **镜像里一个网卡固件都没装**。换台 Intel/Realtek/USB 网卡的机器, 无线接口
+   根本不出现(ath9k 这种固件内置的除外)。现在预装
+   `firmware-iwlwifi` / `firmware-realtek` / `firmware-brcm80211` / `firmware-atheros`。
+2. **无线电被 rfkill 软锁**。这套系统没有托盘图标也没人手动解锁, 结果就是
+   "有线能上、无线上不去"。新增 `wifi-unblock.service`, 开机自动
+   `rfkill unblock wifi` + `nmcli radio wifi on`。
+3. **NetworkManager 的 polkit 策略要管理员认证**。普通用户敲 nmcli 直接吃到
+   `Not authorized to control networking` —— 而这套无头系统里没有 polkit
+   认证代理。新增 `/etc/polkit-1/rules.d/50-netdev-network-control.rules`,
+   给 netdev 组放行网络控制权。
+   *注意扩展名必须是 `.rules`*: polkit 122 只加载 `.rules` 的 JS 规则,
+   `.pkla` 是旧 XML 格式, 会被**静默忽略** —— 规则文件明明在, polkit 日志也说
+   "编译了 N 条规则", 但我那条根本没被算进去(真机踩过)。
+4. **没有连 WiFi 的入口**。没有面板也没有托盘, 小白根本不知道敲什么。
+   新增 `wifi` 命令(也可用 `music wifi`):
+
+   ```bash
+   wifi                    # 列出周围的无线网
+   wifi scan               # 重新扫描
+   wifi connect "名字"      # 连接(问密码, 不回显)
+   wifi status             # 网卡/开关/连上了哪个
+   wifi disconnect         # 断开
+   wifi forget "名字"      # 忘掉保存的连接(密码换了用这个)
+   wifi on | off | unblock
+   ```
+
+   命令内部走 sudo(这套系统 sudo 免密), 所以不受第 3 条的授权问题影响;
+   顺带在 `net-doctor` 里加了"2b. 无线网卡"一节, 连不上时直接告诉你卡在哪一层。
+
+真机复验: 普通用户 `nmcli` 的 network-control 权限从"验证"变成"是",
+`nmcli dev wifi connect` 不再报 Not authorized(而是正常走到认证阶段),
+`wifi list` / `wifi status` 输出正常。
+
 ## v1.1.0 (2026-10-25)
 
 - 2026-10-25 真机反馈: **开机后第一个终端输入法没激活, 只有开新标签页才能打中文**

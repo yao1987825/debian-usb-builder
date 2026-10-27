@@ -405,6 +405,32 @@ GET https://pan.quark.cn/account/info?st=<ticket>&lw=scan   → 写入 cookie
 （配置文件 `~/projects/gequhai-downloader/config.json`，镜像预置的是空代理版本）。
 `music single` 读的是同一份 config，所以夸克 Cookie 配一次两边都能用。
 
+### 4b. 无线网：插上就能连（`wifi` 命令）
+
+插网线最省事, 但有些场合(比如插着 U 盘给笔记本用)只能走无线。
+这套系统**没有面板也没有托盘图标**, 所以没有"点一下就连 WiFi"的图标 ——
+用命令:
+
+```bash
+wifi                    # 列出周围的无线网
+wifi scan               # 重新扫描
+wifi connect "你的WiFi"  # 连接(会问你密码, 输入不回显)
+wifi status             # 看当前状态(网卡/开关/连上了哪个)
+wifi disconnect         # 断开
+wifi forget "你的WiFi"  # 忘掉一个保存的连接(密码换了就用这个)
+```
+
+连过一次就记住了, 以后开机自动连; 也可以 `music wifi` 等同 `wifi`。
+
+连不上时按这个顺序查:
+
+| 现象 | 原因 / 怎么办 |
+| --- | --- |
+| `wifi` 说"没找到无线网卡" | 这台机器的网卡缺固件: Intel 装 `firmware-iwlwifi`, Realtek 装 `firmware-realtek`, Broadcom 装 `firmware-brcm80211`(镜像里已经预装了这几家的常用固件) |
+| 网卡在但扫不到网 | 跑 `wifi unblock`(无线电被 rfkill 软锁), 开机也会自动解锁 |
+| 提示"没有权限 / Not authorized" | 镜像已经给 netdev 组放行了, 仍报错就跑 `sudo wifi connect "名字"` |
+| 连上但没网 | 跑 `music net` 看是 DHCP 还是 DNS 的问题 |
+
 ### 5. 基础命令行工具（以后往里加新功能用）
 
 需求是"以后会再这个 u 盘系统中添加各种新功能，主要是终端命令方面，

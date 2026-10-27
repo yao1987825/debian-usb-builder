@@ -43,6 +43,7 @@ cat <<'EOF'
 │    music health      一键体检(输入法/分辨率/网络/分区/夸克)            │
 │    music keys        这张速查表                                        │
 │    music net         网络诊断                                         │
+│    wifi              连无线网(扫描/连接/断开)  wifi status 看状态      │
 │    music screen      按显示器原生分辨率调整                             │
 │    music quark-login 夸克网盘扫码登录(拿 cookie)                       │
 │    music terminal on|off|status  终端守护开关                         │

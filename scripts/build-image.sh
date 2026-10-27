@@ -243,6 +243,11 @@ FONT_PKGS="fonts-wqy-zenhei"
 # 所以这里换成显式的最小集合: 会话管理 + 窗口管理器 + 设置 + 终端。
 # 少掉的还有 xfce4-appfinder / notifyd / screensaver 等一堆用不上的东西。
 # 注意: 注释不能插在反斜杠续行的中间, 否则会把包名单独拆成一条命令。
+#
+# 无线网卡固件(firmware-iwlwifi/realtek/brcm80211/atheros): 少了它们, 换台
+# Intel/Realtek/USB 网卡的机器, 无线接口根本不出现(ath9k 这种固件内置的除外)。
+# 用户反馈"有线能上、无线上不去", 换机器刷盘时最常见的原因就是这个。
+# rfkill/iw/wireless-tools: 解被锁的无线电 + 看信号信道, 排查用。
 chroot_run apt-get install -y --no-install-recommends \
   linux-image-amd64 \
   dbus-x11 policykit-1 sudo locales tzdata \
@@ -261,6 +266,8 @@ chroot_run apt-get install -y --no-install-recommends \
   grub-efi-amd64-bin grub-efi-amd64-signed shim-signed \
   systemd-resolved \
   network-manager wpasupplicant iproute2 iputils-ping dnsutils \
+  firmware-iwlwifi firmware-realtek firmware-brcm80211 firmware-atheros \
+  rfkill iw wireless-tools \
   x11-xserver-utils \
   bash-completion less nano tree file jq \
   ripgrep fd-find bat fzf ncdu unzip zip p7zip-full zstd xz-utils bzip2 \
@@ -477,6 +484,33 @@ chown -R "${USER_UID}:${USER_GID}" "${ROOTFS}/home/${USER_NAME}"
 [[ -x "${ROOTFS}/usr/local/bin/usb-grow.sh" ]] \
   || die "usb-grow.sh 没进镜像或没有执行位, systemd 只会拉起一个空壳"
 chroot_run systemctl enable usb-grow.service || die "usb-grow.service 启用失败"
+
+# ---- 无线: 固件 + 解锁 + 授权 + 入口 ----
+# 用户反馈(2026-10-27)"有线网络没问题, wifi 无法使用", 拆开是四件事:
+#   1) 没装任何网卡固件 -> 换台 Intel/Realtek 网卡的机器, 无线接口都不出现;
+#   2) 无线电被 rfkill 软锁, 而这套系统没托盘图标也没人手动解锁;
+#   3) NetworkManager 的 polkit 策略要求管理员认证, 普通用户敲 nmcli 直接
+#      "Not authorized to control networking"(无头系统里没 polkit 代理);
+#   4) 没有面板也没有托盘 -> 用户根本找不到"连 WiFi"的入口。
+# 对策: 固件装齐(rfkill/iw 一起)、开机自动解锁无线、给 netdev 组放行网络
+# 控制权、给一个 wifi 命令当入口。
+[[ -x "${ROOTFS}/usr/local/bin/wifi" ]] \
+  || die "overlay 里缺 /usr/local/bin/wifi —— 用户没有连无线网的入口"
+# 注意扩展名必须是 .rules: polkit 122 只加载 .rules 的 JS 规则,
+# .pkla 是旧 XML 格式, 会被**静默忽略**(2026-10-27 真机踩过: 规则文件
+# 在、polkit 也说"编译了 N 条规则", 但 /etc 里的那条根本没被算进去)。
+[[ -f "${ROOTFS}/etc/polkit-1/rules.d/50-netdev-network-control.rules" ]] \
+  || die "缺 polkit 放行规则(.rules) —— 普通用户敲 nmcli 会一直 Not authorized"
+[[ -f "${ROOTFS}/etc/systemd/system/wifi-unblock.service" ]] \
+  || die "缺 wifi-unblock.service —— 被 rfkill 锁住的无线网卡永远解不开"
+chroot_run systemctl enable wifi-unblock.service || die "wifi-unblock.service 启用失败"
+for _fw in firmware-iwlwifi firmware-realtek firmware-brcm80211; do
+  grep -q "^Package: ${_fw}$" "${ROOTFS}/var/lib/dpkg/status" \
+    || die "缺 ${_fw} —— 换个品牌的无线网卡就没有驱动固件, 网卡都不出现"
+done
+grep -q "^Package: rfkill$" "${ROOTFS}/var/lib/dpkg/status" \
+  || die "缺 rfkill —— 被锁住的无线电解不开"
+ok "无线: 固件齐备 + polkit 放行 + 开机自动解锁 + wifi 命令就位"
 
 # ---- pip 换清华源(放在这里而不是第 2 步: 第 3 步的 pip 装包走官方 PyPI 更快) ----
 if [[ -n "$PIP_INDEX_URL" ]]; then

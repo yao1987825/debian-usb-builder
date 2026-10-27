@@ -1,0 +1,28 @@
+// 让 netdev 组的用户可以直接控制网络(连 WiFi / 改连接), 不用再输管理员密码。
+//
+// 用户反馈(2026-10-27): "有线网络没问题, wifi 无法使用"。
+// NetworkManager 自带的策略把 network-control 设成"要管理员认证", 而这套
+// 无头系统里没有 polkit 认证代理 —— 普通用户敲 nmcli 会直接吃到:
+//     错误：添加/激活新连接失败：Not authorized to control networking。
+// 用户在屏幕前干瞪眼, 只能看着有线能上、无线上不去。
+//
+// 这台机器只有一个普通用户, 而且他本来就有免密 sudo —— 放行网络控制权
+// 并不给他多任何权限, 只是把"能不能连 WiFi"这件事还给他。
+polkit.addRule(function(action, subject) {
+    if (!subject.isInGroup("netdev")) {
+        return undefined;
+    }
+    var allowed = [
+        "org.freedesktop.NetworkManager.network-control",
+        "org.freedesktop.NetworkManager.wifi.scan",
+        "org.freedesktop.NetworkManager.enable-disable-wifi",
+        "org.freedesktop.NetworkManager.settings.modify.own",
+        "org.freedesktop.NetworkManager.settings.modify.system",
+        "org.freedesktop.NetworkManager.reload",
+        "org.freedesktop.NetworkManager.checkpoint-rollback"
+    ];
+    if (allowed.indexOf(action.id) >= 0) {
+        return polkit.Result.YES;
+    }
+    return undefined;
+});

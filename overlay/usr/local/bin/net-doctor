@@ -70,6 +70,36 @@ else
   fi
 fi
 
+############################### 2b. 无线 ###############################
+step "2b. 无线网卡"
+if ! command -v nmcli >/dev/null 2>&1; then
+  info "没有 nmcli, 跳过无线检查"
+else
+  WIFI_DEV="$(nmcli -t -f DEVICE,TYPE device status 2>/dev/null | awk -F: '$2=="wifi"{print $1; exit}')"
+  if [[ -z "$WIFI_DEV" ]]; then
+    warn "没找到无线网卡"
+    info "如果这台机器本来有无线网卡, 多半是缺固件/驱动:"
+    info "  Intel  -> firmware-iwlwifi   Realtek -> firmware-realtek"
+    info "  Broadcom -> firmware-brcm80211  USB 网卡看 dmesg 里的固件报错"
+    info "  另外确认网卡没被 rfkill 锁着: sudo rfkill list / sudo rfkill unblock wifi"
+  else
+    ok "无线网卡: ${WIFI_DEV}"
+    WIFI_FW="$(nmcli -f GENERAL.FIRMWARE-MISSING device show "$WIFI_DEV" 2>/dev/null | cut -d: -f2- | tr -d ' ')"
+    [[ "$WIFI_FW" == "是" ]] && warn "固件缺失 —— 这张网卡可能扫不到任何网络"
+    RADIO="$(nmcli radio wifi 2>/dev/null | tr -d ' ')"
+    case "$RADIO" in
+      已启用|enabled) ok "无线开关: 已启用" ;;
+      *) bad "无线开关: ${RADIO:-未知} —— 修复: wifi on (或 sudo nmcli radio wifi on)" ;;
+    esac
+    WIFI_CON="$(nmcli -t -f NAME,TYPE con show --active 2>/dev/null | awk -F: '$2=="802-11-wireless"{print $1; exit}')"
+    if [[ -n "$WIFI_CON" ]]; then
+      ok "已连接无线网: ${WIFI_CON}"
+    else
+      info "没连无线网 —— 用 wifi 命令连: wifi scan / wifi connect \"名字\""
+    fi
+  fi
+fi
+
 ############################### 3. 路由 ###############################
 step "3. 路由"
 if command -v ip >/dev/null 2>&1; then

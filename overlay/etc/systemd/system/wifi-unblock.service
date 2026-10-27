@@ -1,0 +1,15 @@
+[Unit]
+Description=解锁无线网卡并打开无线开关
+Documentation=man:rfkill(8)
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# 笔记本/USB 网卡的无线电经常被 rfkill 软锁着, 这套系统没有托盘图标
+# 也没人手动去解锁 —— 结果就是"有线能上, 无线上不去"。
+ExecStart=/bin/sh -c 'rfkill unblock wifi 2>/dev/null || true; nmcli radio wifi on 2>/dev/null || true'
+
+[Install]
+WantedBy=multi-user.target

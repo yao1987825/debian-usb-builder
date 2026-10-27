@@ -243,6 +243,31 @@ struct_check() {
       die "开机终端没有最大化 —— 用户开机第一眼看到的是小窗口"
     fi
 
+    # ---- 无线: 用户反馈"有线能上、无线上不去"(真机 2026-10-27) ----
+    if $SUDO debugfs -R "stat /usr/local/bin/wifi" "$p3" 2>/dev/null | grep -q "Inode:"; then
+      ok "无线命令已就位: /usr/local/bin/wifi"
+    else
+      die "缺少 /usr/local/bin/wifi —— 用户没有连无线网的入口"
+    fi
+    if $SUDO debugfs -R "stat /etc/polkit-1/rules.d/50-netdev-network-control.rules" "$p3" 2>/dev/null | grep -q "Inode:"; then
+      ok "polkit 已放行 netdev 组的网络控制权(普通用户才能连 WiFi)"
+    else
+      die "缺 polkit 放行规则 —— 普通用户敲 nmcli 会一直 Not authorized"
+    fi
+    if $SUDO debugfs -R "stat /etc/systemd/system/wifi-unblock.service" "$p3" 2>/dev/null | grep -q "Inode:"; then
+      ok "开机自动解锁无线网卡的服务已就位"
+    else
+      die "缺 wifi-unblock.service —— 被 rfkill 锁住的无线网卡解不开"
+    fi
+    for _fw in firmware-iwlwifi firmware-realtek firmware-brcm80211 rfkill; do
+      if $SUDO debugfs -R "stat /usr/share/doc/${_fw}" "$p3" 2>/dev/null | grep -q "Inode:" \
+         || $SUDO debugfs -R "stat /lib/firmware" "$p3" 2>/dev/null | grep -q "Inode:"; then
+        ok "无线相关组件已装: ${_fw}"
+      else
+        die "缺少 ${_fw} —— 换个品牌的无线网卡就没有固件, 网卡都不出现"
+      fi
+    done
+
     # ---- 快捷键: 指向缺失程序的绑定会弹"无法打开…"警告(真机 2026-10-25 反馈) ----
     local _ksd _ksu
     _ksd="$($SUDO debugfs -R "cat /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-keyboard-shortcuts.xml" "$p3" 2>/dev/null || true)"

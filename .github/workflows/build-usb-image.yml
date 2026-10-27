@@ -146,6 +146,9 @@ jobs:
       - name: 快捷键清理脚本回归测试
         run: bash scripts/test-keyboard-shortcuts.sh
 
+      - name: wifi 命令回归测试
+        run: bash scripts/test-wifi-cli.sh
+
       - name: 构建镜像
         run: |
           # 构建日志同时落一份到 build-image.log: 构建失败时作为 artifact 上传,

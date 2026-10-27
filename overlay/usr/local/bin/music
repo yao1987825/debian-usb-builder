@@ -55,6 +55,7 @@ usage() {
   music gui                       图形界面 (需 PyQt6, 轻量镜像未装)
   music net                       网络自检 (连不上网先跑这个)
   music net --fix                 网络自检 + 自动修复
+  music wifi                      无线网: 扫描/连接/断开 (等同于 wifi 命令)
   music quark-login               扫码登录夸克, 写入 cookie(不需要浏览器) ★下歌前必做
   music quark-status              检查夸克 cookie 还能不能用 / 缺不缺主凭证
   music quark-clear               清空夸克 cookie
@@ -198,6 +199,17 @@ cmd_net() {
     exec /usr/local/bin/net-doctor "$@"
   fi
   echo "错误: 找不到 /usr/local/bin/net-doctor" >&2
+  return 1
+}
+
+# ---------------- 无线 ----------------
+# 真正的实现在 /usr/local/bin/wifi(扫描/连接/断开/忘掉)。
+# 放这里是为了让用户只需要记 "music" 这一个命令。
+cmd_wifi() {
+  if [[ -x /usr/local/bin/wifi ]]; then
+    exec /usr/local/bin/wifi "$@"
+  fi
+  echo "错误: 找不到 /usr/local/bin/wifi" >&2
   return 1
 }
 
@@ -477,6 +489,7 @@ case "${1:-}" in
     ;;
   doctor)              cmd_doctor ;;
   net)                 shift; cmd_net "$@" ;;
+  wifi|无线|wlan)     shift; cmd_wifi "$@" ;;
   quark-login)         shift; cmd_quark login "$@" ;;
   quark-status)        shift; cmd_quark status "$@" ;;
   quark-clear)         shift; cmd_quark clear "$@" ;;
