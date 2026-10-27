@@ -324,6 +324,9 @@ music single "夜曲" --index 2
 # 歌单批量下载(CSV 放 ~/projects/gequhai-playlist-downloader/playlist.csv)
 music playlist playlist.csv
 
+# 终端播放器(乐库就是歌曲分区, 下载完直接听) ★
+music play
+
 # 图形界面: 搜索并下载单曲(夸克网盘转存, 需 PyQt6)
 music gui
 
@@ -337,6 +340,11 @@ music doctor
 
 所有下载默认写到歌曲分区 `/mnt/songdisk`。下载前会自动检查该分区是否已挂载、是否可写，
 没挂载会尝试自动挂载并给出明确提示，而不是直接报错。
+
+`music play` 打开的是终端播放器 **music-shell**（Rust + ALSA，镜像预装，上游
+[yao1987825/music-shell](https://github.com/yao1987825/music-shell)），乐库固定指向歌曲分区，
+所以「下载 → 立刻能听」是连着的。它是全屏 TUI，会占住当前终端标签页；键位在界面里按 `?` 看，
+`q` 退出。没有声音时先跑 `music health`（第 7 节会查播放器、乐库挂载、`audio` 组和声卡）。
 
 也可以直接用原生命令：
 

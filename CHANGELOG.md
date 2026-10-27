@@ -13,6 +13,47 @@ GitHub Actions 自动构建镜像并发布到 [Releases](https://github.com/yao1
 
 ---
 
+## v1.2.0 (2026-10-27)
+
+- **新增功能: `music play` —— 终端播放器, 下载完直接听**
+
+### 🎵 播放器进镜像: music-shell (预编译产物)
+
+用户要把 music-shell 的播放功能放进镜像。选型实测(2026-10-27 真机):
+
+| 方案 | 结论 |
+| --- | --- |
+| 镜像里装 rust 现场编 | ✗ Debian 12 的 rustc 是 1.63, 编不动 `edition = "2024"`(要 ≥1.85) |
+| 用上游 release 预编译产物 | ✅ v0.5.0 最高只要 **GLIBC_2.34**, Debian 12 (glibc 2.36) 上直接能跑 |
+
+真机冒烟(PTY 跑 TUI): `音频已连接` → `▶ 正在播放 0:00 → 0:29 / 3:54`, 无报错;
+声卡 HDA Intel PCH 存在, `user` 已在 `audio` 组。
+
+改动:
+
+- **构建期下载安装**: `scripts/build-image.sh` 从
+  `github.com/yao1987825/music-shell/releases` 拉 `v0.5.0` 的
+  `music-shell-x86_64-unknown-linux-gnu.tar.gz` + `checksums.txt`,
+  **sha256 校验不过就拒装**; 本机构建时还会当场跑一次 `--version` 暴露 glibc 不兼容。
+  版本可用 `MUSIC_SHELL_VERSION` 环境变量覆盖。
+- **apt 清单补 `libasound2`**(rodio/ALSA 运行库, 上游 README 明确要求, 少了播放器起不来)
+  + `alsa-utils`(`aplay`/`amixer`, 排查声卡用)。
+- **乐库配置**: 预置 `~/.config/music-shell/config.json`, `library_path` 固定指向
+  `/mnt/songdisk`(歌曲分区), 于是「`music single` 下载 → `music play` 立刻能听」是连着的。
+- **`music play` 子命令**: `cmd_play()` 先 `songdisk_check`(分区没挂就别开, 否则
+  是空库还会在根分区建出空目录), 再 `exec music-shell` 移交控制权(TUI 占终端)。
+- **`music health` 第 7 节**: 查播放器版本、乐库挂载与曲目数、`audio` 组、声卡存在性。
+- **构建/产物双重断言**: `build-image.sh` 断言二进制 + libasound2 + 配置 +
+  `cmd_play` 接线; `verify-image.sh` 用 debugfs 对分区里的产物再断言一遍。
+- **回归测试** `scripts/test-music-play.sh`(9 组: 语法/接线/构建期安装/JSON 模板/
+  verify 断言/缺播放器时的报错), 已接入 CI。
+
+已知边界: `music-shell update`(自更新)与下载工具不同, 它需要访问 GitHub,
+在便携 U 盘上如果 shell 设了代理会走代理 —— 正常; 没设代理时国内直连 GitHub
+的 release 域名通常也不通, 需要时先 `music proxy on <地址>`。
+
+---
+
 ## v1.1.2 (2026-10-27)
 
 - 2026-10-27 真机反馈: **`music search` 搜不到, 但浏览器能打开站点**

@@ -268,6 +268,30 @@ struct_check() {
       fi
     done
 
+    # ---- 音乐播放器: music-shell + ALSA 运行库 + 乐库配置 ----
+    if $SUDO debugfs -R "stat /usr/local/bin/music-shell" "$p3" 2>/dev/null | grep -q "Inode:"; then
+      ok "播放器已装: /usr/local/bin/music-shell"
+    else
+      die "缺 /usr/local/bin/music-shell —— music play 没有播放器"
+    fi
+    if $SUDO debugfs -R "stat /usr/lib/x86_64-linux-gnu/libasound.so.2" "$p3" 2>/dev/null | grep -q "Inode:"; then
+      ok "ALSA 运行库已装: libasound.so.2 (music-shell 的依赖)"
+    else
+      die "缺 libasound2 —— music-shell 是 rodio/ALSA 的, 没有运行库起不来"
+    fi
+    local _mscfg
+    _mscfg="$($SUDO debugfs -R "cat /home/user/.config/music-shell/config.json" "$p3" 2>/dev/null || true)"
+    if [[ -n "$_mscfg" ]] && printf '%s' "$_mscfg" | grep -q '"/mnt/songdisk"'; then
+      ok "music-shell 配置已就位(乐库=/mnt/songdisk)"
+    else
+      die "缺 music-shell 配置或乐库没指向歌曲分区 —— 播放器会对着空库"
+    fi
+    if $SUDO debugfs -R "cat /usr/local/bin/music" "$p3" 2>/dev/null | grep -q "cmd_play"; then
+      ok "music 命令已接上 play 子命令"
+    else
+      die "music 命令里没有 cmd_play —— 用户敲 music play 会报错"
+    fi
+
     # ---- 快捷键: 指向缺失程序的绑定会弹"无法打开…"警告(真机 2026-10-25 反馈) ----
     local _ksd _ksu
     _ksd="$($SUDO debugfs -R "cat /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-keyboard-shortcuts.xml" "$p3" 2>/dev/null || true)"

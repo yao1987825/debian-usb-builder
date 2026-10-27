@@ -476,6 +476,45 @@ else
   bad "找不到 ${CFG}(项目可能没预装, WITH_PROJECTS=0?)"
 fi
 
+############################## 7. 播放器 ##############################
+sect "7. 播放器 (music play)"
+if command -v music-shell >/dev/null 2>&1; then
+  ok "music-shell 已安装: $(music-shell --version 2>/dev/null || echo '版本读不到')"
+  MS_CFG="/home/user/.config/music-shell/config.json"
+  if [[ -f "$MS_CFG" ]]; then
+    LIB="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1],encoding="utf-8")).get("library_path",""))' "$MS_CFG" 2>/dev/null || echo '?')"
+    info "乐库配置: ${LIB}"
+    if mountpoint -q "${LIB:-/mnt/songdisk}" 2>/dev/null; then
+      N="$(find "${LIB:-/mnt/songdisk}" -type f \( -iname '*.mp3' -o -iname '*.flac' -o -iname '*.wav' -o -iname '*.m4a' -o -iname '*.ogg' -o -iname '*.opus' \) 2>/dev/null | wc -l)"
+      ok "乐库已挂载, 有 ${N} 个音频文件"
+      if [[ "$N" -eq 0 ]]; then
+        tip "music single \"歌名\"   (先下几首歌再开播放器)"
+      fi
+    else
+      warn "乐库目录不是挂载点(${LIB}) —— music play 会先尝试自动挂载"
+      tip "songdisk_check 会自己挂; 挂不上就检查 U 盘写入模式(需 DD)"
+    fi
+  else
+    warn "找不到 ${MS_CFG} —— 播放器会用默认乐库 ~/Music(通常是空的)"
+  fi
+  if id -nG user 2>/dev/null | grep -qw audio; then
+    ok "user 在 audio 组(能直接访问声卡)"
+  else
+    bad "user 不在 audio 组 —— 播放会报 Permission denied"
+    tip "sudo usermod -aG audio user 后重新登录"
+  fi
+  if command -v aplay >/dev/null 2>&1; then
+    if aplay -l 2>/dev/null | grep -q '^card'; then
+      ok "声卡存在: $(aplay -l 2>/dev/null | grep '^card' | head -1)"
+    else
+      warn "aplay 看不到声卡 —— 播放可能没声音(检查 BIOS/驱动)"
+    fi
+  fi
+else
+  bad "music-shell 没装 —— music play 不可用"
+  tip "镜像里应预装; 或从 github.com/yao1987825/music-shell/releases 下载"
+fi
+
 ############################## 汇总 ##############################
 sect "汇总"
 if (( BAD == 0 )); then

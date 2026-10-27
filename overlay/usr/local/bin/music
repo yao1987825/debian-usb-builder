@@ -7,6 +7,7 @@
 #   music single "夜曲" --index 2   下载第 2 条候选
 #   music search "夜曲"             等同 single --list
 #   music playlist playlist.csv     按歌单 CSV 批量下载
+#   music play                      终端播放器(乐库 = 歌曲分区) ★听歌用
 #   music gui                       图形界面 (需 PyQt6, 轻量镜像未装)
 #   music out                       打印歌曲分区路径
 #   music ls                        列出已下载的歌曲(含歌手子目录)
@@ -52,6 +53,7 @@ usage() {
   music single "夜曲" --index 2   下载第 2 条候选
   music search "夜曲"             等同 single --list
   music playlist playlist.csv     按歌单 CSV 批量下载
+  music play                      终端播放器 (乐库=歌曲分区, TUI 会占住当前终端) ★听歌用
   music gui                       图形界面 (需 PyQt6, 轻量镜像未装)
   music net                       网络自检 (连不上网先跑这个)
   music net --fix                 网络自检 + 自动修复
@@ -166,6 +168,19 @@ cmd_gui() {
   cd "$PROJ_GUI" 2>/dev/null || { echo "错误: 找不到项目目录: $PROJ_GUI" >&2; return 1; }
   echo "[music] 图形界面已启动, 搜索框里可直接输入中文歌名"
   exec env "${PROXY_OFF[@]}" "${VENV_GUI}/bin/python" main.py
+}
+
+# 终端播放器(music-shell): 乐库=歌曲分区。 TUI 占住当前终端, 所以用 exec。
+cmd_play() {
+  if ! command -v music-shell >/dev/null 2>&1; then
+    echo "错误: 找不到 music-shell 播放器 (镜像里应有 /usr/local/bin/music-shell)" >&2
+    echo "      从 https://github.com/yao1987825/music-shell/releases 下载解压到 /usr/local/bin 即可" >&2
+    return 1
+  fi
+  # 乐库在歌曲分区上, 分区没挂就别开 —— 否则是空库, music-shell 还会顺手
+  # 在根分区上建出一个空的 /mnt/songdisk 目录。
+  songdisk_check || return 1
+  exec music-shell "$@"
 }
 
 cmd_setup_gui() {
@@ -482,6 +497,7 @@ case "${1:-}" in
   single|download|dl)  shift; cmd_single "$@" ;;
   search|find)         shift; cmd_search "$@" ;;
   playlist|batch)      shift; cmd_playlist "$@" ;;
+  play|播放|player)     shift; cmd_play "$@" ;;
   gui)                 shift; cmd_gui "$@" ;;
   out)                 echo "$SONG_DIR" ;;
   ls|list)             songdisk_check && ls -lh "$SONG_DIR" 2>/dev/null | head -60 && find "$SONG_DIR" -mindepth 2 -maxdepth 2 -type f -printf '%10k KB  %h/%f  %TY-%Tm-%Td\n' 2>/dev/null | sort | head -120 ;;

@@ -86,6 +86,15 @@ SERIAL_CONSOLE="${SERIAL_CONSOLE:-1}"            # 1=GRUB 内核加串口控制�
 REPO_GEQUHAI="${REPO_GEQUHAI:-https://github.com/Yannick-Mo/gequhai-downloader.git}"
 REPO_PLAYLIST="${REPO_PLAYLIST:-https://github.com/hoogrey/gequhai-playlist-downloader.git}"
 
+# music-shell: 终端音乐播放器(Rust + rodio/ALSA), 由 music play 调起。
+# 用上游 release 的预编译产物而不是现场编: Debian 12 的 rustc 是 1.63, 编不动
+# edition 2024; 实测 v0.5.0 最高只要 GLIBC_2.34, 在 Debian 12(glibc 2.36)上
+# 直接能跑 —— 2026-10-27 真机验证: "音频已连接", 正常播放到 0:29/3:54。
+MUSIC_SHELL_VERSION="${MUSIC_SHELL_VERSION:-0.5.0}"
+MUSIC_SHELL_TARBALL="music-shell-x86_64-unknown-linux-gnu.tar.gz"
+MUSIC_SHELL_URL="https://github.com/yao1987825/music-shell/releases/download/v${MUSIC_SHELL_VERSION}/${MUSIC_SHELL_TARBALL}"
+MUSIC_SHELL_SUMS_URL="https://github.com/yao1987825/music-shell/releases/download/v${MUSIC_SHELL_VERSION}/checksums.txt"
+
 BUILD_DIR="${BUILD_DIR:-${REPO_DIR}/build}"
 OUT_DIR="${OUT_DIR:-${REPO_DIR}/out}"
 COMPRESS="${COMPRESS:-xz}"                       # xz | gzip | none
@@ -248,6 +257,8 @@ FONT_PKGS="fonts-wqy-zenhei"
 # Intel/Realtek/USB 网卡的机器, 无线接口根本不出现(ath9k 这种固件内置的除外)。
 # 用户反馈"有线能上、无线上不去", 换机器刷盘时最常见的原因就是这个。
 # rfkill/iw/wireless-tools: 解被锁的无线电 + 看信号信道, 排查用。
+# libasound2: music-shell(rodio)的 ALSA 运行库, 上游 README 明确要求;
+#             少了它播放器直接起不来。alsa-utils(aplay/amixer): 排查声卡用。
 chroot_run apt-get install -y --no-install-recommends \
   linux-image-amd64 \
   dbus-x11 policykit-1 sudo locales tzdata \
@@ -275,7 +286,8 @@ chroot_run apt-get install -y --no-install-recommends \
   net-tools traceroute mtr-tiny whois tcpdump \
   pciutils usbutils lm-sensors smartmontools hdparm \
   btop shellcheck plocate bsdextrautils \
-  wmctrl xdotool scrot
+  wmctrl xdotool scrot \
+  libasound2 alsa-utils
 
 # ---- 可选组件: 装不上不影响系统, 但少了会影响输入法/桌面体验 ----
 apt_optional() {
@@ -462,6 +474,41 @@ if [[ "${WITH_PROJECTS}" == "1" ]]; then
 else
   step "3/9 跳过项目预装 (WITH_PROJECTS=0)"
 fi
+
+# ---- music-shell: 下载预编译产物并装进镜像 ----
+# 为什么装在第 3 步之后、overlay 之前: 它跟"下载器项目"无关(WITH_PROJECTS=0
+# 也要有), 而播放器的配置文件在第 4 步随 overlay 一起写。
+# 校验和必须对上: 从公网拉二进制进镜像, 不校验等于把供应链敞口开着。
+command -v curl >/dev/null 2>&1 \
+  || die "构建机上没有 curl —— music-shell 需要它从 GitHub release 下载"
+log "music-shell v${MUSIC_SHELL_VERSION}: 下载预编译产物"
+_ms_tmp="$(mktemp -d)"
+if ! curl -fsSL --retry 3 -m 600 -o "${_ms_tmp}/${MUSIC_SHELL_TARBALL}" "$MUSIC_SHELL_URL"; then
+  rm -rf "$_ms_tmp"
+  die "music-shell 下载失败: ${MUSIC_SHELL_URL}"
+fi
+if curl -fsSL --retry 3 -m 120 -o "${_ms_tmp}/checksums.txt" "$MUSIC_SHELL_SUMS_URL"; then
+  # checksums.txt 里有 4 个平台的产物, 只校验我们这一个
+  if ! (cd "$_ms_tmp" && grep -E "  ${MUSIC_SHELL_TARBALL}\$" checksums.txt | sha256sum -c - >/dev/null 2>&1); then
+    rm -rf "$_ms_tmp"
+    die "music-shell 校验和不匹配 —— 上游产物变了或下载损坏, 拒绝安装"
+  fi
+  log "music-shell 校验和通过"
+else
+  rm -rf "$_ms_tmp"
+  die "拿不到 checksums.txt —— 不校验就不装(上游 release 必须带校验文件)"
+fi
+tar xzf "${_ms_tmp}/${MUSIC_SHELL_TARBALL}" -C "$_ms_tmp" music-shell \
+  || { rm -rf "$_ms_tmp"; die "music-shell tar 包解不开"; }
+install -m755 "${_ms_tmp}/music-shell" "${ROOTFS}/usr/local/bin/music-shell" \
+  || { rm -rf "$_ms_tmp"; die "music-shell 安装失败"; }
+rm -rf "$_ms_tmp"
+# 本机是 x86_64 Linux 就当场跑一下 --version, 提前暴露 glibc 不兼容
+if [[ "$(uname -s)" == "Linux" && "$(uname -m)" == "x86_64" ]]; then
+  "${ROOTFS}/usr/local/bin/music-shell" --version >/dev/null 2>&1 \
+    || die "music-shell 在本机构建机上跑不起来(glibc 太老?) —— 镜像里也会跑不起来"
+fi
+log "music-shell ${MUSIC_SHELL_VERSION} 已装入镜像 /usr/local/bin/music-shell"
 
 ####################### 第 4 步: overlay 文件与用户配置 #######################
 step "4/9 写入 overlay(输入法/快捷脚本/桌面配置)"
@@ -988,6 +1035,39 @@ if [[ -f "${ROOTFS}/home/${USER_NAME}/projects/gequhai-downloader/utils.py" ]]; 
 }
 EOF
 fi
+
+# music-shell(终端播放器)的配置: 乐库直接指向歌曲分区, 否则默认 ~/Music 是空的。
+# 注意 library_path 写的是运行时的挂载点, 构建期 rootfs 里没有这个目录 —— 没关系,
+# music play 会先 songdisk_check(挂载检查), 音乐文件本来就在那个分区上。
+mkdir -p "${ROOTFS}/home/${USER_NAME}/.config/music-shell"
+cat > "${ROOTFS}/home/${USER_NAME}/.config/music-shell/config.json" <<EOF
+{
+  "app_name": "music-shell",
+  "theme": "dark",
+  "volume": 70,
+  "library_path": "/mnt/songdisk",
+  "playlists_dir": "/home/${USER_NAME}/.config/music-shell/playlists",
+  "auto_play": true,
+  "shuffle": false,
+  "repeat": "off"
+}
+EOF
+chown -R "${USER_UID}:${USER_GID}" "${ROOTFS}/home/${USER_NAME}/.config/music-shell" 2>/dev/null || true
+ok "music-shell 配置已写入(乐库=/mnt/songdisk)"
+
+# ---- 音乐播放器断言: 放在配置写入之后(否则检查一个还不存在的文件) ----
+# 2026-10-27 真机验证过: v0.5.0 在 Debian 12 上 GLIBC_2.34 就够, 能开声卡正常播放。
+[[ -x "${ROOTFS}/usr/local/bin/music-shell" ]] \
+  || die "缺 /usr/local/bin/music-shell —— music play 没有播放器(下载步骤挂了?)"
+grep -q "^Package: libasound2$" "${ROOTFS}/var/lib/dpkg/status" \
+  || die "缺 libasound2 —— music-shell 是 rodio/ALSA 的, 没有运行库起不来"
+[[ -f "${ROOTFS}/home/${USER_NAME}/.config/music-shell/config.json" ]] \
+  || die "缺 music-shell 配置 —— 播放器找不到乐库, 会对着空的 ~/Music"
+grep -q '"/mnt/songdisk"' "${ROOTFS}/home/${USER_NAME}/.config/music-shell/config.json" \
+  || die "music-shell 的乐库没指向歌曲分区(/mnt/songdisk)"
+grep -q 'cmd_play' "${ROOTFS}/usr/local/bin/music" \
+  || die "music 命令里没有 cmd_play —— 用户敲 music play 会报错"
+ok "音乐播放器: music-shell ${MUSIC_SHELL_VERSION} + libasound2 + 乐库指向歌曲分区"
 
 # 环境变量
 cat > "${ROOTFS}/etc/environment" <<EOF
