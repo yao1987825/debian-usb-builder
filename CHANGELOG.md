@@ -13,7 +13,44 @@ GitHub Actions 自动构建镜像并发布到 [Releases](https://github.com/yao1
 
 ---
 
-## 未发布 (v1.1.1 候选)
+## v1.1.2 (2026-10-27)
+
+- 2026-10-27 真机反馈: **`music search` 搜不到, 但浏览器能打开站点**
+
+### 🎵 修 `music search` 搜到 0 条: 下载工具绕开环境代理
+
+用户原话:"很奇怪。如果说访问不了的话, 为什么我在我浏览器能够访问到里面的内容"
+—— 猜得对, 不是站点挂了, 是**走的路不同**。同一时刻实测:
+
+| 目标 | 直连 | 走 LAN 代理 (socks5://192.168.6.1:1070) |
+| --- | --- | --- |
+| `www.gequhai.com` 搜索页 | **200**, 能解析出 15 条 | **403** 反爬挑战页(164 字节) → 0 条 |
+| `pan.quark.cn` (夸克转存) | **200** | SSL 失败 |
+| `img2.kuwo.cn` (封面) | **200** | SSL 失败 |
+
+根因链: 终端登录时 `/etc/profile.d/99-proxy.sh` 探到代理端口就自动 export
+`http_proxy` → `requests` 即使拿到空代理配置也会去读环境变量 → 请求从代理出口
+出去 → 站点对这个出口回 403 → 页面里没有歌名 → 解析出 0 条 → 报"没有搜到"。
+浏览器不读 `http_proxy`, 走的本来就是直连, 所以浏览器那边一切正常。
+
+修法:
+
+- `music` 跑下载工具 (`single` / `gui` / `playlist`) 前用 `env -u http_proxy ...`
+  摘掉环境代理; `git` / `pip` 这类真需要代理的命令不受影响
+- `single.py` 启动时也摘一遍 (绕过 `music` 直接 `python3 single.py` 一样直连);
+  `config.json` 里显式配的 `proxy` 仍然有效
+- `music-health` 第 5 节加"音乐站点直连可达"检查 —— 搜不到时先跑 `music health`
+  就能看到是哪一层
+- 新增回归测试 `scripts/test-music-proxy.sh` (假项目 + 必死的代理, 带对照组) 并接进 CI
+
+真机复验 (终端里带 `http_proxy` 的环境, 正是出问题的环境):
+
+- `music search "爱在西元前"` → **15 条候选** (周杰伦 / Cover / Live / DJ 版都在)
+- `music single "爱在西元前" --index 1` → 夸克高品质下载完成,
+  音频 / 歌词 / 封面落到 `/mnt/songdisk/周杰伦/`
+- `music health` → `✅ 音乐站点直连可达(200) —— music search 能用`
+
+## v1.1.1 (2026-10-27)
 
 - 2026-10-27 真机反馈: **有线网络没问题, wifi 无法使用**
 

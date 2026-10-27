@@ -120,7 +120,7 @@ cmd_single() {
     echo "      修复: python3 -m venv ${VENV_MUSIC} && ${VENV_MUSIC}/bin/pip install requests" >&2
     return 1
   fi
-  exec "${VENV_MUSIC}/bin/python" "${SINGLE_PY}" "$@"
+  exec env "${PROXY_OFF[@]}" "${VENV_MUSIC}/bin/python" "${SINGLE_PY}" "$@"
 }
 
 cmd_search() {
@@ -142,7 +142,7 @@ cmd_playlist() {
   fi
   echo "[music] 歌单: ${csv}"
   echo "[music] 输出: ${SONG_DIR}"
-  "${VENV_LIST}/bin/python" gequhai_downloader.py --csv "$csv" --out "$SONG_DIR" "$@"
+  env "${PROXY_OFF[@]}" "${VENV_LIST}/bin/python" gequhai_downloader.py --csv "$csv" --out "$SONG_DIR" "$@"
   local rc=$?
   if [[ $rc -eq 0 ]]; then
     echo "[music] 转码 aac/acc → mp3 ..."
@@ -165,7 +165,7 @@ cmd_gui() {
   fi
   cd "$PROJ_GUI" 2>/dev/null || { echo "错误: 找不到项目目录: $PROJ_GUI" >&2; return 1; }
   echo "[music] 图形界面已启动, 搜索框里可直接输入中文歌名"
-  exec "${VENV_GUI}/bin/python" main.py
+  exec env "${PROXY_OFF[@]}" "${VENV_GUI}/bin/python" main.py
 }
 
 cmd_setup_gui() {
@@ -188,7 +188,14 @@ cmd_setup_playwright() {
     return 1
   fi
   # 浏览器装到 root 家目录会跟普通用户对不上, 统一装到 /home/user 下
-  export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-${HOME_DIR}/.cache/ms-playwright}"
+export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-${HOME_DIR}/.cache/ms-playwright}"
+
+# 下载工具一律走直连: 实测同一时刻 站点/夸克/封面 直连全是 200, 走 LAN 代理
+# 反而全断(gequhai 回 403 反爬页 -> 搜到 0 条, 夸克/酷我直接 SSL 失败)。
+# 而登录 shell 会经 /etc/profile.d/99-proxy.sh 自动导出 http_proxy, requests
+# 即使拿到空代理配置也会去读它, 于是"浏览器能看、music search 搜不到"。
+# 只有下面这几个下载命令摘代理, git/pip 这类真需要代理的命令不受影响。
+PROXY_OFF=( -u http_proxy -u https_proxy -u all_proxy -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY )
   "${VENV_LIST}/bin/python" -m playwright install --with-deps chromium
   echo "[music] 完成"
 }

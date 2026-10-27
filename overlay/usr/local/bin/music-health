@@ -433,6 +433,24 @@ if [[ -x /usr/local/bin/proxy ]]; then
   /usr/local/bin/proxy status 2>&1 | sed 's/^/       /' || warn "proxy status 跑失败"
 fi
 
+# 音乐工具(search/下载)一律走直连 —— 实测环境里的 http_proxy 反而会让站点回 403
+# 反爬页, 症状是"浏览器能看、music search 搜到 0 条"。这里按直连探一次,
+# 直接回答"搜歌现在通不通"。
+if command -v curl >/dev/null 2>&1; then
+  SITE_CODE="$(curl -s -o /dev/null -m 15 --noproxy '*' -w '%{http_code}' \
+    'https://www.gequhai.com/search?s=probe' 2>/dev/null || echo 000)"
+  SITE_CODE="${SITE_CODE:-000}"
+  case "$SITE_CODE" in
+    200) ok "音乐站点直连可达(200) —— music search 能用" ;;
+    000) bad "音乐站点直连不通 —— 检查网线/DNS/防火墙" ;;
+    403) warn "音乐站点直连被挡(403) —— 多半被限流, 过几分钟再搜" ;;
+    *)   warn "音乐站点直连返回 ${SITE_CODE} —— music search 可能受影响" ;;
+  esac
+  if env | grep -qiE '^(http|https|all)_proxy='; then
+    info "当前 shell 设了代理, 但 music 工具会自动绕开它(直连才通, 见 README)"
+  fi
+fi
+
 ############################## 6. 夸克 Cookie ##############################
 sect "6. 夸克 Cookie(决定能不能下歌)"
 CFG="/home/user/projects/gequhai-downloader/config.json"

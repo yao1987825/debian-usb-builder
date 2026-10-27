@@ -22,6 +22,16 @@ import time
 DEFAULT_PROJECT = os.path.expanduser("~/projects/gequhai-downloader")
 DEFAULT_OUT = os.environ.get("SONG_DIR", "/mnt/songdisk")
 
+# 站点/夸克/封面直连才通, 走 LAN 代理反而全断(gequhai 回 403 反爬页、
+# 夸克/酷我 SSL 失败); 而登录 shell 会经 /etc/profile.d/99-proxy.sh 自动导出
+# http_proxy, requests 即使拿到空代理配置也会去读它 —— 症状就是
+# "浏览器能打开站点, music search 却一条都搜不到"。
+# 这里先把环境代理摘掉, 直接 python3 single.py 跑也一样直连;
+# config.json 里显式配的 proxy 仍然有效(utils.get_proxies 优先读它)。
+for _proxy_var in ("http_proxy", "https_proxy", "all_proxy",
+                   "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
+    os.environ.pop(_proxy_var, None)
+
 _UA = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 }

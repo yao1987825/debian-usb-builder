@@ -149,6 +149,9 @@ jobs:
       - name: wifi 命令回归测试
         run: bash scripts/test-wifi-cli.sh
 
+      - name: 音乐工具绕开环境代理回归测试
+        run: bash scripts/test-music-proxy.sh
+
       - name: 构建镜像
         run: |
           # 构建日志同时落一份到 build-image.log: 构建失败时作为 artifact 上传,

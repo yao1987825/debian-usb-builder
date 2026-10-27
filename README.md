@@ -643,6 +643,20 @@ proxy test            # 实测：真发一个请求看能不能出去
 - Python 的 `requests` 默认**不支持** `socks5://` 代理（会报 `ProxySchemeUnknown`），
   所以镜像里预装了几个 venv 都带 `PySocks`，`proxy on` 也会顺手补装。
 
+第三点：**音乐工具（`music search` / `single` / `gui` / `playlist`）会主动绕开环境代理**。
+同一时刻实测三个目标：
+
+| 目标 | 直连 | 走 LAN 代理 |
+| --- | --- | --- |
+| `www.gequhai.com`（搜歌 / 播放页） | **200**，能解析出全部候选 | **403** 反爬挑战页 → 搜到 0 条 |
+| `pan.quark.cn`（夸克转存） | **200** | SSL 失败 |
+| `img2.kuwo.cn`（封面） | **200** | SSL 失败 |
+
+所以 `music` 在跑这几个下载命令前会 `env -u http_proxy ...` 把环境代理摘掉 ——
+症状"浏览器能打开站点、`music search` 却一条都搜不到"就是这么来的（浏览器不读
+`http_proxy`，走的本来就是直连）。`git` / `pip` 这类真需要代理的命令不受影响；
+`config.json` 里显式配的 `proxy` 仍然有效。
+
 **Q：QEMU 冒烟测试报"没捕获到 GRUB 输出"**
 这只是警告，不是失败。OVMF 可能没走 UEFI 可移动介质路径，或串口输出没打开；结构校验通过就说明镜像结构没问题。
 
