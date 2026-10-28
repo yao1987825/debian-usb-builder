@@ -544,6 +544,15 @@ Bun 碰上就抛 `UnsupportedProxyProtocol`。镜像里的 `/usr/local/bin/openc
 > 这台 U 盘本来就是拿来现场救网络的, 风险可控; 但**别在存有重要资料的日常机器上
 > 用这个镜像开 AI**, 或者把 `~/.config/opencode/opencode.json` 里的权限改回 `ask`。
 
+两个实测踩过的坑(配置里已经处理好了, 别改回去):
+
+| 坑 | 表现 | 现在怎么做的 |
+| --- | --- | --- |
+| `external_directory` 写成字符串 `"allow"` | **不生效**, 实际还是内置的 `ask` —— AI 一访问项目目录外的文件(比如 `~/net-reports/`)就卡在授权上 | 必须写成对象 `{"*": "allow"}`(这条权限只认对象) |
+| `sudo opencode` 读不到配置 | opencode 的全局配置按 `$HOME` 找, root 的 HOME 是 `/root` | 构建期把整套配置复制一份到 `/root/.config/opencode/`, 包装脚本再导出 `OPENCODE_CONFIG` 兜底 |
+
+另外 `read` 对 `*.env` 这类文件仍然要人工确认(那是 opencode 内置的安全默认, 没去动它)。
+
 ### 5. 基础命令行工具（以后往里加新功能用）
 
 需求是"以后会再这个 u 盘系统中添加各种新功能，主要是终端命令方面，

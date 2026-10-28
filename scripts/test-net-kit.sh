@@ -163,6 +163,34 @@ else
   fail "构建脚本没把 opencode 真身装到 /usr/local/lib/opencode/"
 fi
 
+echo "== 权限配置(实测踩过的两个坑) =="
+# 坑一: external_directory 用平铺字符串 "allow" **不生效**, 实际还是内置的 ask,
+#       表现为 AI 访问项目目录外的文件时要人工确认(无 TTY 时直接卡死)。
+#       必须写成对象 {"*": "allow"}; 而且规则是"最后匹配者胜", 要放在权限块里。
+if python3 - "$OCFG" <<'PYEOF' 2>/dev/null
+import json, sys
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+ext = d.get("permission", {}).get("external_directory")
+sys.exit(0 if isinstance(ext, dict) and ext.get("*") == "allow" else 1)
+PYEOF
+then
+  ok "external_directory 是对象写法且放开了(平铺字符串不生效)"
+else
+  fail "external_directory 没写成 {\"*\": \"allow\"} —— AI 访问项目目录外的文件会被卡住"
+fi
+# 坑二: opencode 的全局配置按 $HOME 找。sudo opencode 时 HOME=/root,
+#       不给 root 也放一份的话, root 跑起来就是默认权限(全部要人工确认)。
+if grep -q 'root/.config/opencode' scripts/build-image.sh; then
+  ok "构建脚本给 root 也装了一份 opencode 配置"
+else
+  fail "构建脚本没给 root 装 opencode 配置 —— sudo opencode 会退回默认权限"
+fi
+if grep -q 'OPENCODE_CONFIG' overlay/usr/local/bin/opencode; then
+  ok "opencode 包装脚本固定了配置路径"
+else
+  fail "opencode 包装脚本没固定 OPENCODE_CONFIG"
+fi
+
 echo "== 网络排障 skills =="
 for sk in lan-topology lan-triage lan-repair lan-capture wifi-triage; do
   f="overlay/home/user/.config/opencode/skills/${sk}/SKILL.md"

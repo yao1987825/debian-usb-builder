@@ -668,7 +668,21 @@ for _sk in lan-topology lan-triage lan-repair lan-capture wifi-triage; do
   [[ -f "${ROOTFS}/home/${USER_NAME}/.config/opencode/skills/${_sk}/SKILL.md" ]] \
     || die "缺网络排障技能 ${_sk} —— AI 少了这块专业知识"
 done
-ok "opencode + 5 个网络排障 skills 就位"
+# root 也要有一份: 用户为了 sudo 免密经常直接 `sudo opencode`,
+# 而 opencode 的全局配置按 $HOME 找 —— root 的 HOME 是 /root, 不复制过去的话
+# root 跑起来就是"默认权限"(external_directory 一律要人工确认), 表现为
+# "AI 访问不了项目目录外的文件"(实测 2026-10-28)。
+# 复制的是**整个目录**(配置 + AGENTS.md + skills), 这样 skills.paths 里那个
+# "~/.config/opencode/skills" 对 root 也能解析到 /root/.config/opencode/skills。
+mkdir -p "${ROOTFS}/root/.config"
+rm -rf "${ROOTFS}/root/.config/opencode"
+cp -a "${ROOTFS}/home/${USER_NAME}/.config/opencode" "${ROOTFS}/root/.config/opencode"
+rm -rf "${ROOTFS}/root/.config/opencode/node_modules" \
+       "${ROOTFS}/root/.config/opencode/package-lock.json" \
+       "${ROOTFS}/root/.config/opencode/package.json" 2>/dev/null || true
+[[ -f "${ROOTFS}/root/.config/opencode/opencode.json" ]] \
+  || die "root 的 opencode 配置没复制成功 —— sudo opencode 会退回默认权限"
+ok "opencode + 5 个网络排障 skills 就位(user 与 root 各一份)"
 
 # ---- 音频直通(dmix 会让 rodio 写不进声卡) ----
 # Debian 的 default 走 dmix 插件链, cpal 在上面 appl_ptr 恒为 0(实测没声音)。

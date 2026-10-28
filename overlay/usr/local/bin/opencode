@@ -90,6 +90,14 @@ done
 TMPD="$(mktemp -d)"
 trap 'rm -rf "$TMPD"' EXIT
 
+# 配置跟着当前用户走: opencode 的全局配置按 $HOME 找,
+# `sudo opencode` 时 HOME=/root, 不指过去的话会用默认权限
+# (external_directory 一律要人工确认, 表现为"访问不了项目目录外的文件")。
+_cfg="${HOME:-}/.config/opencode/opencode.json"
+if [[ -f "$_cfg" ]]; then
+  export OPENCODE_CONFIG="$_cfg"
+fi
+
 socks="$(socks_proxy_url || true)"
 
 if [[ -n "$socks" ]]; then

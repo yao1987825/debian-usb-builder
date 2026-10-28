@@ -13,6 +13,37 @@ GitHub Actions 自动构建镜像并发布到 [Releases](https://github.com/yao1
 
 ---
 
+## v1.3.2 (2026-10-28)
+
+- **修复: opencode "无法访问权限" —— external_directory 授权没生效 + sudo 跑时读不到配置**
+
+### 症状
+
+AI 在真机上跑起来后, 一让它访问项目目录以外的文件(比如 `~/net-reports/` 里的报告),
+就卡在授权上; `sudo opencode` 更是整套配置都不生效。
+
+### 根因(两条, 都实测确认)
+
+1. **`external_directory` 用平铺字符串不生效**。配置里写 `"external_directory": "allow"`
+   时, 解析出来仍然是内置默认的 `ask` —— 这条权限只认**对象写法**
+   `{"*": "allow"}`(路径是 glob)。opencode 的规则是"最后匹配者胜",
+   所以要放进 permission 块里并用对象。
+2. **`sudo opencode` 读不到配置**。opencode 的全局配置按 `$HOME` 找, root 的 HOME 是
+   `/root`, 配置却只装在 `/home/user/.config/opencode/` —— root 跑起来就是"默认权限",
+   什么都要人工确认。
+
+### 修法
+
+- `opencode.json` 的 `external_directory` 改成 `{"*": "allow"}`;
+- 包装脚本导出 `OPENCODE_CONFIG` 指向当前用户的配置, 不管以谁的身份跑都用同一份;
+- 构建期把整套 opencode 配置(配置 + AGENTS.md + 5 个 skills)复制一份到
+  `/root/.config/opencode/`, `sudo opencode` 也有技能可用。
+
+真机验证: 普通用户与 root 两侧 `opencode debug config` 都是
+`external_directory = {"*": "allow"}`, instructions 与 skills 正常加载。
+
+---
+
 ## v1.3.1 (2026-10-28)
 
 - **修复: opencode 报 `unsupported proxy protocol`(代理协议不兼容)**
