@@ -553,15 +553,21 @@ fi
 log "opencode 校验和通过"
 tar xzf "${_oc_tmp}/${OPENCODE_TARBALL}" -C "$_oc_tmp" opencode \
   || { rm -rf "$_oc_tmp"; die "opencode tar 包解不开"; }
-install -m755 "${_oc_tmp}/opencode" "${ROOTFS}/usr/local/bin/opencode" \
+# 真身放 /usr/local/lib/opencode/, /usr/local/bin/opencode 是包装脚本(overlay 里):
+# opencode 是 Bun 写的, 它的 HTTP 客户端只认 http/https 代理, 碰上 socks5://
+# 就抛 UnsupportedProxyProtocol(用户实测报 "unsupported proxy protocol")。
+# 包装脚本负责在启动前把代理处理掉: 能直连就直连, 否则找同主机的 HTTP 代理端口,
+# 都不行就报一句人话, 而不是甩一个天书般的协议报错。
+mkdir -p "${ROOTFS}/usr/local/lib/opencode"
+install -m755 "${_oc_tmp}/opencode" "${ROOTFS}/usr/local/lib/opencode/opencode" \
   || { rm -rf "$_oc_tmp"; die "opencode 安装失败"; }
 rm -rf "$_oc_tmp"
 # 本机是 x86_64 Linux 就当场跑一下 --version, 提前暴露 glibc 不兼容
 if [[ "$(uname -s)" == "Linux" && "$(uname -m)" == "x86_64" ]]; then
-  "${ROOTFS}/usr/local/bin/opencode" --version >/dev/null 2>&1 \
+  "${ROOTFS}/usr/local/lib/opencode/opencode" --version >/dev/null 2>&1 \
     || die "opencode 在本机构建机上跑不起来(glibc 太老?) —— 镜像里也会跑不起来"
 fi
-log "opencode ${OPENCODE_VERSION} 已装入镜像 /usr/local/bin/opencode"
+log "opencode ${OPENCODE_VERSION} 已装入镜像 /usr/local/lib/opencode/opencode(/usr/local/bin/opencode 是代理适配包装)"
 
 ####################### 第 4 步: overlay 文件与用户配置 #######################
 step "4/9 写入 overlay(输入法/快捷脚本/桌面配置)"
@@ -647,6 +653,11 @@ ok "局域网诊断: net 命令 + netkit 模块 + 发现工具就位"
 # net probe / net topo 定位并给修复步骤。
 [[ -x "${ROOTFS}/usr/local/bin/opencode" ]] \
   || die "缺 /usr/local/bin/opencode —— AI 排障助手没装进镜像"
+[[ -x "${ROOTFS}/usr/local/lib/opencode/opencode" ]] \
+  || die "缺 /usr/local/lib/opencode/opencode —— 包装脚本背后没有真身, opencode 起不来"
+# 包装脚本必须处理 socks5: Bun 不认 socks5 代理, 不处理就是 "unsupported proxy protocol"
+grep -q "socks5://" "${ROOTFS}/usr/local/bin/opencode" \
+  || die "opencode 包装脚本里没有 socks5 处理逻辑 —— Bun 代理报错会直接打脸用户"
 _oc_cfg="${ROOTFS}/home/${USER_NAME}/.config/opencode/opencode.json"
 [[ -f "$_oc_cfg" ]] || die "缺 opencode.json —— opencode 起来没有配置"
 grep -q '"\$schema"' "$_oc_cfg" || die "opencode.json 缺 \$schema 声明"

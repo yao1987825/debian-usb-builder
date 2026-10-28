@@ -533,6 +533,12 @@ net ai "家里网突然变慢了, 帮我查一下"      # 直接问
 opencode auth login        # 或 opencode providers
 ```
 
+**如果开着代理报 `unsupported proxy protocol`**：那是代理协议的问题，不是 opencode 坏了。
+opencode 是 Bun 写的，**只认 http/https 代理**，而 `proxy` 命令默认导出的是 `socks5://`，
+Bun 碰上就抛 `UnsupportedProxyProtocol`。镜像里的 `/usr/local/bin/opencode` 是个包装脚本，
+启动前会自己处理：能直连就直连，否则找同一台机器上的 HTTP 代理端口，都不行才报错。
+想看当前代理状况：`opencode --net-check`。
+
 > ⚠️ 权限说明: 按你的要求, opencode.json 里把 `bash`/`edit`/`read` 等权限**全部放开**了,
 > 而且这台机器上 `sudo` 免密 —— 也就是说 AI 能以管理员身份执行任何命令。
 > 这台 U 盘本来就是拿来现场救网络的, 风险可控; 但**别在存有重要资料的日常机器上

@@ -76,6 +76,25 @@ net ai                            # 交互模式
 net ai "家里网突然变慢了, 帮我查"   # 直接问
 ```
 
+#### ⚠️ 顺手修掉: `unsupported proxy protocol`
+
+用户实测报 `unsupported proxy protocol`(UnsupportedProxyProtocol)。**是代理引起的**:
+opencode 是 Bun 写的, 它的 HTTP 客户端**只认 http/https 代理**, 而这套系统的
+`proxy` 命令默认导出的是 `socks5://` —— Bun 碰上 socks5 就直接抛
+`UnsupportedProxyProtocol`(不是 opencode 坏了, 也不是 key 或模型的问题)。
+
+现在 `/usr/local/bin/opencode` 是一个包装脚本(真身在
+`/usr/local/lib/opencode/opencode`), 启动前先把代理处理掉:
+
+1. 代理是 http/https → 原样用;
+2. 代理是 socks5 → 先测直连能不能到模型 API:
+   - 直连能 → **去掉代理变量直接连**(最常见, 实测直连可达);
+   - 直连不能 → 找同一台机器上的 HTTP 代理端口(8080/7890/3128/8118/10809/20171),
+     有就改用它;
+   - 都没有 → 打印一句人话告诉用户怎么办, 而不是甩一个天书般的协议报错。
+
+体检命令: `opencode --net-check`
+
 > ⚠️ 按需求把 opencode 的 `bash`/`edit`/`read` 等权限**全部放开**, 且这台机器
 > `sudo` 免密 —— AI 能以管理员身份执行命令。日常主力机上建议把权限改回 `ask`。
 

@@ -307,9 +307,20 @@ struct_check() {
 
     # ---- opencode + 网络排障 skills ----
     if $SUDO debugfs -R "stat /usr/local/bin/opencode" "$p3" 2>/dev/null | grep -q "Inode:"; then
-      ok "opencode 已装: /usr/local/bin/opencode"
+      ok "opencode 入口已装: /usr/local/bin/opencode"
     else
       die "缺 /usr/local/bin/opencode —— AI 排障助手没进镜像"
+    fi
+    if $SUDO debugfs -R "stat /usr/local/lib/opencode/opencode" "$p3" 2>/dev/null | grep -q "Inode:"; then
+      ok "opencode 真身已装: /usr/local/lib/opencode/opencode"
+    else
+      die "缺 /usr/local/lib/opencode/opencode —— 包装脚本背后没有真身, opencode 起不来"
+    fi
+    # Bun 的 HTTP 客户端不支持 socks5 代理, 包装脚本不处理就是 "unsupported proxy protocol"
+    if $SUDO debugfs -R "cat /usr/local/bin/opencode" "$p3" 2>/dev/null | grep -q "socks5"; then
+      ok "opencode 包装脚本带 socks5 代理适配"
+    else
+      die "opencode 包装脚本没有 socks5 处理逻辑 —— 代理开着就会报 unsupported proxy protocol"
     fi
     if $SUDO debugfs -R "cat /home/user/.config/opencode/opencode.json" "$p3" 2>/dev/null | grep -q '"bash": "allow"'; then
       ok "opencode 配置已就位(权限已放开)"

@@ -138,6 +138,31 @@ fi
 [[ -f overlay/home/user/.config/opencode/AGENTS.md ]] \
   && ok "有 AGENTS.md(告诉 AI 这台机器是干什么的)" || fail "缺 AGENTS.md"
 
+echo "== opencode 的 socks5 代理适配(用户实测报 unsupported proxy protocol) =="
+# opencode 是 Bun 写的, 只认 http/https 代理; 镜像里的 proxy 默认导出 socks5://,
+# 不做适配的话用户一开代理就报 UnsupportedProxyProtocol。
+[[ -f overlay/usr/local/bin/opencode ]] && ok "有 opencode 包装脚本" || fail "缺 opencode 包装脚本"
+if grep -q "socks5://" overlay/usr/local/bin/opencode; then
+  ok "包装脚本识别 socks5 代理"
+else
+  fail "包装脚本没识别 socks5 代理 —— 用户开代理就会报 unsupported proxy protocol"
+fi
+if grep -q "direct_ok" overlay/usr/local/bin/opencode; then
+  ok "包装脚本会在 socks5 时尝试直连"
+else
+  fail "包装脚本没有直连兜底"
+fi
+if grep -q "usr/local/lib/opencode/opencode" overlay/usr/local/bin/opencode; then
+  ok "包装脚本指向真身路径"
+else
+  fail "包装脚本没指向 /usr/local/lib/opencode/opencode"
+fi
+if grep -q "usr/local/lib/opencode/opencode" scripts/build-image.sh; then
+  ok "构建脚本把 opencode 真身装到 /usr/local/lib/opencode/"
+else
+  fail "构建脚本没把 opencode 真身装到 /usr/local/lib/opencode/"
+fi
+
 echo "== 网络排障 skills =="
 for sk in lan-topology lan-triage lan-repair lan-capture wifi-triage; do
   f="overlay/home/user/.config/opencode/skills/${sk}/SKILL.md"
