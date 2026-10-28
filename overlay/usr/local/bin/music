@@ -180,6 +180,13 @@ cmd_play() {
   # 乐库在歌曲分区上, 分区没挂就别开 —— 否则是空库, music-shell 还会顺手
   # 在根分区上建出一个空的 /mnt/songdisk 目录。
   songdisk_check || return 1
+  # 播放前确保 ALSA 默认输出是直通声卡的。
+  # Debian 的 default 走 dmix 插件链, cpal(rodio)在上面写不进数据
+  # (声卡 status 里 appl_ptr 恒为 0), 表现就是"界面在转时间但一点声音都没有"。
+  # audio-setup 是幂等的: 已经配好就直接跳过, 没配好才写。
+  if [[ ! -f /etc/asound.conf ]] && command -v audio-setup >/dev/null 2>&1; then
+    audio-setup --apply >/dev/null 2>&1 || true
+  fi
   exec music-shell "$@"
 }
 

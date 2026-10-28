@@ -1,0 +1,166 @@
+#!/usr/bin/env bash
+#
+# audio-setup —— 让 ALSA 的默认输出**直通声卡硬件**, 绕开 dmix/plug 插件链
+#
+# 为什么要这个:
+#   music-shell 用 rodio(底层 cpal)播放, cpal 会向 ALSA 请求 RW_INTERLEAVED 句柄。
+#   而 Debian 的 "default" 走的是 dmix 插件链 —— dmix 的 slave 是 MMAP 模式,
+#   应用侧的 avail/avail_min 语义跟 cpal 的写入循环对不上, 结果就是:
+#     * 播放器 TUI 显示"正在播放 0:05 / 4:25", 进度条正常走(那是 rodio 的时钟);
+#     * 但 /proc/asound/.../status 里 appl_ptr **永远是 0**, 一个样本都没进声卡;
+#     * 听感: 完全没声音。
+#   把 default 直接指向声卡硬件(hw:PCH,0 之类)之后, appl_ptr 正常推进, 声音就出来了。
+#   (2026-10-27 真机实测: 直通前 appl_ptr=0, 直通后 appl_ptr 持续推进。)
+#
+# 代价: 直通后没有软件混音, 第二个程序抢不到声卡。
+#   这台 U 盘系统是"音乐盒", 一次只播一个东西, 可以接受。
+#   想恢复混音: sudo audio-setup --restore
+#
+# 用法:
+#   audio-setup            自动检测并写入配置(推荐, 幂等)
+#   audio-setup --list     只看检测到什么, 不改任何东西
+#   audio-setup --restore  删掉配置, 恢复成系统默认(dmix 混音)
+#   audio-setup --card 0 --device 0   手动指定卡/设备
+#
+set -uo pipefail
+
+CONF="/etc/asound.conf"
+BACKUP="/etc/asound.conf.netkit.bak"
+
+R=$'\033[1;31m'; G=$'\033[1;32m'; Y=$'\033[1;33m'; B=$'\033[1;34m'; N=$'\033[0m'
+ok()  { printf '  %s✅%s %s\n' "$G" "$N" "$*"; }
+warn(){ printf '  %s⚠️ %s%s\n' "$Y" "$*" "$N"; }
+info(){ printf '  %s·%s %s\n' "$B" "$N" "$*"; }
+
+MODE="apply"
+CARD=""
+DEVICE=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --list)    MODE="list" ;;
+    --restore) MODE="restore" ;;
+    --apply)   MODE="apply" ;;
+    --card)    CARD="${2:-}"; shift ;;
+    --device)  DEVICE="${2:-}"; shift ;;
+    -h|--help)
+      sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+      exit 0 ;;
+    *) warn "不认识的参数: $1" ;;
+  esac
+  shift
+done
+
+# ---------------------------------------------------------------- 探测设备
+
+detect_default() {
+  # aplay -L 里 "default:" 指向系统认为的默认设备, 从 CARD/DEV 反查数字编号
+  local line cardname devname cardidx devidx
+  line="$(aplay -L 2>/dev/null | grep -m1 '^default:' || true)"
+  [[ -z "$line" ]] && return 1
+  cardname="$(sed -n 's/.*CARD=\([^,]*\).*/\1/p' <<<"$line")"
+  devname="$(sed -n 's/.*DEV=\([^,]*\).*/\1/p' <<<"$line")"
+  [[ -z "$cardname" ]] && return 1
+
+  # aplay -l: "card 0: PCH [HDA Intel PCH], device 0: ALC269VB Analog [...]"
+  local cardline
+  cardline="$(aplay -l 2>/dev/null | grep -m1 "card [0-9]*: ${cardname} " || true)"
+  [[ -z "$cardline" ]] && return 1
+  cardidx="$(sed -n 's/^card \([0-9]*\):.*/\1/p' <<<"$cardline")"
+  devidx="$(sed -n 's/.*device \([0-9]*\):.*/\1/p' <<<"$cardline")"
+  [[ -z "$cardidx" ]] && return 1
+  echo "${cardidx}:${devidx:-0}:${cardname}:${devname:-0}"
+  return 0
+}
+
+if [[ "$MODE" == "list" ]]; then
+  echo "== ALSA 输出设备 =="
+  aplay -l 2>/dev/null | sed 's/^/  /' || true
+  echo "== 系统的 default 指向 =="
+  aplay -L 2>/dev/null | grep -m1 '^default:' | sed 's/^/  /' || echo "  (没找到 default)"
+  echo "== 当前 /etc/asound.conf =="
+  if [[ -f "$CONF" ]]; then
+    sed 's/^/  /' "$CONF"
+  else
+    echo "  (不存在 —— 现在走的是系统默认的 dmix 插件链)"
+  fi
+  echo "== 播放器音频通路自检 =="
+  if [[ -r /proc/asound/card0/pcm0p/sub0/status ]]; then
+    grep -E '^(state|hw_ptr|appl_ptr)' /proc/asound/card0/pcm0p/sub0/status | sed 's/^/  /'
+    local_ptr="$(awk '/^appl_ptr/{print $3}' /proc/asound/card0/pcm0p/sub0/status 2>/dev/null || echo 0)"
+    if [[ "${local_ptr:-0}" -gt 0 ]]; then
+      ok "appl_ptr=${local_ptr} —— 样本在往声卡里写(这条链是通的)"
+    else
+      warn "appl_ptr=0 —— 样本没进声卡, 多半就是 dmix 插件链的问题, 跑 sudo audio-setup"
+    fi
+  else
+    info "读不到 /proc/asound/.../status(可能没有声卡或没权限)"
+  fi
+  exit 0
+fi
+
+if [[ "$MODE" == "restore" ]]; then
+  if [[ -f "$CONF" ]]; then
+    sudo rm -f "$CONF"
+    ok "已删除 ${CONF}, 恢复系统默认(dmix 混音)"
+    warn "注意: music-shell 在 dmix 下可能没有声音(apl_ptr 永远是 0)"
+  else
+    info "${CONF} 本来就不存在, 已经是系统默认"
+  fi
+  exit 0
+fi
+
+# ---------------------------------------------------------------- 写配置
+
+if [[ -z "$CARD" || -z "$DEVICE" ]]; then
+  info "自动检测默认输出设备 ..."
+  detected="$(detect_default || true)"
+  if [[ -z "$detected" ]]; then
+    warn "没检测到声卡(或没有 aplay), 跳过配置"
+    exit 1
+  fi
+  CARD="${detected%%:*}"
+  rest="${detected#*:}"
+  DEVICE="${rest%%:*}"
+  info "检测到 card=${CARD} device=${DEVICE}"
+fi
+
+if [[ ! -w /etc ]]; then
+  warn "改 /etc/asound.conf 需要 root, 自动加 sudo"
+  SUDO="sudo"
+else
+  SUDO=""
+fi
+
+# 已经有同样的配置就别重复写
+if [[ -f "$CONF" ]] && grep -q "card ${CARD}" "$CONF" 2>/dev/null; then
+  ok "${CONF} 已经是直通 card ${CARD} 的配置, 不用改"
+  exit 0
+fi
+
+[[ -f "$CONF" ]] && $SUDO cp -a "$CONF" "$BACKUP" 2>/dev/null && info "原配置已备份到 ${BACKUP}"
+
+$SUDO tee "$CONF" >/dev/null <<EOF
+# 由 audio-setup 生成 —— 让默认输出直通声卡硬件。
+#
+# 原因: Debian 的 default 走 dmix 插件链, cpal(rodio)在其上写不进数据
+#       (声卡 status 里 appl_ptr 恒为 0), 表现为"播放器在转但一点声音都没有"。
+# 直接指向 hw 设备后 appl_ptr 正常推进, 声音恢复。
+#
+# 代价: 没有软件混音(一次只能一个程序发声)。想恢复: sudo audio-setup --restore
+#
+# 本文件由 audio-setup 自动生成, 手工改会在下次运行时被覆盖。
+pcm.!default {
+    type hw
+    card ${CARD}
+    device ${DEVICE}
+}
+
+ctl.!default {
+    type hw
+    card ${CARD}
+}
+EOF
+
+ok "${CONF} 已写入: 默认输出直通 card ${CARD} device ${DEVICE}"
+info "验证: aplay -L | head -1   然后播放一段音乐试试"
+exit 0

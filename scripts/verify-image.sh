@@ -292,6 +292,49 @@ struct_check() {
       die "music 命令里没有 cmd_play —— 用户敲 music play 会报错"
     fi
 
+    # ---- 局域网诊断工具(netkit) ----
+    if $SUDO debugfs -R "stat /usr/local/bin/net" "$p3" 2>/dev/null | grep -q "Inode:"; then
+      ok "局域网诊断入口已装: /usr/local/bin/net"
+    else
+      die "缺 /usr/local/bin/net —— 用户没有网络诊断工具"
+    fi
+    for _m in util netinfo devclass discover topo probe cli; do
+      if ! $SUDO debugfs -R "stat /usr/local/lib/netkit/${_m}.py" "$p3" 2>/dev/null | grep -q "Inode:"; then
+        die "缺 netkit/${_m}.py —— net 命令跑不起来"
+      fi
+    done
+    ok "netkit 模块齐全(拓扑/发现/检测)"
+
+    # ---- opencode + 网络排障 skills ----
+    if $SUDO debugfs -R "stat /usr/local/bin/opencode" "$p3" 2>/dev/null | grep -q "Inode:"; then
+      ok "opencode 已装: /usr/local/bin/opencode"
+    else
+      die "缺 /usr/local/bin/opencode —— AI 排障助手没进镜像"
+    fi
+    if $SUDO debugfs -R "cat /home/user/.config/opencode/opencode.json" "$p3" 2>/dev/null | grep -q '"bash": "allow"'; then
+      ok "opencode 配置已就位(权限已放开)"
+    else
+      die "缺 opencode.json 或没放开权限 —— AI 跑不了诊断命令"
+    fi
+    for _sk in lan-topology lan-triage lan-repair lan-capture wifi-triage; do
+      if ! $SUDO debugfs -R "stat /home/user/.config/opencode/skills/${_sk}/SKILL.md" "$p3" 2>/dev/null | grep -q "Inode:"; then
+        die "缺网络排障技能 ${_sk}"
+      fi
+    done
+    ok "5 个网络排障 skills 已就位"
+
+    # ---- 音频直通 ----
+    if $SUDO debugfs -R "stat /usr/local/bin/audio-setup" "$p3" 2>/dev/null | grep -q "Inode:"; then
+      ok "音频直通脚本已装: audio-setup"
+    else
+      die "缺 /usr/local/bin/audio-setup —— 播放器可能没声音(dmix 链)"
+    fi
+    if $SUDO debugfs -R "cat /etc/systemd/system/audio-direct.service" "$p3" 2>/dev/null | grep -q "audio-setup"; then
+      ok "开机自动配音频通路的 service 已就位"
+    else
+      die "缺 audio-direct.service —— 开机不会自动修音频通路"
+    fi
+
     # ---- 快捷键: 指向缺失程序的绑定会弹"无法打开…"警告(真机 2026-10-25 反馈) ----
     local _ksd _ksu
     _ksd="$($SUDO debugfs -R "cat /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-keyboard-shortcuts.xml" "$p3" 2>/dev/null || true)"

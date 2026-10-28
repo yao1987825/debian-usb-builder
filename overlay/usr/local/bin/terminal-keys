@@ -43,6 +43,10 @@ cat <<'EOF'
 │    music health      一键体检(输入法/分辨率/网络/分区/夸克)            │
 │    music keys        这张速查表                                        │
 │    music net         网络诊断                                         │
+│    net topo          局域网拓扑图(网段/网关/有哪些设备)                │
+│    net probe         局域网深度检测(丢包/MTU/IP冲突/环路/DNS)           │
+│    net fix           网络修复(--renew/--flush-arp/--dns)               │
+│    net ai            AI 排障助手(opencode + 网络排障技能)               │
 │    wifi              连无线网(扫描/连接/断开)  wifi status 看状态      │
 │    music screen      按显示器原生分辨率调整                             │
 │    music quark-login 夸克网盘扫码登录(拿 cookie)                       │

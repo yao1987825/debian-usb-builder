@@ -155,6 +155,9 @@ jobs:
       - name: 播放器 music play 接线回归测试
         run: bash scripts/test-music-play.sh
 
+      - name: 局域网诊断 netkit 回归测试
+        run: bash scripts/test-net-kit.sh
+
       - name: 构建镜像
         run: |
           # 构建日志同时落一份到 build-image.log: 构建失败时作为 artifact 上传,

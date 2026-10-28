@@ -1,0 +1,15 @@
+[Unit]
+Description=ALSA 默认输出直通声卡硬件(绕开 dmix, 否则 rodio 播放器写不进声卡)
+Documentation=file:///usr/local/bin/audio-setup
+After=sound.target
+Before=multi-user.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# 检测不到声卡时 audio-setup 自己会跳过, 不该拖垮开机
+ExecStart=/usr/local/bin/audio-setup --apply
+SuccessExitStatus=0 1
+
+[Install]
+WantedBy=multi-user.target

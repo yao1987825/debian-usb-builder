@@ -95,6 +95,18 @@ MUSIC_SHELL_TARBALL="music-shell-x86_64-unknown-linux-gnu.tar.gz"
 MUSIC_SHELL_URL="https://github.com/yao1987825/music-shell/releases/download/v${MUSIC_SHELL_VERSION}/${MUSIC_SHELL_TARBALL}"
 MUSIC_SHELL_SUMS_URL="https://github.com/yao1987825/music-shell/releases/download/v${MUSIC_SHELL_VERSION}/checksums.txt"
 
+# opencode: 装进 U 盘系统的 AI 助手, 用来做网络排障(配 skills + 全权限)。
+# 用上游 release 的预编译二进制: opencode 是 bun 编的, 装 node/bun 去 npm 装
+# 会多拉 100MB+ 运行时, 直接用官方静态二进制最省。
+# 官方 release **不发布 checksums.txt**, 所以这里把 sha256 钉死在脚本里
+# (跟"锁文件"一个意思): 版本升级时必须同步更新这个值, 校验不过就拒绝安装。
+# 2026-10-27 真机验证: v1.19.4 在 Debian 12(glibc 2.36)上直接能跑, 只依赖 libc。
+OPENCODE_VERSION="${OPENCODE_VERSION:-1.19.4}"
+OPENCODE_TARBALL="opencode-linux-x64.tar.gz"
+OPENCODE_URL="https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/${OPENCODE_TARBALL}"
+OPENCODE_SHA256="${OPENCODE_SHA256:-849bd6b3d959a1d2ef200ed1634a51c79a45ca236aa26665d75debd694805cce}"
+
+
 BUILD_DIR="${BUILD_DIR:-${REPO_DIR}/build}"
 OUT_DIR="${OUT_DIR:-${REPO_DIR}/out}"
 COMPRESS="${COMPRESS:-xz}"                       # xz | gzip | none
@@ -259,6 +271,14 @@ FONT_PKGS="fonts-wqy-zenhei"
 # rfkill/iw/wireless-tools: 解被锁的无线电 + 看信号信道, 排查用。
 # libasound2: music-shell(rodio)的 ALSA 运行库, 上游 README 明确要求;
 #             少了它播放器直接起不来。alsa-utils(aplay/amixer): 排查声卡用。
+# 局域网诊断工具(网段变了/网关换了/IP 冲突/掉线, 靠它们现场定位):
+#   arp-scan + iputils-arping: 二层 ARP 扫描, 找出"局域网里到底有哪些设备"。
+#     千万别只靠 ping: 路由器开了 Proxy ARP 时, 它会替全网段应答,
+#     ping 扫描能把整个 /24 报成在线(实测报出 70+ 台假设备)。
+#   ethtool: 网卡物理链路/速率/双工 —— "插了网线却完全没反应"的第一现场。
+#   avahi-utils: avahi-browse 收 mDNS 广播, 能拿到设备真实主机名和服务类型
+#     (打印机/NAS/摄像头/音箱一眼认出来)。
+#   lldpd: lldpcli 读交换机 LLDP 通告, 知道网关背后接的是哪台交换机、什么型号。
 chroot_run apt-get install -y --no-install-recommends \
   linux-image-amd64 \
   dbus-x11 policykit-1 sudo locales tzdata \
@@ -287,6 +307,7 @@ chroot_run apt-get install -y --no-install-recommends \
   pciutils usbutils lm-sensors smartmontools hdparm \
   btop shellcheck plocate bsdextrautils \
   wmctrl xdotool scrot \
+  iputils-arping arp-scan ethtool avahi-utils lldpd \
   libasound2 alsa-utils
 
 # ---- 可选组件: 装不上不影响系统, 但少了会影响输入法/桌面体验 ----
@@ -510,6 +531,38 @@ if [[ "$(uname -s)" == "Linux" && "$(uname -m)" == "x86_64" ]]; then
 fi
 log "music-shell ${MUSIC_SHELL_VERSION} 已装入镜像 /usr/local/bin/music-shell"
 
+# ---- opencode: 下载预编译二进制并装进镜像 ----
+# 为什么要预装: 这个 U 盘系统要做成"网络急救包", 配上 opencode + 网络排障
+# skills 之后, 用户对着它描述症状("家里网突然变慢了"), 它自己跑 net probe /
+# net topo 定位问题并给修复步骤 —— 比一堆命令好使。
+# 体积代价: 压缩包 76MB, 装完约 205MB(rootfs 6GB 装得下)。
+# 镜像里不预置任何 API key: 凭据必须用户自己配(opencode auth login)。
+command -v curl >/dev/null 2>&1 \
+  || die "构建机上没有 curl —— opencode 需要它从 GitHub release 下载"
+log "opencode v${OPENCODE_VERSION}: 下载预编译产物"
+_oc_tmp="$(mktemp -d)"
+if ! curl -fsSL --retry 3 -m 900 -o "${_oc_tmp}/${OPENCODE_TARBALL}" "$OPENCODE_URL"; then
+  rm -rf "$_oc_tmp"
+  die "opencode 下载失败: ${OPENCODE_URL}"
+fi
+_oc_sha="$(sha256sum "${_oc_tmp}/${OPENCODE_TARBALL}" | awk '{print $1}')"
+if [[ "$_oc_sha" != "$OPENCODE_SHA256" ]]; then
+  rm -rf "$_oc_tmp"
+  die "opencode 校验和不匹配(期望 ${OPENCODE_SHA256}, 实际 ${_oc_sha}) —— 上游产物变了或下载损坏, 拒绝安装"
+fi
+log "opencode 校验和通过"
+tar xzf "${_oc_tmp}/${OPENCODE_TARBALL}" -C "$_oc_tmp" opencode \
+  || { rm -rf "$_oc_tmp"; die "opencode tar 包解不开"; }
+install -m755 "${_oc_tmp}/opencode" "${ROOTFS}/usr/local/bin/opencode" \
+  || { rm -rf "$_oc_tmp"; die "opencode 安装失败"; }
+rm -rf "$_oc_tmp"
+# 本机是 x86_64 Linux 就当场跑一下 --version, 提前暴露 glibc 不兼容
+if [[ "$(uname -s)" == "Linux" && "$(uname -m)" == "x86_64" ]]; then
+  "${ROOTFS}/usr/local/bin/opencode" --version >/dev/null 2>&1 \
+    || die "opencode 在本机构建机上跑不起来(glibc 太老?) —— 镜像里也会跑不起来"
+fi
+log "opencode ${OPENCODE_VERSION} 已装入镜像 /usr/local/bin/opencode"
+
 ####################### 第 4 步: overlay 文件与用户配置 #######################
 step "4/9 写入 overlay(输入法/快捷脚本/桌面配置)"
 if [[ -d "${REPO_DIR}/overlay" ]]; then
@@ -558,6 +611,63 @@ done
 grep -q "^Package: rfkill$" "${ROOTFS}/var/lib/dpkg/status" \
   || die "缺 rfkill —— 被锁住的无线电解不开"
 ok "无线: 固件齐备 + polkit 放行 + 开机自动解锁 + wifi 命令就位"
+
+# ---- 局域网诊断工具(netkit) ----
+# 这个 U 盘不只是一台下载听歌机, 还得能当"网络急救包"用:
+# 局域网出问题(网段变了/网关换了/IP 冲突/DNS 被劫持/无线掉线)时,
+# 插上就能扫拓扑、跑检测、执行修复。工具本体在 overlay/usr/local/lib/netkit/。
+[[ -x "${ROOTFS}/usr/local/bin/net" ]] \
+  || die "overlay 里缺 /usr/local/bin/net —— 用户没有局域网诊断入口"
+[[ -f "${ROOTFS}/usr/local/lib/netkit/cli.py" ]] \
+  || die "缺 netkit/cli.py —— net 命令跑不起来"
+for _m in util netinfo devclass discover topo probe; do
+  [[ -f "${ROOTFS}/usr/local/lib/netkit/${_m}.py" ]] \
+    || die "缺 netkit/${_m}.py —— 拓扑/检测功能不完整"
+done
+# netkit 是纯 Python, 语法错误要到运行时才炸, 构建期先静态查一遍
+# (用 ast.parse 而不是 py_compile: py_compile 会在 rootfs 里落 __pycache__)
+if command -v python3 >/dev/null 2>&1; then
+  for _f in "${ROOTFS}"/usr/local/lib/netkit/*.py; do
+    python3 -c "import ast,sys; ast.parse(open(sys.argv[1], encoding='utf-8').read())" "$_f" \
+      || die "netkit 里的 ${_f##*/} 有语法错误"
+  done
+else
+  warn "构建机没有 python3, 跳过 netkit 语法静态检查"
+fi
+# 依赖包: 少了 arp-scan 就退化成 ping 扫描, 少了 lldpd 就认不出交换机,
+# 但这些是"轻量选装", 装不上只提示不中断。
+for _p in arp-scan ethtool avahi-utils; do
+  grep -q "^Package: ${_p}$" "${ROOTFS}/var/lib/dpkg/status" \
+    || warn "缺 ${_p} —— 局域网检测会少一类发现手段(不影响其它功能)"
+done
+ok "局域网诊断: net 命令 + netkit 模块 + 发现工具就位"
+
+# ---- opencode + 网络排障 skills ----
+# opencode 让用户能直接描述症状("家里网突然变慢了"), 由 AI 自己跑
+# net probe / net topo 定位并给修复步骤。
+[[ -x "${ROOTFS}/usr/local/bin/opencode" ]] \
+  || die "缺 /usr/local/bin/opencode —— AI 排障助手没装进镜像"
+_oc_cfg="${ROOTFS}/home/${USER_NAME}/.config/opencode/opencode.json"
+[[ -f "$_oc_cfg" ]] || die "缺 opencode.json —— opencode 起来没有配置"
+grep -q '"\$schema"' "$_oc_cfg" || die "opencode.json 缺 \$schema 声明"
+grep -q '"bash": "allow"' "$_oc_cfg" || die "opencode.json 没放开 bash 权限 —— 排障助手跑不了诊断命令"
+[[ -f "${ROOTFS}/home/${USER_NAME}/.config/opencode/AGENTS.md" ]] \
+  || die "缺 AGENTS.md —— opencode 不知道这台机器是干什么的"
+for _sk in lan-topology lan-triage lan-repair lan-capture wifi-triage; do
+  [[ -f "${ROOTFS}/home/${USER_NAME}/.config/opencode/skills/${_sk}/SKILL.md" ]] \
+    || die "缺网络排障技能 ${_sk} —— AI 少了这块专业知识"
+done
+ok "opencode + 5 个网络排障 skills 就位"
+
+# ---- 音频直通(dmix 会让 rodio 写不进声卡) ----
+# Debian 的 default 走 dmix 插件链, cpal 在上面 appl_ptr 恒为 0(实测没声音)。
+# audio-setup 开机自动把默认输出改成直通硬件, 详见 overlay/usr/local/bin/audio-setup。
+[[ -x "${ROOTFS}/usr/local/bin/audio-setup" ]] \
+  || die "overlay 里缺 /usr/local/bin/audio-setup —— 播放器可能没声音"
+[[ -f "${ROOTFS}/etc/systemd/system/audio-direct.service" ]] \
+  || die "缺 audio-direct.service —— 开机不会自动配好音频通路"
+chroot_run systemctl enable audio-direct.service || die "audio-direct.service 启用失败"
+ok "音频直通: audio-setup + 开机自动配置"
 
 # ---- pip 换清华源(放在这里而不是第 2 步: 第 3 步的 pip 装包走官方 PyPI 更快) ----
 if [[ -n "$PIP_INDEX_URL" ]]; then

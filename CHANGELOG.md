@@ -13,6 +13,104 @@ GitHub Actions 自动构建镜像并发布到 [Releases](https://github.com/yao1
 
 ---
 
+## v1.3.0 (2026-10-28)
+
+- **新增功能: 局域网急救包(`net` 命令)—— 把 U 盘变成"网络维修工具"**
+- **新增功能: opencode + 5 个网络排障技能 —— AI 带着技能一起查网络**
+- **修复: `music play` 没声音(ALSA 默认输出绕过 dmix 插件链)**
+
+### 🌐 局域网急救包: `net` 命令
+
+之前这套系统只能"下载 + 听歌"。现在它还能**现场修网络** —— 假设问题出在局域网
+内部设定上(网段变了、网关换了、IP 冲突、DNS 被劫持、无线掉线、交换机不转发),
+插上 U 盘就能扫拓扑、跑检测、执行修复。
+
+| 命令 | 干什么 |
+| --- | --- |
+| `net topo` | 扫描局域网, 打印拓扑图(ASCII 树) |
+| `net probe` | 深度检测: 丢包/抖动、MTU、IP 冲突、路由环路、DNS 劫持、无线信号、IPv6、代理干扰 |
+| `net doctor` | 本机网络栈自检(等价老的 `net-doctor`) |
+| `net fix` | 安全修复: `--renew` / `--flush-arp` / `--dns` / `--restart-nm` / `--rebuild-resolv` |
+| `net ai` | 用 opencode + 网络排障技能问 AI |
+| `net report` | 看历史报告(`~/net-reports/`) |
+
+实现放在 `overlay/usr/local/lib/netkit/`(纯 Python3, 不引第三方库), 关键设计:
+
+- **多源设备发现**: 内核邻居表 → ARP 二层扫描(arp-scan/arping) → ICMP 扫描 →
+  mDNS(avahi) → LLDP(交换机通告), 每个设备都记录"是从哪儿发现的"。
+  设备类型由三条线索推断: mDNS 服务 → 开放端口(打印机 9100、NAS 445/32400、
+  摄像头 554、iPhone 62078) → 主机名关键字, 并把判定依据打印出来。
+- **代理 ARP 必须处理**: 有些路由器会替整个网段应答 ARP, ping 扫描会把整个 /24
+  报成"在线"(实测报出 70+ 台假设备)。`net topo` 会识别并过滤, 只保留真设备,
+  并明确提示"路由器开启了 Proxy ARP"。
+- **网段变更可追溯**: 每次扫描把网段/网关/DNS/IP 存进
+  `~/.local/state/netkit/history.json`, 下次自动对比并报出"网段变了: A -> B"。
+  这直接对应用户提的"局域网网段变动"场景。
+- **每条结论带修复命令**: `net probe` 的输出不是"建议检查一下", 而是
+  `修复: sudo net fix --renew` 这种可以直接粘的。
+
+新装的轻量依赖(都是几 MB): `arp-scan` `iputils-arping` `ethtool`
+`avahi-utils` `lldpd`。
+
+### 🤖 opencode + 网络排障技能
+
+镜像里预装了 opencode v1.19.4(官方预编译二进制, 约 205MB, 离线可用,
+构建期下载并**钉了 sha256 校验和**; 官方 release 不发 checksums, 所以校验值
+写在 `scripts/build-image.sh` 里当锁文件用)。
+
+预置 `~/.config/opencode/opencode.json` + `AGENTS.md` + 5 个技能:
+
+| 技能 | 管什么 |
+| --- | --- |
+| `lan-topology` | 扫拓扑并解读(网段/网关/设备类型/代理 ARP 陷阱) |
+| `lan-triage` | 分层定位: 物理 → 链路 → 网络 → DNS → 应用 |
+| `lan-repair` | 执行安全修复(改完必须复检) |
+| `lan-capture` | 抓包定位(DHCP/ARP/DNS/握手) |
+| `wifi-triage` | 无线专项(固件/rfkill/信号/频段/漫游) |
+
+用法:
+
+```bash
+opencode auth login              # 第一次要先配模型凭据(镜像不预置任何 API key)
+net ai                            # 交互模式
+net ai "家里网突然变慢了, 帮我查"   # 直接问
+```
+
+> ⚠️ 按需求把 opencode 的 `bash`/`edit`/`read` 等权限**全部放开**, 且这台机器
+> `sudo` 免密 —— AI 能以管理员身份执行命令。日常主力机上建议把权限改回 `ask`。
+
+### 🔊 修复: `music play` 没有声音
+
+**症状**: 播放器 TUI 正常显示"正在播放 0:05 / 4:25", 进度条一直在走, 但一点声音都没有。
+
+**根因**(2026-10-27 真机定位): Debian 的 ALSA `default` 走 **dmix 插件链**,
+dmix 的 slave 是 MMAP 模式, 应用侧的 `avail`/`avail_min` 语义跟 cpal(rodio 底层)
+的写入循环对不上 —— cpal 以为自己还有空间, 实际一个样本都写不进去。
+客观证据: `/proc/asound/card0/pcm0p/sub0/status` 里 **`appl_ptr` 恒为 0**
+(而 `hw_ptr` 正常推进), 说明 DMA 在空转放静音。
+TUI 的进度是 rodio 的 `controls.position` 时钟, 不代表声卡真收到了样本。
+
+**修法**: 让默认输出**直通声卡硬件**, 绕开 dmix。新增 `audio-setup`:
+开机由 `audio-direct.service` 自动跑一次, 生成 `/etc/asound.conf`
+(`pcm.!default { type hw; card N; device M }`); `music play` 之前也会检查一次,
+所以不重启也能生效。
+
+**实测**: 直通后 `access` 从 `MMAP_INTERLEAVED` 变成 `RW_INTERLEAVED`,
+`appl_ptr` 从 0 变成持续推进(397312 → 532480), 声音恢复。
+
+代价: 直通后没有软件混音(一次只能一个程序发声)。想恢复:
+`sudo audio-setup --restore`。
+
+### 📦 其他
+
+- 新增 `scripts/test-net-kit.sh`: 守住 netkit 模块、子命令接线、opencode 校验和、
+  配置 JSON 合法性、5 个 skill 的 frontmatter、代理 ARP 过滤、音频直通接线。
+- `scripts/verify-image.sh` 增加断言: net 命令、netkit 模块、opencode 二进制、
+  opencode.json、5 个 skills、audio-setup、audio-direct.service 必须在镜像里。
+- CI 流水线增加"局域网诊断 netkit 回归测试"步骤。
+
+---
+
 ## v1.2.0 (2026-10-27)
 
 - **新增功能: `music play` —— 终端播放器, 下载完直接听**

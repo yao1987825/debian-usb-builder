@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+#
+# net —— 局域网诊断与修复工具箱
+#
+# 这个 U 盘系统不只是一台"下载听歌机", 还得能当"网络急救包"用:
+# 家里/办公室局域网出问题(网段变了、网关换了、IP 冲突、DNS 被劫持、
+# 无线掉线、交换机不转发...), 插上这个 U 盘就能现场排查和修。
+#
+# 子命令:
+#   topo     扫描局域网, 打印拓扑图(ASCII 树)
+#   probe    局域网问题深度检测(丢包/MTU/IP冲突/环路/DNS/无线/代理)
+#   doctor   本机网络栈自检(等价于老的 net-doctor)
+#   fix      安全自动修复(DHCP 续租 / 清 ARP / 切 DNS ...)
+#   ai       用 opencode + 网络排障技能问 AI
+#   report   查看历史报告
+#
+# 例子:
+#   net topo                 # 看局域网长什么样
+#   net probe                # 哪里坏了
+#   net fix --renew --flush-arp    # 网段变了之后修一下
+#   net ai "家里网突然变慢了, 帮我查"   # 让 AI 带着技能一起查
+#
+set -uo pipefail
+
+B="$(readlink -f "${BASH_SOURCE[0]}")"
+LIB="$(dirname "${B}")/../lib/netkit"
+
+if [[ ! -d "${LIB}" ]]; then
+  echo "net: 找不到 ${LIB}, 镜像装坏了" >&2
+  exit 127
+fi
+
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "net: 没有 python3" >&2
+  exit 127
+fi
+
+export PYTHONPATH="$(dirname "${LIB}")${PYTHONPATH:+:$PYTHONPATH}"
+exec python3 -m netkit.cli "$@" 2>&1

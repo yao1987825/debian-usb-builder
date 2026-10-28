@@ -439,6 +439,105 @@ wifi forget "你的WiFi"  # 忘掉一个保存的连接(密码换了就用这个
 | 提示"没有权限 / Not authorized" | 镜像已经给 netdev 组放行了, 仍报错就跑 `sudo wifi connect "名字"` |
 | 连上但没网 | 跑 `music net` 看是 DHCP 还是 DNS 的问题 |
 
+### 4c. 局域网急救包（`net` 命令）
+
+这个 U 盘不只是一台"下载听歌机"。**局域网出问题时, 它是一套现场维修工具**:
+网段被路由器改了、网关换了、IP 冲突、DNS 被劫持、无线掉线、交换机不转发 ——
+插上 U 盘就能扫拓扑、跑检测、执行修复。
+
+```bash
+net topo      # 扫描局域网, 打印拓扑图
+net probe     # 深度检测: 丢包/MTU/IP冲突/环路/DNS/无线/代理
+net doctor    # 本机网络栈自检(NM/网卡/IP/路由/DNS)
+net fix       # 安全自动修复(--renew/--flush-arp/--dns/--restart-nm)
+net report    # 看历史报告(都在 ~/net-reports/)
+```
+
+#### `net topo` —— 局域网拓扑图
+
+```
+=== 局域网拓扑 · 2026-10-28 11:22 · 本机 debian-usb ===
+
+本机网络身份
+  · enp5s0   192.168.6.133   192.168.6.0/24   网关 192.168.6.1   DNS 192.168.6.1
+
+拓扑结构
+├── 🌐 路由器/网关  192.168.6.1
+│       · MAC ca:79:f8:00:17:77 · 厂商 Xiaomi · 主机名 kwrt.lan · 延迟 1.1ms
+├── 📱 手机  192.168.6.182
+│       · MAC 06:e2:7f:49:f9:6f · 主机名 OnePlus-Ace-6T.lan · 延迟 113.4ms
+│       · 判定依据: 主机名 'OnePlus-Ace-6T.lan'
+└── 💻 电脑  192.168.6.186
+        · MAC 00:e0:66:c8:37:91 · 主机名 debian.lan · 端口 22,445
+```
+
+设备类型是**推断**出来的, 依据三条线索(mDNS 服务 → 开放端口 → 主机名关键字),
+判定依据会写在设备下面那一行。发现手段有四层: 内核邻居表 → ARP 二层扫描 →
+ICMP 扫描 → mDNS/LLDP 广播, 少一层就少一类设备。
+
+> ⚠️ **代理 ARP 陷阱**: 有些路由器会替整个网段应答 ARP。这时 ping 扫描会把
+> 整个 /24 报成"在线"(实测报出 70+ 台假设备)。`net topo` 会识别并过滤,
+> 提示"路由器开启了 Proxy ARP" —— 这种网段里**只有带 MAC 的才算真设备**。
+
+**网段变更是能查出来的**: 每次扫描都会把网段/网关/DNS 记进
+`~/.local/state/netkit/history.json`, 下次自动对比, 网段一变就报出来。
+这解决了最常见的一类故障: 路由器把 192.168.1.0/24 改成了 192.168.6.0/24,
+而某台设备还停在旧网段, 于是"能连路由器但连不上别的设备"。
+
+#### `net probe` —— 哪里坏了
+
+逐层检查, **每条结论后面都跟着可以直接执行的修复命令**:
+
+```
+==> 2. 网关与上游
+  ✅ 网关可达 192.168.6.1
+      平均 0.5ms · 抖动 0.2ms · 丢包 0%
+==> 5. MTU
+  ✅ MTU 正常(1500 字节)
+==> 6. IP 冲突与设备盘点
+  ✅ 没发现 IP 冲突
+      扫到 5 个有 MAC 的地址
+```
+
+检查项: 网关可达性与丢包抖动、公网可达、路由环路(traceroute 重复跳)、
+DNS 解析与劫持对比、MTU 探测、IP 冲突(同 IP 多 MAC)、设备盘点与同名设备、
+无线信号强度与频段、IPv6、代理干扰。
+
+#### `net fix` —— 安全修复
+
+```bash
+net fix --renew            # 重新申请 DHCP 地址(换网段后最常用)
+net fix --flush-arp        # 清 ARP 表(网关换了、老设备"看不见"了)
+net fix --dns 223.5.5.5    # 换 DNS
+net fix --restart-nm       # 重启 NetworkManager
+net fix --rebuild-resolv   # 重建 /etc/resolv.conf
+```
+
+### 4d. AI 排障助手（opencode + 网络排障技能）
+
+镜像里预装了 **opencode**（约 205MB，离线可用），并配好了 5 个网络排障技能:
+`lan-topology`（看拓扑）、`lan-triage`（分层定位）、`lan-repair`（执行修复）、
+`lan-capture`（抓包）、`wifi-triage`（无线专项）。还有一份 `AGENTS.md`
+告诉它"这台机器是干什么的"。
+
+```bash
+net ai                                    # 交互模式
+net ai "家里网突然变慢了, 帮我查一下"      # 直接问
+```
+
+它会自己跑 `net probe` / `net topo` 定位问题, 然后给出可执行的修复步骤。
+
+**第一次用要先配模型凭据**（镜像里不预置任何 API key，安全）：
+
+```bash
+opencode auth login        # 或 opencode providers
+```
+
+> ⚠️ 权限说明: 按你的要求, opencode.json 里把 `bash`/`edit`/`read` 等权限**全部放开**了,
+> 而且这台机器上 `sudo` 免密 —— 也就是说 AI 能以管理员身份执行任何命令。
+> 这台 U 盘本来就是拿来现场救网络的, 风险可控; 但**别在存有重要资料的日常机器上
+> 用这个镜像开 AI**, 或者把 `~/.config/opencode/opencode.json` 里的权限改回 `ask`。
+
 ### 5. 基础命令行工具（以后往里加新功能用）
 
 需求是"以后会再这个 u 盘系统中添加各种新功能，主要是终端命令方面，
@@ -706,6 +805,8 @@ debian-usb-builder/
 │   ├── lint-helpers.sh                       # 静态扫描: 未定义的函数 / 定义晚于调用(见下)
 │   ├── test-lint-helpers.sh                  # 上一个的自测(8 项)
 │   ├── test-music-cli.sh                     # music 命令行回归测试(见下)
+│   ├── test-music-play.sh                    # music play 播放器接线回归测试
+│   ├── test-net-kit.sh                       # 局域网诊断 netkit + opencode 集成回归测试
 │   └── tests/                                # lint 的**故意写错**的测试夹具
 │       └── lint-fixture-bad.sh
 ├── overlay/                                  # x86 与 N1 共用, 直接覆盖到镜像 rootfs 里
@@ -713,6 +814,9 @@ debian-usb-builder/
 │   │   ├── usb-grow.sh                       # x86: 一键扩展分区到整盘(GPT)
 │   │   ├── net-doctor                       # 网络逐层自检 + 自动修复
 │   │   ├── net-rescue                       # 没网时的应急联网(只用 systemd 自带能力)
+│   │   ├── net                              # 局域网急救包入口(topo/probe/doctor/fix/ai/report)
+│   │   ├── audio-setup                      # 把 ALSA 默认输出直通声卡(修"播放器没声音")
+│   │   ├── opencode                         # AI 排障助手(离线可用, 需自配 API key)
 │   │   ├── screen-fit                       # 按 EDID 自动匹配每块显示器的原生分辨率
 │   │   ├── proxy                            # 代理开关(status/on/off/test)
 │   │   ├── music-health                     # 一次性体检(会话/输入法/终端/分辨率/分区/网络/夸克)
@@ -728,6 +832,17 @@ debian-usb-builder/
 │   │   └── quark_login.py                    # 夸克网盘纯 HTTP 扫码登录(不需要浏览器)
 │   ├── usr/local/lib/screentools/
 │   │   └── fit.py                            # EDID/xrandr 解析 + 分辨率方案(support --self-test)
+│   ├── usr/local/lib/netkit/                 # 局域网诊断实现(Python3, 无额外依赖)
+│   │   ├── netinfo.py                        # 本机网络身份 + 历史快照(网段变化检测)
+│   │   ├── devclass.py                       # MAC/端口/mDNS 线索 -> 设备类型
+│   │   ├── discover.py                       # 设备发现(ARP/ping/mDNS/LLDP 多源合并 + 代理ARP过滤)
+│   │   ├── topo.py                           # 拓扑组装 + ASCII 树渲染
+│   │   ├── probe.py                          # 丢包/MTU/IP冲突/环路/DNS/无线 检测
+│   │   └── cli.py                            # net 子命令分发
+│   ├── home/user/.config/opencode/           # AI 排障助手(全局配置 + 技能)
+│   │   ├── opencode.json                     # 权限配置(全放开) + skills 路径
+│   │   ├── AGENTS.md                         # 告诉 AI 这台机器是干什么的
+│   │   └── skills/                           # lan-topology/lan-triage/lan-repair/lan-capture/wifi-triage
 │   ├── home/user/.local/share/fcitx5/rime/   # Rime 配置(注意: 必须在 Rime 用户目录里)
 │   ├── home/user/.config/xfce4/terminal/     # 终端配置(字体/滚动/标签页快捷键)
 │   ├── home/user/.config/autostart/          # 开机自启: 终端守护/键位设置
@@ -771,6 +886,24 @@ bash scripts/test-music-cli.sh
   （x86 用 `debugfs` 把 `/usr/local/bin/music` 抠出来跑，N1 直接在挂载的 rootfs 里跑）。
 
 也就是说，**参数透传类的 bug 没法再混进产物**。
+
+局域网诊断工具（`net` / netkit）和 opencode 集成也有自己的回归测试：
+
+```bash
+bash scripts/test-net-kit.sh
+```
+
+它守住这些容易悄悄坏掉的地方：
+
+- netkit 各模块语法正确、关键函数还在（改着改着 `import` 就炸）；
+- `net` 的六个子命令都接得上；
+- 构建脚本装了 opencode、**钉了 sha256 校验和**、装齐了局域网发现工具；
+- `opencode.json` 是合法 JSON（opencode 对配置严格校验，字段写错直接拒绝启动），
+  权限确实是放开的；
+- 5 个 skill 的 frontmatter 里 `name` 与目录名一致、都有 `description`
+  —— 这两条不满足时 opencode 会**静默地**不加载那个技能，不测就发现不了；
+- 代理 ARP 过滤逻辑还在（这是拓扑图不变成"70+ 台假设备"的关键）；
+- 音频直通的接线还在（`dmix` 插件链会让播放器写不进声卡）。
 
 ---
 
