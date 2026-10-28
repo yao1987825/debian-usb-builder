@@ -13,6 +13,45 @@ GitHub Actions 自动构建镜像并发布到 [Releases](https://github.com/yao1
 
 ---
 
+## v1.3.1 (2026-10-28)
+
+- **修复: opencode 报 `unsupported proxy protocol`(代理协议不兼容)**
+
+### 症状
+
+在 v1.3.0 镜像里开代理用 opencode, 一发请求就报:
+
+```
+UnsupportedProxyProtocol / unsupported proxy protocol
+```
+
+### 根因
+
+opencode 是 **Bun** 写的, 它的 HTTP 客户端**只支持 http/https 代理**。
+而这套系统的 `proxy` 命令默认导出的是 `socks5://192.168.6.1:1070`(路由上的 SOCKS5 端口,
+实测该端口只认 SOCKS5, 不接受 HTTP CONNECT), Bun 碰到 socks5 直接抛
+`UnsupportedProxyProtocol` —— **跟 opencode 本身、API key、模型都没关系**,
+纯粹是代理协议对不上。
+
+### 修法
+
+`/usr/local/bin/opencode` 改成包装脚本(真身移到 `/usr/local/lib/opencode/opencode`),
+启动前先把代理处理掉:
+
+1. 代理是 http/https → 原样用(Bun 支持);
+2. 代理是 socks5 → 先测**直连**能不能到模型 API:
+   - 直连能 → 清掉代理变量直接连(实测直连可达, 这是最常见的情况);
+   - 直连不能 → 找同一台机器上的 HTTP 代理端口(8080/7890/3128/8118/10809/20171),
+     有就改用它;
+   - 都没有 → 打印一句人话(怎么 `proxy off` / 怎么换成 `http://` 代理),
+     不再甩天书般的协议报错。
+
+体检命令: `opencode --net-check`(打印当前代理变量与直连可达性)。
+
+真机验证: 带 socks5 代理时正确识别并自动改为直连, 代理变量被清掉, 直连模型 API 可用。
+
+---
+
 ## v1.3.0 (2026-10-28)
 
 - **新增功能: 局域网急救包(`net` 命令)—— 把 U 盘变成"网络维修工具"**
