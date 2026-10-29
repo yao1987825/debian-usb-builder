@@ -94,15 +94,27 @@ def render(trains, code2name=None, show_color=None):
         show_color = _color_enabled()
     code2name = code2name or {}
 
-    headers = ["车次", "出发 → 到达", "时间", "历时"]
+    # 表头必须和行里的格子一一对应: 座位列也各自有名字(商务/特等/一等/二等/...)。
+    # 之前这里只写了 4 个表头, 行却有 15 格, 结果后面 11 列的数字"没有对应列名",
+    # 看着就是一团对不上号的数字(2026-10 用户实测发现)。
+    #
+    # 座位列按"这批车里真的有值"的动态挑选: 高铁没有硬卧硬座, 普速没有商务座,
+    # 全是空列就没必要占地方(11 个座位列全画出来能把 100 列的终端撑爆)。
+    # 挑出来的列, 表头名和数据一一对应, 不会错位。
+    def _has_value(raw):
+        return seat_text(raw) not in ("", "-")
+
+    used = []
+    for name, field in SEAT_COLUMNS:
+        if any(_has_value(t.get(field, "")) for t in trains):
+            used.append((name, field))
+
+    headers = ["车次", "出发 → 到达", "时间", "历时"] + [name for name, _ in used]
     rows = []
     for t in trains:
         from_st = code2name.get(t.get("from_station", ""), t.get("from_station", ""))
         to_st = code2name.get(t.get("to_station", ""), t.get("to_station", ""))
-        seats = []
-        for _, field in SEAT_COLUMNS:
-            raw = t.get(field, "")
-            seats.append(seat_color(raw, show_color))
+        seats = [seat_color(t.get(field, ""), show_color) for _, field in used]
         rows.append(
             [
                 t.get("train_no", ""),
@@ -117,7 +129,7 @@ def render(trains, code2name=None, show_color=None):
     for i, h in enumerate(headers):
         w = width(h)
         for r in rows:
-            w = max(w, width(_strip_ansi(r[i])))
+            w = max(w, width(_strip_ansi(r[i])) if i < len(r) else 0)
         widths.append(w)
 
     lines = []
@@ -138,6 +150,15 @@ def render(trains, code2name=None, show_color=None):
             else:
                 cells.append(pad(cell, widths[i]))
         lines.append("  ".join(cells))
+    # 图例: 只有出现了这两个缩写列才提示
+    names = [n for n, _ in used]
+    legend = []
+    if "高软" in names:
+        legend.append("高软=高级软卧")
+    if "动卧" in names:
+        legend.append("动卧=动车组卧铺")
+    if legend:
+        lines.append("  ".join(legend))
     return "\n".join(lines)
 
 

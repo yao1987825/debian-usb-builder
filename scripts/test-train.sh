@@ -113,6 +113,29 @@ with contextlib.redirect_stdout(buf):
 assert rc == 0, rc
 assert "北京" in buf.getvalue(), buf.getvalue()
 
+# 表格渲染: 表头列数必须和行格数一致, 且没有值的座位列要自动隐藏
+# (2026-10 用户实测发现: 表头只写了 4 列, 行有 15 格, 座位数字全是"对不上号"的)
+trains = [
+    {"train_no": "G2138", "from_station": "CZQ", "to_station": "HYQ",
+     "from_time": "10:26", "to_time": "10:55", "duration": "00:29",
+     "swz_num": "8", "zy_num": "有", "ze_num": "有", "wz_num": "有"},
+    {"train_no": "Z138", "from_station": "CZQ", "to_station": "HYQ",
+     "from_time": "12:15", "to_time": "13:54", "duration": "01:39",
+     "rw_num": "有", "yw_num": "有", "yz_num": "有", "wz_num": "有"},
+]
+table = fmt.render(trains, {"CZQ": "郴州", "HYQ": "衡阳"}, show_color=False)
+lines = [ln for ln in table.splitlines() if ln.strip()]
+head_cells = lines[0].split()
+row_cells = [c for c in lines[2].split("  ") if c.strip()]
+assert len(lines) >= 3, table
+assert "商务" in head_cells and "无座" in head_cells, head_cells
+# 高铁+普速这批车里没有高级软卧 -> 该列应当被隐藏
+assert "高软" not in head_cells, head_cells
+# 每一列都必须在表头里出现(数据列数 == 表头列数)
+for i, cell in enumerate(row_cells):
+    assert i < len(head_cells), (i, cell, head_cells)
+assert lines[1].count("-") > 10, "分隔线应该覆盖所有列"
+
 # 表格列
 names = [n for n, _ in fmt.SEAT_COLUMNS]
 assert "二等" in names and "一等" in names and "商务" in names and "硬座" in names
