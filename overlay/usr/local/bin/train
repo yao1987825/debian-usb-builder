@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+#
+# train —— 查 12306 火车票余票
+#
+# 这个 U 盘系统除了下载听歌、修网络, 还能当"出行查询机" ——
+# 出门前在 U 盘上敲一行就知道有没有票, 不用掏手机。
+#
+# 用法:
+#   train 北京 上海                # 今天
+#   train 北京 上海 2026-10-30     # 指定日期(也支持 明天/后天/+3)
+#   train -g 北京 上海             # 只看高铁/城际
+#   train --json 北京 上海         # JSON 输出(给脚本或 AI 用)
+#   train --stations 北京          # 查车站名/车站码
+#
+# 实现说明:
+#   上游项目 https://github.com/travellerwjoe/train-tickets 的代码已经跑不动了
+#   (12306 接口变了: 直接查接口会返回 HTML 而不是 JSON)。这一版重写为标准库实现
+#   (urllib + cookiejar), **不需要装任何第三方包**, 也不需要联网装依赖。
+#
+set -uo pipefail
+
+B="$(readlink -f "${BASH_SOURCE[0]}")"
+LIB="$(dirname "${B}")/../lib/traintools"
+
+if [[ ! -d "${LIB}" ]]; then
+  echo "train: 找不到 ${LIB}, 镜像装坏了" >&2
+  exit 127
+fi
+
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "train: 没有 python3" >&2
+  exit 127
+fi
+
+export PYTHONPATH="$(dirname "${LIB}")${PYTHONPATH:+:$PYTHONPATH}"
+exec python3 -m traintools.cli "$@" 2>&1

@@ -15,3 +15,4 @@ __pycache__/
 
 # 嵌套的 git 仓库(别当成普通目录提交进去)
 music-shell/
+train-tickets/

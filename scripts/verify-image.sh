@@ -305,6 +305,19 @@ struct_check() {
     done
     ok "netkit 模块齐全(拓扑/发现/检测)"
 
+    # ---- 火车票查询(train) ----
+    if $SUDO debugfs -R "stat /usr/local/bin/train" "$p3" 2>/dev/null | grep -q "Inode:"; then
+      ok "火车票查询入口已装: /usr/local/bin/train"
+    else
+      die "缺 /usr/local/bin/train —— 用户没有查火车票的入口"
+    fi
+    for _m in __init__ api format cli stations; do
+      if ! $SUDO debugfs -R "stat /usr/local/lib/traintools/${_m}.py" "$p3" 2>/dev/null | grep -q "Inode:"; then
+        die "缺 traintools/${_m}.py —— train 命令跑不起来"
+      fi
+    done
+    ok "traintools 模块齐全"
+
     # ---- opencode + 网络排障 skills ----
     if $SUDO debugfs -R "stat /usr/local/bin/opencode" "$p3" 2>/dev/null | grep -q "Inode:"; then
       ok "opencode 入口已装: /usr/local/bin/opencode"

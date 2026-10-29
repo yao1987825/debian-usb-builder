@@ -13,6 +13,57 @@ GitHub Actions 自动构建镜像并发布到 [Releases](https://github.com/yao1
 
 ---
 
+## v1.4.0 (2026-10-28)
+
+- **新增功能: `train` 命令 —— 查 12306 火车票余票**
+
+### 🚄 火车票查询进镜像
+
+集成 [train-tickets](https://github.com/yao1987825/train-tickets) 这个项目。
+但上游代码在 12306 改过接口之后**已经跑不动了**, 实测直接报:
+
+```
+JSONDecodeError: Expecting value: line 1 column 1 (char 0)
+```
+
+根因: 12306 对**没有会话 Cookie** 的余票查询请求, 返回的是一个 HTML 反爬页而不是 JSON。
+上游代码是裸 GET 查询接口, 于是 `.json()` 直接炸。
+
+所以镜像里放的是**重写版**(`overlay/usr/local/lib/traintools/`):
+
+| 改动 | 说明 |
+| --- | --- |
+| 会话 Cookie | 先 GET 余票首页(`/otn/leftTicket/init`)拿 cookie, 再带 `Referer` / `X-Requested-With` / `User-Agent` 查接口 —— 这是能跑通的关键 |
+| 座位字段下标 | 上游整体错位了一格(表现为"二等座"那列永远是空的)。按真实车次逐个核对修正: `G1 [30]=有 二等 / [31]=有 一等 / [32]=13 商务`, `K545 [29]=有 硬座 / [28]=无 硬卧 / [26]=有 无座` |
+| 出发/到达站 | 改用 `[6]/[7]`(这一段实际上车的站), 而不是 `[4]/[5]`(始发/终点) |
+| 零依赖 | 只用标准库(`urllib` + `http.cookiejar` + `json`), **不装 requests / docopt / prettytable / colorama** |
+| 车站表 | 内置一份离线可用(2651 个站); 查不到的新站联网刷新并缓存到 `~/.cache/traintools/` |
+| 交互 | 支持 `明天` / `后天` / `+3` / `2026-10-30`; `--json` 输出给脚本或 AI; `-g/-d/-t/-k/-z` 按车次类型筛 |
+| 错误提示 | 日期超出预售期(12306 一般只放票到 15 天内)、车站名写错、网络不通, 给的都是人话 |
+
+用法:
+
+```bash
+train 北京 上海              # 今天
+train 北京 上海 明天
+train -g 北京 上海           # 只看高铁/城际
+train --json 北京 上海       # JSON
+train --stations 北京        # 查车站名/车站码
+```
+
+真机实测: 北京→上海 明天 55 趟, 座位列(商务/特等/一等/二等/硬卧/硬座/无座)与
+12306 官方页面对得上; 北京→石家庄 224 趟, K/T/Z 的硬座硬卧列同样正确。
+
+### 📦 顺带
+
+- 上游项目本身也修了(会话 Cookie / 座位字段 / 新版 prettytable 删掉 `_set_field_names`),
+  已推到 https://github.com/yao1987825/train-tickets ;
+- 新增 `scripts/test-train.sh`: 守住座位字段下标(错一格整列全错, 而且只有联网才看得出来)、
+  会话 Cookie 流程、日期解析与车站表; CI 里跑;
+- `verify-image.sh` 增加断言: `train` 命令与 traintools 模块必须在镜像里。
+
+---
+
 ## v1.3.2 (2026-10-28)
 
 - **修复: opencode "无法访问权限" —— external_directory 授权没生效 + sudo 跑时读不到配置**

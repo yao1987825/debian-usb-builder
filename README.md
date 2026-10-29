@@ -553,6 +553,43 @@ Bun 碰上就抛 `UnsupportedProxyProtocol`。镜像里的 `/usr/local/bin/openc
 
 另外 `read` 对 `*.env` 这类文件仍然要人工确认(那是 opencode 内置的安全默认, 没去动它)。
 
+### 4e. 查火车票（`train` 命令）
+
+出门前不用掏手机，插着 U 盘敲一行就知道有没有票：
+
+```bash
+train 北京 上海              # 今天
+train 北京 上海 明天         # 也支持 后天 / +3 / 2026-10-30
+train -g 北京 上海           # 只看高铁/城际（-d 动车 -t 特快 -k 快速 -z 直达）
+train --json 北京 上海       # JSON 输出（给脚本或 AI 用）
+train --stations 北京        # 查车站名/车站码
+```
+
+输出长这样：
+
+```
+2026-10-30  北京 → 上海   共 55 趟
+
+车次   出发 → 到达        时间           历时
+G531   北京南 → 上海虹桥  06:08 → 12:04  05:56  4  -  17  无  ...  有
+G547   北京南 → 上海虹桥  06:18 → 12:11  05:53  17  -  有  有  ...  有
+```
+
+**关于来源**：集成的是 [train-tickets](https://github.com/yao1987825/train-tickets) 这个项目，
+但上游代码在 12306 改过接口之后**已经跑不动了**（直接查接口只会拿到 HTML 反爬页，
+抛 `JSONDecodeError`），而且座位字段下标整体错位了一格（"二等座"那列永远是空的）。
+
+镜像里用的是**重写版**：
+
+- 只用 Python 标准库（`urllib` + `http.cookiejar`），**不装 requests / docopt / prettytable / colorama**；
+- 先访问余票首页拿会话 Cookie，再带正确请求头查接口（这是能跑通的关键）；
+- 座位字段按真实车次逐个核对过（G1 `[30]=有 二等 / [31]=有 一等 / [32]=13 商务`，
+  K545 `[29]=有 硬座 / [28]=无 硬卧`）；
+- 车站表内置一份离线可用，查不到的新站会联网刷新并缓存；
+- 错误是人话：日期没放票、车站名写错、网络不通，都会说清怎么办。
+
+原项目本身也修了并推回 GitHub（会话 Cookie / 座位字段 / 新版 prettytable 的 API 三处）。
+
 ### 5. 基础命令行工具（以后往里加新功能用）
 
 需求是"以后会再这个 u 盘系统中添加各种新功能，主要是终端命令方面，
@@ -567,6 +604,7 @@ Bun 碰上就抛 `UnsupportedProxyProtocol`。镜像里的 `/usr/local/bin/openc
 | 磁盘分区 | `lsblk` `blkid` `fdisk` `sfdisk` `sgdisk` `parted` `wipefs` `mount` `fsck` |
 | 硬件状态 | `lspci` `lsusb` `lsmod` `lsof` `dmesg` `smartctl` `hdparm` `sensors` |
 | 网络 | `ip` `ss` `ping` `dig` `nslookup` `traceroute` `mtr` `whois` `tcpdump` `netstat` `arp` |
+| 出行 | `train`（火车票余票，纯标准库实现，零额外依赖） |
 | 写脚本 | `bash` `python3` `pip` `vim` `nano` `shellcheck` `git` `curl` `wget` |
 
 两个便利处理，以及一个**要知道的例外**：

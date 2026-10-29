@@ -648,6 +648,29 @@ for _p in arp-scan ethtool avahi-utils; do
 done
 ok "局域网诊断: net 命令 + netkit 模块 + 发现工具就位"
 
+# ---- 火车票查询(train) ----
+# 集成的是 train-tickets 项目(https://github.com/yao1987825/train-tickets)的重写版:
+# 原版在 12306 改接口后已经跑不动(JSONDecodeError), 这里用标准库重写,
+# 不装 requests/docopt/prettytable/colorama 任何一个包。
+[[ -x "${ROOTFS}/usr/local/bin/train" ]] \
+  || die "overlay 里缺 /usr/local/bin/train —— 用户没有查火车票的入口"
+for _m in __init__ api format cli stations; do
+  [[ -f "${ROOTFS}/usr/local/lib/traintools/${_m}.py" ]] \
+    || die "缺 traintools/${_m}.py —— train 命令跑不起来"
+done
+if command -v python3 >/dev/null 2>&1; then
+  for _f in "${ROOTFS}"/usr/local/lib/traintools/*.py; do
+    python3 -c "import ast,sys; ast.parse(open(sys.argv[1], encoding='utf-8').read())" "$_f" \
+      || die "traintools 里的 ${_f##*/} 有语法错误"
+  done
+else
+  warn "构建机没有 python3, 跳过 traintools 语法静态检查"
+fi
+# 座位字段下标是 12306 返回格式的固定位置, 错一格整列就全错(实测踩过)
+grep -q '"ze_num": 30' "${ROOTFS}/usr/local/lib/traintools/api.py" \
+  || die "traintools/api.py 的座位字段下标不对(二等座必须是 30)"
+ok "火车票查询: train 命令 + traintools 模块就位"
+
 # ---- opencode + 网络排障 skills ----
 # opencode 让用户能直接描述症状("家里网突然变慢了"), 由 AI 自己跑
 # net probe / net topo 定位并给修复步骤。
