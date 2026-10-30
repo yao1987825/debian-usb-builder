@@ -48,6 +48,7 @@ cat <<'EOF'
 │    net fix           网络修复(--renew/--flush-arp/--dns)               │
 │    net ai            AI 排障助手(opencode + 网络排障技能)               │
 │    train 北京 上海    查 12306 火车票余票(明天/+3/--json)               │
+│    wifit3            USB 无线网卡审计(需专用网卡, 见 README 选卡指南)   │
 │    wifi              连无线网(扫描/连接/断开)  wifi status 看状态      │
 │    music screen      按显示器原生分辨率调整                             │
 │    music quark-login 夸克网盘扫码登录(拿 cookie)                       │

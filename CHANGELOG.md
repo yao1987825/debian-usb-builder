@@ -13,6 +13,35 @@ GitHub Actions 自动构建镜像并发布到 [Releases](https://github.com/yao1
 
 ---
 
+## v1.5.0 (2026-10-30)
+
+- **新增功能: `wifit3` —— USB 无线网卡审计工具进镜像(自带协议栈, 不用编内核驱动)**
+
+### 📡 wifit3
+
+接入 [wifit3](https://github.com/derv82/wifit3): 一个**自带无线协议栈**的
+USB 无线网卡审计 TUI。它不依赖内核驱动版本 —— 别的工具要用某张卡得先编 DKMS 驱动,
+它直接走 USB 层, 插上就能用。
+
+- 上游发的是**单个可执行文件**(PyInstaller, 28MB, Python+依赖全封进去),
+  所以构建期只要下载 + 校验 sha256 + 装到 `/usr/local/bin/wifit3`,
+  不用 pip、不用虚拟环境、不占镜像额外空间;
+- 提权路径: 它优先找**免密 sudo** 装 udev 规则和 modprobe 屏蔽 ——
+  这台机器上 sudo 对 user 免密 ✓(前提是 user 在 sudo 组里, 构建期有断言);
+- 新增依赖 `libusb-1.0-0`(兜底; 它自带的 libusb 被换掉时救命)。
+
+真机验证(2026-10-30): v0.6.0 在 Debian 12 上直接能跑, `--smoke` 无头渲染 rc=0,
+TUI 启动画面正常(`Scanning for compatible hardware` + START/Uninstall 按钮)。
+
+**你还需要买一张 USB 无线网卡** —— 系统内置网卡不能当审计设备。
+README 里按芯片列了支持清单和选购建议(最省事: TP-Link TL-WN722N 或
+ALFA AWUS036NHA; 要双频: ALFA AWUS036ACM), 并标注了上游对每种芯片的实测评级。
+
+用完记得点 Uninstall 还原: 它会屏蔽该芯片的内核驱动, 不还原的话这张卡
+在 NetworkManager 里就是"消失"的状态。
+
+---
+
 ## v1.4.1 (2026-10-30)
 
 - **新增功能: `travel-planner` 技能进 opencode —— 旅游攻略/行程规划/高德导航/天气**

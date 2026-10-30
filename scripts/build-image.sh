@@ -106,6 +106,19 @@ OPENCODE_TARBALL="opencode-linux-x64.tar.gz"
 OPENCODE_URL="https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/${OPENCODE_TARBALL}"
 OPENCODE_SHA256="${OPENCODE_SHA256:-849bd6b3d959a1d2ef200ed1634a51c79a45ca236aa26665d75debd694805cce}"
 
+# wifit3: USB 无线网卡审计工具(上游 https://github.com/derv82/wifit3)。
+# 它自带一套无线协议栈(直接用 PyUSB 走 USB 层), 所以**不依赖内核驱动版本**,
+# 这是它最大的卖点: 同一张卡在别的工具里要编 DKMS 驱动, 这里插上就能用。
+# 上游发的是**单个可执行文件**(PyInstaller 打的, Python + 依赖都封进去了),
+# 所以构建期只要下载 + 校验 + 装到 /usr/local/bin, 不用 pip、不用虚拟环境。
+# 同样因为上游不发 checksums, 这里把 sha256 钉死(校验不过就拒绝安装)。
+# 2026-10-30 真机验证: v0.6.0 在 Debian 12 上直接能跑, --smoke 无头渲染 rc=0,
+# TUI 启动画面正常(Scanning for compatible hardware / START / Uninstall)。
+WIFIT3_VERSION="${WIFIT3_VERSION:-0.6.0}"
+WIFIT3_BINARY="wifit3-linux-x64"
+WIFIT3_URL="https://github.com/derv82/wifit3/releases/download/v${WIFIT3_VERSION}/${WIFIT3_BINARY}"
+WIFIT3_SHA256="${WIFIT3_SHA256:-b47b42dd3ab3d1e2898b7e281aa06499e2eb9b734dc90dd27c1e428d2ce0a77e}"
+
 
 BUILD_DIR="${BUILD_DIR:-${REPO_DIR}/build}"
 OUT_DIR="${OUT_DIR:-${REPO_DIR}/out}"
@@ -279,6 +292,8 @@ FONT_PKGS="fonts-wqy-zenhei"
 #   avahi-utils: avahi-browse 收 mDNS 广播, 能拿到设备真实主机名和服务类型
 #     (打印机/NAS/摄像头/音箱一眼认出来)。
 #   lldpd: lldpcli 读交换机 LLDP 通告, 知道网关背后接的是哪台交换机、什么型号。
+# libusb-1.0-0: wifit3 的 USB 访问底座(PyInstaller 版其实自带 libusb,
+#   装这个是兜底 —— 有些发行版/更新下自带的那个会被换掉)。
 # python3-requests: travel-planner 技能(旅游攻略/高德导航/天气)的脚本依赖它。
 #   注意不要用 pip 装 —— Debian 12 是 PEP 668 托管环境, pip 装会直接拒绝。
 chroot_run apt-get install -y --no-install-recommends \
@@ -310,7 +325,7 @@ chroot_run apt-get install -y --no-install-recommends \
   btop shellcheck plocate bsdextrautils \
   wmctrl xdotool scrot \
   iputils-arping arp-scan ethtool avahi-utils lldpd \
-  python3-requests \
+  python3-requests libusb-1.0-0 \
   libasound2 alsa-utils
 
 # ---- 可选组件: 装不上不影响系统, 但少了会影响输入法/桌面体验 ----
@@ -572,6 +587,33 @@ if [[ "$(uname -s)" == "Linux" && "$(uname -m)" == "x86_64" ]]; then
 fi
 log "opencode ${OPENCODE_VERSION} 已装入镜像 /usr/local/lib/opencode/opencode(/usr/local/bin/opencode 是代理适配包装)"
 
+# ---- wifit3: USB 无线网卡审计工具 ----
+# 装它是为了"手里那张普通网卡也能当审计设备用": 扫描周边 AP、识别型号、
+# 抓握手/PMKID/WPS PIN 等, 全程自带协议栈, 不需要为每张卡编内核驱动。
+command -v curl >/dev/null 2>&1 \
+  || die "构建机上没有 curl —— wifit3 需要它从 GitHub release 下载"
+log "wifit3 v${WIFIT3_VERSION}: 下载预编译二进制"
+_w3_tmp="$(mktemp -d)"
+if ! curl -fsSL --retry 3 -m 900 -o "${_w3_tmp}/${WIFIT3_BINARY}" "$WIFIT3_URL"; then
+  rm -rf "$_w3_tmp"
+  die "wifit3 下载失败: ${WIFIT3_URL}"
+fi
+_w3_sha="$(sha256sum "${_w3_tmp}/${WIFIT3_BINARY}" | awk '{print $1}')"
+if [[ "$_w3_sha" != "$WIFIT3_SHA256" ]]; then
+  rm -rf "$_w3_tmp"
+  die "wifit3 校验和不匹配(期望 ${WIFIT3_SHA256}, 实际 ${_w3_sha}) —— 上游产物变了或下载损坏, 拒绝安装"
+fi
+log "wifit3 校验和通过"
+install -m755 "${_w3_tmp}/${WIFIT3_BINARY}" "${ROOTFS}/usr/local/bin/wifit3" \
+  || { rm -rf "$_w3_tmp"; die "wifit3 安装失败"; }
+rm -rf "$_w3_tmp"
+# 本机是 x86_64 Linux 就当场跑一下 --version, 提前暴露 glibc 不兼容
+if [[ "$(uname -s)" == "Linux" && "$(uname -m)" == "x86_64" ]]; then
+  "${ROOTFS}/usr/local/bin/wifit3" --version >/dev/null 2>&1 \
+    || die "wifit3 在本机构建机上跑不起来(glibc 太老?) —— 镜像里也会跑不起来"
+fi
+log "wifit3 ${WIFIT3_VERSION} 已装入镜像 /usr/local/bin/wifit3"
+
 ####################### 第 4 步: overlay 文件与用户配置 #######################
 step "4/9 写入 overlay(输入法/快捷脚本/桌面配置)"
 if [[ -d "${REPO_DIR}/overlay" ]]; then
@@ -673,6 +715,18 @@ fi
 grep -q '"ze_num": 30' "${ROOTFS}/usr/local/lib/traintools/api.py" \
   || die "traintools/api.py 的座位字段下标不对(二等座必须是 30)"
 ok "火车票查询: train 命令 + traintools 模块就位"
+
+# ---- wifit3(USB 无线网卡审计) ----
+[[ -x "${ROOTFS}/usr/local/bin/wifit3" ]] \
+  || die "缺 /usr/local/bin/wifit3 —— 没有无线网卡审计工具"
+# 提权路径: wifit3 装 udev 规则/屏蔽内核驱动时要提权, 它优先找免密 sudo。
+# 这台机器上 sudo 对 user 免密 ✓, 但前提是 user 在 sudo 组里(否则它会退回
+# pkexec, 而无头环境里没有认证代理, 提权会卡在授权框)。
+grep -q "^sudo:" "${ROOTFS}/etc/group" \
+  || die "系统里没有 sudo 组 —— wifit3 的提权会退到 pkexec, 无头环境里会卡在授权框"
+grep -q "^Package: libusb-1.0-0$" "${ROOTFS}/var/lib/dpkg/status" \
+  || warn "缺 libusb-1.0-0 —— wifit3 自带的 libusb 要是被换掉就会起不来"
+ok "无线审计: wifit3 ${WIFIT3_VERSION} 已装入镜像"
 
 # ---- travel-planner 技能(旅游攻略/导航/天气) ----
 # 这个技能带高德地图 API: Key 放在技能目录的 .env 里。

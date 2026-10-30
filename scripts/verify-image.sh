@@ -305,6 +305,13 @@ struct_check() {
     done
     ok "netkit 模块齐全(拓扑/发现/检测)"
 
+    # ---- wifit3(USB 无线网卡审计) ----
+    if $SUDO debugfs -R "stat /usr/local/bin/wifit3" "$p3" 2>/dev/null | grep -q "Inode:"; then
+      ok "无线审计工具已装: /usr/local/bin/wifit3"
+    else
+      die "缺 /usr/local/bin/wifit3 —— 没有无线网卡审计工具"
+    fi
+
     # ---- 火车票查询(train) ----
     if $SUDO debugfs -R "stat /usr/local/bin/train" "$p3" 2>/dev/null | grep -q "Inode:"; then
       ok "火车票查询入口已装: /usr/local/bin/train"
