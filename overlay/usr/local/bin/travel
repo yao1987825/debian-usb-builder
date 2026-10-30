@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+#
+# travel —— 旅游攻略/行程规划/导航/天气
+#
+# 这是 travel-planner 技能的命令行入口(技能本体在
+# ~/.config/opencode/skills/travel-planner/, opencode 会自动加载它)。
+#
+# 支持郴州 / 长沙 / 衡阳 / 上海 / 清远五城: 景点库、美食价格手册、小红书攻略,
+# 景点之间的高德地图路线, 以及实时天气和未来 3 天预报。
+#
+# 用法:
+#   travel plan                       交互式生成行程
+#   travel plan --profile p.json      按偏好 JSON 生成行程
+#   travel nav --from 郴州西 --to 衡阳东 --mode driving   查路线
+#   travel weather 郴州               查天气(实时 + 未来 3 天 + 生活指数)
+#   travel route --plan plan.json     按行程里的景点批量规划路线
+#
+# 高德 Key 放在技能目录的 .env 里, 这里自动读出来(不用手动 export)。
+set -uo pipefail
+
+SKILL_DIR="${HOME}/.config/opencode/skills/travel-planner"
+SCRIPTS="${SKILL_DIR}/scripts"
+
+if [[ ! -d "${SCRIPTS}" ]]; then
+  echo "travel: 找不到 ${SCRIPTS}, 镜像装坏了(或技能被删了)" >&2
+  exit 127
+fi
+
+# 从技能目录的 .env 里取 AMAP_KEY(脚本自己也读, 这里导出是为了命令行直接用)
+if [[ -z "${AMAP_KEY:-}" && -f "${SKILL_DIR}/.env" ]]; then
+  AMAP_KEY="$(sed -n 's/^AMAP_KEY=//p' "${SKILL_DIR}/.env" | tail -1 | tr -d '"'"'"' \r')"
+  export AMAP_KEY
+fi
+if [[ -z "${AMAP_KEY:-}" ]]; then
+  echo "travel: 没有 AMAP_KEY —— 在 ${SKILL_DIR}/.env 里配一个(申请: https://lbs.amap.com/dev/key/app)" >&2
+  exit 2
+fi
+
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "travel: 没有 python3" >&2
+  exit 127
+fi
+
+sub="${1:-}"
+shift || true
+
+case "$sub" in
+  plan)
+    exec python3 "${SCRIPTS}/generate_plan.py" "$@"
+    ;;
+  nav|route)
+    exec python3 "${SCRIPTS}/amap_nav.py" "$@"
+    ;;
+  weather)
+    exec python3 "${SCRIPTS}/amap_nav.py" --weather "$@"
+    ;;
+  price)
+    exec python3 "${SCRIPTS}/food_price_scraper.py" "$@"
+    ;;
+  -h|--help|help|"")
+    sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    exit 0
+    ;;
+  *)
+    # 不认识的子命令: 当作 amap_nav 的参数(比如 travel --from A --to B)
+    exec python3 "${SCRIPTS}/amap_nav.py" "$sub" "$@"
+    ;;
+esac

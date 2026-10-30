@@ -279,6 +279,8 @@ FONT_PKGS="fonts-wqy-zenhei"
 #   avahi-utils: avahi-browse 收 mDNS 广播, 能拿到设备真实主机名和服务类型
 #     (打印机/NAS/摄像头/音箱一眼认出来)。
 #   lldpd: lldpcli 读交换机 LLDP 通告, 知道网关背后接的是哪台交换机、什么型号。
+# python3-requests: travel-planner 技能(旅游攻略/高德导航/天气)的脚本依赖它。
+#   注意不要用 pip 装 —— Debian 12 是 PEP 668 托管环境, pip 装会直接拒绝。
 chroot_run apt-get install -y --no-install-recommends \
   linux-image-amd64 \
   dbus-x11 policykit-1 sudo locales tzdata \
@@ -308,6 +310,7 @@ chroot_run apt-get install -y --no-install-recommends \
   btop shellcheck plocate bsdextrautils \
   wmctrl xdotool scrot \
   iputils-arping arp-scan ethtool avahi-utils lldpd \
+  python3-requests \
   libasound2 alsa-utils
 
 # ---- 可选组件: 装不上不影响系统, 但少了会影响输入法/桌面体验 ----
@@ -670,6 +673,26 @@ fi
 grep -q '"ze_num": 30' "${ROOTFS}/usr/local/lib/traintools/api.py" \
   || die "traintools/api.py 的座位字段下标不对(二等座必须是 30)"
 ok "火车票查询: train 命令 + traintools 模块就位"
+
+# ---- travel-planner 技能(旅游攻略/导航/天气) ----
+# 这个技能带高德地图 API: Key 放在技能目录的 .env 里。
+_TS="${ROOTFS}/home/${USER_NAME}/.config/opencode/skills/travel-planner"
+[[ -f "${_TS}/SKILL.md" ]] \
+  || die "缺 travel-planner 技能 —— AI 不会规划旅游行程"
+[[ -f "${_TS}/scripts/amap_nav.py" ]] \
+  || die "travel-planner 技能里缺 amap_nav.py(导航/天气)"
+[[ -f "${_TS}/scripts/generate_plan.py" ]] \
+  || die "travel-planner 技能里缺 generate_plan.py(行程生成)"
+[[ -f "${_TS}/.env" ]] \
+  || die "travel-planner 技能里缺 .env(高德 Key)"
+grep -q "^AMAP_KEY=" "${_TS}/.env" \
+  || die "travel-planner 的 .env 里没有 AMAP_KEY —— 导航/天气都用不了"
+[[ -x "${ROOTFS}/usr/local/bin/travel" ]] \
+  || die "overlay 里缺 /usr/local/bin/travel —— 用户没有旅游规划的入口"
+# 脚本要能读到 key: 不能只依赖 python-dotenv(镜像不装它), 必须自己解析 .env
+grep -q "_load_env_file" "${_TS}/scripts/amap_nav.py" \
+  || die "amap_nav.py 没有自己解析 .env —— 从别的目录跑会读不到 AMAP_KEY"
+ok "旅游攻略: travel-planner 技能 + travel 命令就位"
 
 # ---- opencode + 网络排障 skills ----
 # opencode 让用户能直接描述症状("家里网突然变慢了"), 由 AI 自己跑

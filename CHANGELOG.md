@@ -13,6 +13,43 @@ GitHub Actions 自动构建镜像并发布到 [Releases](https://github.com/yao1
 
 ---
 
+## v1.4.1 (2026-10-30)
+
+- **新增功能: `travel-planner` 技能进 opencode —— 旅游攻略/行程规划/高德导航/天气**
+- **修复: travel-planner 的地理编码策略(错一次结果差 3800 公里)**
+
+### 🧳 旅游攻略技能
+
+把 [travel-planner](https://github.com/yao1987825/travel-planner) 接进 opencode:
+五城(郴州/长沙/衡阳/上海/清远)的景点库、美食价格手册、小红书攻略、
+景点间高德地图路线、实时天气+未来3天预报+生活指数。
+
+- 技能目录: `~/.config/opencode/skills/travel-planner/`(SKILL.md + scripts + references + data);
+- 高德 Key 配在技能目录的 `.env` 里, 用户可自行替换;
+- frontmatter 转成 opencode 格式(`name` + `description`, 触发词写进 description);
+- 另给人类一个命令行: `travel weather/nav/plan/price`;
+- 新增依赖 `python3-requests`(apt 装, 不用 pip —— Debian 12 是 PEP 668 托管环境)。
+
+### 🐛 顺手修掉 travel-planner 的两个真 bug
+
+集成时真机实测发现的, 都会导致**结果完全错**而不是报错:
+
+1. **`--city` 默认写死"上海"**, 而且被无条件套在起终点的地理编码上 ——
+   查"郴州西"会拿"上海"去找, 坐标全错, 路线接口报 `30001`。
+   修法: 默认空; 起点不限城市(带 city 反而查不到), 目的地用起点的城市限定。
+2. **目的地不做城市限定** —— 高德把"岳麓山"匹配到"新疆乌鲁木齐市头屯河区岳麓山",
+   长沙市内 3.8km 的一段路算出 **3823 公里 / 41 小时**。
+   修法: 目的地用起点城市限定, 跨城查不到时静默退回不带城市再查。
+
+修完实测: 长沙橘子洲→岳麓山 公交 7.3km/1小时28分/约¥5(之前 3823km)、
+步行 5.7km、郴州西→衡阳东 驾车 186.8km/2小时49分。
+上游项目已修并推到 yao1987825/travel-planner。
+
+> 公交路线需要高德 Key 开通「公交地铁」服务权限, 否则报 `INSUFFICIENT_PRIVILEGES (10012)`;
+> 驾车/步行/地理编码/天气不需要额外权限。
+
+---
+
 ## v1.4.0 (2026-10-28)
 
 - **新增功能: `train` 命令 —— 查 12306 火车票余票**
