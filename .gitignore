@@ -14,5 +14,9 @@ __pycache__/
 *.pyc
 
 # 嵌套的 git 仓库(别当成普通目录提交进去)
+# 注意用 / 开头锚定在**仓库根目录** —— 否则 "travel-planner/" 会把
+# overlay/home/user/.config/opencode/skills/travel-planner/ 里的技能也一起忽略掉
+# (2026-10 踩过: 技能没进镜像)
 music-shell/
-train-tickets/
+/train-tickets/
+/travel-planner/

@@ -14,10 +14,13 @@
 | `net ai` | 用本机 opencode + 网络排障技能问 AI |
 | `net report` | 看历史报告(`~/net-reports/`) |
 | `wifi scan/connect/status` | 无线网卡入口 |
+| `train 北京 上海` | 12306 火车票余票 |
+| `travel plan/nav/weather` | 旅游攻略/行程规划/高德导航/天气(travel-planner 技能) |
 
 技能(skills)在 `~/.config/opencode/skills/`, 用到时按需加载:
 `lan-topology` 看拓扑、`lan-triage` 分层定位、`lan-repair` 执行修复、
-`lan-capture` 抓包、`wifi-triage` 无线专项。
+`lan-capture` 抓包、`wifi-triage` 无线专项、`travel-planner` 旅游攻略与行程规划
+(高德 key 已配在技能目录的 `.env` 里, 直接用)。
 
 ## 工作纪律
 
