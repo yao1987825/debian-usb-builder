@@ -416,8 +416,13 @@ SG_ROWS="$(sgdisk_rows <<<"$SG_RAW")"
 GPT_LAST="$(awk '/last usable sector/{print $NF}' <<<"$SG_RAW")"
 
 # 归一化成分区表, 每行: 分区号 主:次 设备节点 GPT名字 FS标签 文件系统类型 起始扇区 结束扇区
-# 三个来源互补: sysfs 给分区号和设备节点, sgdisk -p 给扇区范围和 GPT 名字,
-# /run/udev/data 给标签和文件系统类型(普通用户也读得到, lsblk 认标签靠的就是它)。
+# 四个来源互补: sysfs 给分区号和设备节点(以及人人可读的 start/size),
+# sgdisk -p 给扇区范围和 GPT 名字(要 root), /sys 的 start/size 补上非 root 时的
+# 扇区范围, /run/udev/data 给标签和文件系统类型(普通用户也读得到, lsblk 认标签靠的就是它)。
+# 扇区范围的来源: sgdisk = 磁盘上的真实 GPT(要 root); sysfs = 内核当前视图(人人可读)
+# 两者可能不一致 —— 内核改了分区表但没重读 GPT 时, 内核视图还是旧的。
+RANGE_SRC="sgdisk"
+[[ -n "$SG_RAW" ]] || RANGE_SRC="sysfs"
 PART_TABLE="$(
   for _sys in /sys/block/"${DISK_NAME}"/"${DISK_NAME}"*; do
     [[ -r "${_sys}/partition" ]] || continue
@@ -436,6 +441,20 @@ PART_TABLE="$(
     # /run/udev/data 里缓存的还是分区真实存在时的位置 —— 拿它兜底, 既能
     # 让 --check 出完整诊断, 也能让脚本在"中断过的盘"上直接自愈。
     if [[ -z "$_st" || "$_st" == "-" ]]; then
+      # 第二来源: 内核 sysfs —— /sys/block/<盘>/<盘>N/start 和 /size
+      # 是**内核自己的分区视图**, 人人可读 ✓。读整块磁盘要 root, 但读 sysfs 不要,
+      # 所以非 root 跑 --check 时靠它就能拿到真实的扇区范围(而不是只显示"-")。
+      # 这比 udev 缓存更权威: udev 里的 ID_PART_ENTRY_* 是分区表变化时的快照,
+      # 有可能是旧的(这机器上就没有 ID_PART_ENTRY_START, 改过分区之后就再没更新过)。
+      _sst="$(try cat "${_sys}/start")"
+      _ssz="$(try cat "${_sys}/size")"
+      if [[ "$_sst" =~ ^[0-9]+$ && "$_ssz" =~ ^[0-9]+$ ]]; then
+        _st="$_sst"
+        _en=$((_sst + _ssz - 1))
+      fi
+    fi
+    if [[ -z "$_st" || "$_st" == "-" ]]; then
+      # 第三来源: udev 缓存(分区表没变过时也有值)
       _ust="$(try udev_prop "$_mm" ID_PART_ENTRY_START)"
       _usz="$(try udev_prop "$_mm" ID_PART_ENTRY_SIZE)"
       if [[ "$_ust" =~ ^[0-9]+$ && "$_usz" =~ ^[0-9]+$ ]]; then
@@ -462,6 +481,14 @@ else
 fi
 if [[ -n "$LOG_FILE" ]]; then
   { printf '\n==> 当前分区表(sgdisk -p)\n%s\n' "$SG_RAW"; } >>"$LOG_FILE" 2>/dev/null || true
+fi
+# 非 root 时扇区范围来自内核视图, 必须说明白 ——
+# 内核改过分区表但还没重读 GPT 时(sysfs 还是旧布局), 照着它算"未分配空间"
+# 会得出完全相反的结论(真实情况是磁盘已经分满, 内核视图却说还剩一大半)。
+if [[ "$RANGE_SRC" == "sysfs" ]]; then
+  warn "上面的扇区范围来自**内核当前视图**(sysfs), 不是磁盘上的真实分区表 ——"
+  say "读整块磁盘要 root; 两者不一致时(内核没重读过分区表)结论会相反。"
+  say "要准确结论请跑: sudo usb-grow.sh --check"
 fi
 
 # ---------------- 定位 root / music 分区 ----------------
@@ -509,7 +536,11 @@ ok "MUSIC 分区: p${MUSIC_PART} = ${MUSIC_DEV}  (扇区 ${MUSIC_START}..${MUSIC
 USABLE_LAST=$(( TOTAL_SECTORS - 34 ))
 FREE_SECTORS=$(( USABLE_LAST - MUSIC_LAST ))
 (( FREE_SECTORS >= 0 )) || FREE_SECTORS=0
-say "未分配空间: $(to_gib "$FREE_SECTORS") GiB"
+if [[ "$RANGE_SRC" == "sysfs" ]]; then
+  say "未分配空间: $(to_gib "$FREE_SECTORS") GiB (按内核视图, 以磁盘上的真实分区表为准请用 sudo)"
+else
+  say "未分配空间: $(to_gib "$FREE_SECTORS") GiB"
+fi
 
 # ---------------- 文件系统有没有落后于分区表 ----------------
 # 踩过的坑(真机第三轮): 分区表改成功了, root 也扩到了 21G, 但 MUSIC 的
@@ -580,7 +611,12 @@ if [[ "$MODE" == "check" ]]; then
   if (( FREE_SECTORS < 4096 )); then
     say "磁盘已用满(可分配空间不足一个对齐单位), 没有可扩容的空间"
   else
+    if [[ "$RANGE_SRC" == "sysfs" ]]; then
+    say "内核视图里有 $(to_gib "$FREE_SECTORS") GiB 未分配(磁盘上的真实情况请用 sudo 确认)。"
+    say "执行 usb-grow.sh 可以把它分给 root / MUSIC"
+  else
     say "有 $(to_gib "$FREE_SECTORS") GiB 未分配。执行 usb-grow.sh 可以把它分给 root / MUSIC"
+  fi
   fi
   log_hint
   exit 0
