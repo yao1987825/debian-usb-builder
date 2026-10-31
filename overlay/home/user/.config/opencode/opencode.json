@@ -27,5 +27,18 @@
     "question": "allow",
     "skill": "allow",
     "lsp": "allow"
+  },
+  "mcp": {
+    "drawio": {
+      "type": "local",
+      "command": [
+        "next-ai-drawio-mcp"
+      ],
+      "enabled": true,
+      "environment": {
+        "BROWSER": "none",
+        "DRAWIO_LANG": "zh"
+      }
+    }
   }
 }

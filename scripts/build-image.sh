@@ -119,6 +119,12 @@ WIFIT3_BINARY="wifit3-linux-x64"
 WIFIT3_URL="https://github.com/derv82/wifit3/releases/download/v${WIFIT3_VERSION}/${WIFIT3_BINARY}"
 WIFIT3_SHA256="${WIFIT3_SHA256:-b47b42dd3ab3d1e2898b7e281aa06499e2eb9b734dc90dd27c1e428d2ce0a77e}"
 
+# draw.io MCP 服务(next-ai-draw-io 项目): npm 包 @next-ai-drawio/mcp-server。
+# 版本钉死, 免得 npm 哪天发了新版本把接口改了。
+# npm 自己会校验 registry 里的 integrity(sha512), 不用另外钉哈希。
+DRAWIO_MCP_VERSION="${DRAWIO_MCP_VERSION:-0.4.7}"
+NPM_REGISTRY="${NPM_REGISTRY:-https://registry.npmmirror.com}"
+
 
 BUILD_DIR="${BUILD_DIR:-${REPO_DIR}/build}"
 OUT_DIR="${OUT_DIR:-${REPO_DIR}/out}"
@@ -292,6 +298,8 @@ FONT_PKGS="fonts-wqy-zenhei"
 #   avahi-utils: avahi-browse 收 mDNS 广播, 能拿到设备真实主机名和服务类型
 #     (打印机/NAS/摄像头/音箱一眼认出来)。
 #   lldpd: lldpcli 读交换机 LLDP 通告, 知道网关背后接的是哪台交换机、什么型号。
+# nodejs/npm: next-ai-draw-io 的 draw.io MCP 服务是 npm 包, 要 node >= 18
+#   (Debian 12 的 nodejs 是 18.19, 满足; 2026-10-30 真机实测 v18.20.4 ✓)
 # libusb-1.0-0: wifit3 的 USB 访问底座(PyInstaller 版其实自带 libusb,
 #   装这个是兜底 —— 有些发行版/更新下自带的那个会被换掉)。
 # python3-requests: travel-planner 技能(旅游攻略/高德导航/天气)的脚本依赖它。
@@ -326,6 +334,7 @@ chroot_run apt-get install -y --no-install-recommends \
   wmctrl xdotool scrot \
   iputils-arping arp-scan ethtool avahi-utils lldpd \
   python3-requests libusb-1.0-0 \
+  nodejs npm \
   libasound2 alsa-utils
 
 # ---- 可选组件: 装不上不影响系统, 但少了会影响输入法/桌面体验 ----
@@ -614,6 +623,26 @@ if [[ "$(uname -s)" == "Linux" && "$(uname -m)" == "x86_64" ]]; then
 fi
 log "wifit3 ${WIFIT3_VERSION} 已装入镜像 /usr/local/bin/wifit3"
 
+# ---- draw.io MCP 服务(next-ai-draw-io) ----
+# 上游把 MCP server 单独发成 npm 包 @next-ai-drawio/mcp-server:
+# 它**自带 draw.io 编辑器 + 本地预览服务**, 不需要整个 Next.js 应用 ✓
+# (依赖只有 mcp-sdk/linkedom/pako/saxes/zod 五个, 装完 86MB)
+# opencode 侧只要在 opencode.json 里配一段 mcp, 2026-10-30 真机实测:
+#   opencode mcp list -> "✓ drawio connected" ✓
+log "draw.io MCP: 安装 @next-ai-drawio/mcp-server@${DRAWIO_MCP_VERSION}"
+_mcp_tmp="$(mktemp -d)"
+if ! chroot_run npm install -g --prefix /usr/local \
+      --registry="${NPM_REGISTRY}" \
+      "@next-ai-drawio/mcp-server@${DRAWIO_MCP_VERSION}" \
+      >"${_mcp_tmp}/npm.log" 2>&1; then
+  warn "draw.io MCP 安装失败(详见 ${_mcp_tmp}/npm.log 的末尾), 继续构建"
+else
+  ok "draw.io MCP 已装入镜像"
+fi
+rm -rf "${_mcp_tmp}"
+[[ -x "${ROOTFS}/usr/local/bin/next-ai-drawio-mcp" ]] \
+  || warn "镜像里没有 next-ai-drawio-mcp —— draw.io 画图功能不可用(其余功能不受影响)"
+
 ####################### 第 4 步: overlay 文件与用户配置 #######################
 step "4/9 写入 overlay(输入法/快捷脚本/桌面配置)"
 if [[ -d "${REPO_DIR}/overlay" ]]; then
@@ -727,6 +756,21 @@ grep -q "^sudo:" "${ROOTFS}/etc/group" \
 grep -q "^Package: libusb-1.0-0$" "${ROOTFS}/var/lib/dpkg/status" \
   || warn "缺 libusb-1.0-0 —— wifit3 自带的 libusb 要是被换掉就会起不来"
 ok "无线审计: wifit3 ${WIFIT3_VERSION} 已装入镜像"
+
+# ---- draw.io MCP(画图) ----
+[[ -x "${ROOTFS}/usr/local/bin/next-ai-drawio-mcp" ]] \
+  || die "缺 next-ai-drawio-mcp —— draw.io 画图功能不可用"
+# opencode 侧的接线: opencode.json 里必须有 mcp.drawio 这一段,
+# 且 type/command 写对(写错 opencode 会拒绝启动, 或者连不上)
+[[ -f "${ROOTFS}/home/${USER_NAME}/.config/opencode/opencode.json" ]] \
+  || die "缺 opencode.json —— MCP 没地方配"
+grep -q '"drawio"' "${ROOTFS}/home/${USER_NAME}/.config/opencode/opencode.json" \
+  || die "opencode.json 里没有 drawio 这段 MCP 配置"
+grep -q '"next-ai-drawio-mcp"' "${ROOTFS}/home/${USER_NAME}/.config/opencode/opencode.json" \
+  || die "opencode.json 里 drawio 的 command 不对"
+[[ -f "${ROOTFS}/home/${USER_NAME}/.config/opencode/skills/diagram-drawio/SKILL.md" ]] \
+  || die "缺 diagram-drawio 技能 —— AI 不知道该怎么用这套画图工具"
+ok "draw.io: MCP 服务 + opencode 接线 + 技能就位"
 
 # ---- travel-planner 技能(旅游攻略/导航/天气) ----
 # 这个技能带高德地图 API: Key 放在技能目录的 .env 里。

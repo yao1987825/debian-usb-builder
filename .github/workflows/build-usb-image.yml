@@ -164,6 +164,9 @@ jobs:
       - name: 旅游攻略 travel-planner 技能回归测试
         run: bash scripts/test-travel-skill.sh
 
+      - name: draw.io MCP 服务回归测试
+        run: bash scripts/test-drawio-mcp.sh
+
       - name: 构建镜像
         run: |
           # 构建日志同时落一份到 build-image.log: 构建失败时作为 artifact 上传,

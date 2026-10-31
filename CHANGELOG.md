@@ -13,6 +13,47 @@ GitHub Actions 自动构建镜像并发布到 [Releases](https://github.com/yao1
 
 ---
 
+## v1.6.0 (2026-10-31)
+
+- **新增功能: draw.io MCP 服务进镜像 —— opencode 会话里直接画架构图/流程图**
+
+### 🎨 next-ai-draw-io 的 MCP 服务
+
+接入 [next-ai-draw-io](https://github.com/DayuanJiang/next-ai-draw-io) 的
+draw.io MCP 服务。上游把 MCP server 单独发成 npm 包 `@next-ai-drawio/mcp-server`,
+**自带 draw.io 编辑器 + 本地预览服务**, 所以**不需要装整套 Next.js 应用** ✓
+(依赖只有 `@modelcontextprotocol/sdk` / `linkedom` / `pako` / `saxes` / `zod` 五个,
+装完 86MB)。
+
+- 镜像新增 `nodejs`(18.19)+ `npm`, 构建期 `npm install -g --prefix /usr/local`
+  装 `@next-ai-drawio/mcp-server@0.4.7`(版本钉死; npm 自己校验 registry 的
+  integrity, 不用另外钉哈希);
+- `opencode.json` 里加 `mcp.drawio` 段(type=local, command=next-ai-drawio-mcp),
+  环境变量 `BROWSER=none`(镜像里没浏览器, 别让它去开) + `DRAWIO_LANG=zh`;
+- 新增技能 `diagram-drawio`: 告诉 AI 正确的用法流程
+  (start_session → create/edit → export, **不要自己手写 mxCell XML**),
+  以及本机的两个限制。
+
+真机端到端验证(2026-10-31, 直接用 MCP 协议驱动):
+
+```
+initialize            -> next-ai-drawio v0.4.7 ✓
+tools/list            -> 16 个工具 ✓
+start_session         -> session + 预览 URL (http://localhost:6002/shell/?mcp=...) ✓
+create_new_diagram    -> OK ✓
+export_diagram        -> /tmp/e2e-test.drawio (1063 字节, 合法 mxfile XML) ✓
+opencode mcp list     -> "✓ drawio connected" ✓
+```
+
+**两个限制**(镜像里没有图形界面浏览器):
+1. **PNG/SVG 导出走不通**(导出靠预览页渲染), 但 **`.drawio` 文件完全正常** ✓;
+   想看图/要图片: `sudo apt-get install -y chromium`, 或把 `.drawio` 拿到
+   有 draw.io 的机器上打开;
+2. 预览页(`http://localhost:6002/...`)在有浏览器的机器上打开即可手改,
+   手改的内容 AI 能通过 `get_diagram` 读回来。
+
+---
+
 ## v1.5.0 (2026-10-30)
 
 - **新增功能: `wifit3` —— USB 无线网卡审计工具进镜像(自带协议栈, 不用编内核驱动)**

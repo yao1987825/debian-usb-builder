@@ -677,6 +677,33 @@ WPS（PixieDust / 按压按钮 / PIN 暴力）、WEP 套件、隐藏 SSID 还原
 > 这跟系统自带的 `wifi` 命令是两回事：`wifi` 是**连网**（用内置网卡），
 > `wifit3` 是**审计别人家/自己家的无线网**（用专用 USB 网卡）。建议各插各的卡。
 
+### 4h. AI 画图（draw.io MCP 服务）
+
+接入了 [next-ai-draw-io](https://github.com/DayuanJiang/next-ai-draw-io) 的
+**draw.io MCP 服务**：opencode 会话里直接说"帮我画个架构图"，它就在真实的
+draw.io 画布上画，产出 `.drawio` / `.png` / `.svg`。
+
+```bash
+opencode          # 在会话里说: "读一下这个项目, 画张架构图"
+```
+
+镜像里装的是上游单独发的 npm 包 `@next-ai-drawio/mcp-server`（**不需要整套
+Next.js 应用** —— 这个包自带 draw.io 编辑器和本地预览服务），
+依赖只有 5 个，装完约 86MB。
+
+**它能干什么**：`start_session` 开画布 → `create_new_diagram` 画图 →
+`edit_diagram` 改 → `export_diagram` 导出；还能读回你在浏览器里的手改、
+把图形截图给 AI 自查重叠、回滚到之前的版本（最近 20 版都留着）、
+多页图、用 AWS/Azure/GCP/K8s/Cisco 的真实图标。
+
+**两点限制**（镜像里没有图形界面浏览器）：
+- **PNG/SVG 导出走不通**（导出靠预览页渲染），但 **`.drawio` 文件完全正常**；
+- 想看实时预览或导出图片：`sudo apt-get install -y chromium`（装完重启 opencode 才有），
+  或者把生成的 `.drawio` 拿到有 draw.io 的机器上打开。
+
+图默认存在 `~/.next-ai-drawio/`；自己写"一律用极简风格"这类规则放进
+同目录的 `instructions.md` 就生效。
+
 ### 5. 基础命令行工具（以后往里加新功能用）
 
 需求是"以后会再这个 u 盘系统中添加各种新功能，主要是终端命令方面，
