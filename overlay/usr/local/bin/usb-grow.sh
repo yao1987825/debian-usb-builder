@@ -20,6 +20,22 @@
 set -Eeuo pipefail
 umask 022
 
+# 把 sbin 目录补进 PATH。
+#
+# Debian 把磁盘工具都放在 /usr/sbin: sgdisk(gdisk 包)、resize2fs / e2fsck /
+# dumpe2fs(e2fsprogs)、partprobe / partx / blockdev / lsblk(util-linux)。
+# 而**普通用户的 PATH 里没有 /usr/sbin** —— 于是非 root 跑 `usb-grow.sh --check`
+# 时, `command -v sgdisk` 找不到, 脚本会误报
+#   "❌ 失败: 缺少命令 [sgdisk]。安装: sudo apt-get install -y gdisk ..."
+# 用户照着装了一遍(gdisk 已经是最新版了), 报错一模一样, 完全没法自查。
+# (2026-10-31 真机实测: 这正是用户卡住的地方。)
+#
+# 补上以后: --check 不需要 root 也能完整诊断, 而且跟 root 跑看到的命令集一致。
+# /usr/sbin 本身是 0755, 普通用户能执行里面的程序(只是大部分操作要 root 才行),
+# 所以补 PATH 不会带来提权风险。
+PATH="${PATH}:/usr/sbin:/sbin"
+export PATH
+
 ROOT_PERCENT=30
 MODE=grow
 DRY_RUN=0
@@ -336,8 +352,24 @@ say "脚本        : $(readlink -f "$0")"
 say "执行用户    : $(id -un) (uid=$(id -u))"
 say "内核/架构   : $(uname -sr) / $(uname -m)"
 
+# 依赖检查: 每个命令对应哪个包, 缺了就只提那一个包(之前一律让你装
+# gdisk+e2fsprogs+util-linux 三个, 明明只缺一个也让你全装, 误导)
+declare -A _pkg_of=(
+  [sgdisk]="gdisk"        # sgdisk/sgdisk 是 gdisk 包提供的
+  [findmnt]="util-linux"
+  [resize2fs]="e2fsprogs"
+  [e2fsck]="e2fsprogs"
+  [dumpe2fs]="e2fsprogs"
+  [blockdev]="util-linux"
+  [partprobe]="util-linux"
+  [partx]="util-linux"
+  [lsblk]="util-linux"
+  [awk]="gawk"
+)
 for c in sgdisk findmnt resize2fs e2fsck dumpe2fs blockdev partprobe partx awk; do
-  command -v "$c" >/dev/null 2>&1 || die "缺少命令 [$c]。安装: sudo apt-get install -y gdisk e2fsprogs util-linux"
+  if ! command -v "$c" >/dev/null 2>&1; then
+    die "缺少命令 [$c]。安装: sudo apt-get install -y ${_pkg_of[$c]:-util-linux}"
+  fi
 done
 ok "依赖命令齐全 (sgdisk / resize2fs / partprobe / partx)"
 

@@ -13,6 +13,53 @@ GitHub Actions 自动构建镜像并发布到 [Releases](https://github.com/yao1
 
 ---
 
+## v1.6.1 (2026-10-31)
+
+- **修复: `usb-grow.sh --check` 误报"缺少命令 [sgdisk]"**
+
+### 症状
+
+真机上跑 `usb-grow.sh --check` 直接失败:
+
+```
+❌ 失败: 缺少命令 [sgdisk]。安装: sudo apt-get install -y gdisk e2fsprogs util-linux
+```
+
+照着装完(gdisk 已经是最新版 1.0.9-2.1)报错一模一样, 没法自查。
+
+### 根因
+
+Debian 把磁盘工具都装在 **`/usr/sbin`**: `sgdisk`(gdisk 包)、`resize2fs`/`e2fsck`/
+`dumpe2fs`(e2fsprogs)、`partprobe`/`partx`/`blockdev`(util-linux)。
+而**普通用户的 PATH 里没有 `/usr/sbin`** —— 脚本用 `command -v sgdisk` 判断依赖,
+非 root 跑就找不到, 于是误报"缺命令"。
+
+`--check` 按设计是**不提权**的(诊断要能不带 root 跑), 所以这个坑必然踩到:
+真正的扩容流程走 sudo 提权后 PATH 是全的, 反而没事 —— 于是"只有诊断坏、实际功能好",
+最让人困惑。
+
+### 修法
+
+- 脚本开头把 `/usr/sbin:/sbin` 补进 PATH 并 export(一条 PATH 修好所有磁盘工具的查找);
+- 缺命令提示改成**按命令给对应的包**(缺 `sgdisk` 只让你装 gdisk, 而不是三个包全装)。
+
+真机验证(2026-10-31):
+
+```
+$ usb-grow.sh --check              # 普通用户
+  ✅ 依赖命令齐全 (sgdisk / resize2fs / partprobe / partx)
+  ✅ 根分区 : /dev/sdb3   物理磁盘: /dev/sdb   容量 59.63 GiB
+  ⚠️ sgdisk 读不到 /dev/sdb(普通用户常没有读整盘权限) → 提示跑 sudo 版本
+$ sudo usb-grow.sh --check        # root
+  ✅ 分区表完整读出(BIOS-BOOT/EFI/DEBIAN_ROOT/MUSIC)
+  ✅ root 分区 p3 / MUSIC 分区 p4 定位正确, 未分配空间 0.00 GiB
+```
+
+新增 `scripts/test-usb-grow.sh`(CI 里跑): 守住 PATH 补 sbin、缺命令提示按包给、
+以及用最小 PATH 模拟普通用户真跑一遍 --check。
+
+---
+
 ## v1.6.0 (2026-10-31)
 
 - **新增功能: draw.io MCP 服务进镜像 —— opencode 会话里直接画架构图/流程图**
