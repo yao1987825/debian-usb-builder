@@ -654,6 +654,15 @@ if [[ -d "${REPO_DIR}/overlay" ]]; then
   cp -a "${REPO_DIR}/overlay/." "${ROOTFS}/"
 fi
 
+# Windows 上 git 可能没记录执行位, 这里统一补上。
+# **必须紧跟在 overlay 拷贝之后**: 后面所有 "[[ -x ... ]]" 的断言都依赖这个执行位。
+# 放在别处的话, 断言会在文件还是 0644 的时候跑, 直接把构建判死
+# (2026-11-01 v1.6.2 就死在这: "overlay 里缺 /usr/local/bin/usb-version")。
+find "${ROOTFS}/usr/local/bin" -type f -exec chmod 0755 {} + 2>/dev/null || true
+chmod 0755 "${ROOTFS}/usr/local/lib/musictools/single.py" 2>/dev/null || true
+chmod 0755 "${ROOTFS}/usr/local/lib/musictools/quark_login.py" 2>/dev/null || true
+chmod 0755 "${ROOTFS}/usr/local/lib/screentools/fit.py" 2>/dev/null || true
+
 # ---- 版本元数据: 让刷完盘的 U 盘能自报家门 ----
 # 以前 BUILDER_VERSION 只打印在构建日志里, 刷完盘就没人知道了 ——
 # 用户拿到手只能靠猜"这是哪一版、修了什么"。现在把这些写进镜像:
@@ -720,11 +729,6 @@ fi
   || die "overlay 里缺 /usr/local/bin/usb-version —— 用户没法查版本"
 log "版本信息已写入镜像: ${BUILDER_VERSION} (${BUILD_SHA})"
 
-# Windows 上 git 可能没记录执行位, 这里统一补上
-find "${ROOTFS}/usr/local/bin" -type f -exec chmod 0755 {} + 2>/dev/null || true
-chmod 0755 "${ROOTFS}/usr/local/lib/musictools/single.py" 2>/dev/null || true
-chmod 0755 "${ROOTFS}/usr/local/lib/musictools/quark_login.py" 2>/dev/null || true
-chmod 0755 "${ROOTFS}/usr/local/lib/screentools/fit.py" 2>/dev/null || true
 chown -R "${USER_UID}:${USER_GID}" "${ROOTFS}/home/${USER_NAME}"
 
 # 开机自扩容: 定长镜像写进大 U 盘后, 剩下的空间在开机时自动分给 root/MUSIC。

@@ -36,6 +36,36 @@ else
 fi
 grep -q 'BUILDER_VERSION' scripts/build-image.sh && ok "版本号取自 BUILDER_VERSION" || fail "没用到 BUILDER_VERSION"
 
+echo "== 断言顺序: chmod 必须在 -x 断言之前(2026-11-01 v1.6.2 就死在这) =="
+# 背景: overlay 里的文件在 git 里是 0644, 构建期靠 chmod 0755 补执行位。
+# 如果哪个 "[[ -x ... ]]" 断言跑在 chmod **之前**, 就会看到文件还没执行位,
+# 直接把构建判死(v1.6.2: "overlay 里缺 /usr/local/bin/usb-version")。
+_chmod_line="$(grep -n 'find "\${ROOTFS}/usr/local/bin" -type f -exec chmod' scripts/build-image.sh | head -1 | cut -d: -f1)"
+# 只看**来自 overlay 的文件**(net/tch/usb-version/travel/train/music 这些);
+# npm 或 install -m755 装的(opencode/wifit3/next-ai-drawio-mcp)自带执行位, 不受 chmod 影响。
+_first_x="$(grep -nE '\[\[ -x "\$\{ROOTFS\}/usr/local/bin/(net|tch|usb-version|travel|train|music)' scripts/build-image.sh | head -1 | cut -d: -f1)"
+if [[ -n "$_chmod_line" && -n "$_first_x" ]] && (( _chmod_line < _first_x )); then
+  ok "chmod(line $_chmod_line) 在第一个 -x 断言(line $_first_x) 之前"
+else
+  fail "断言顺序不对: chmod=${_chmod_line:-无} 第一个 -x 断言=${_first_x:-无}"
+fi
+# 再来一遍真实模拟: 拷 overlay -> chmod -> 检查可执行位
+_sim="$(mktemp -d)"
+mkdir -p "${_sim}/usr/local/bin"
+cp "$CMD" "${_sim}/usr/local/bin/"
+if [[ ! -x "${_sim}/usr/local/bin/usb-version" ]]; then
+  ok "拷过去时确实还没有执行位(0644, git 不记录执行位)"
+else
+  fail "拷贝后意外带上了执行位(掩盖了顺序问题)"
+fi
+chmod 0755 "${_sim}/usr/local/bin"/* 2>/dev/null || true
+if [[ -x "${_sim}/usr/local/bin/usb-version" ]]; then
+  ok "chmod 之后 -x 成立(断言能过)"
+else
+  fail "chmod 之后还是不可执行"
+fi
+rm -rf "$_sim"
+
 echo "== 子命令 =="
 for m in --changelog --all --tools --json; do
   if grep -q -- "$m" "$CMD"; then
