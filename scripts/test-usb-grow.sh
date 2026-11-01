@@ -48,6 +48,37 @@ else
   ok "不再一律推荐装三个包"
 fi
 
+echo "== 歌曲分区属主(2026-11-01 真机踩的坑) =="
+# resize2fs 补完文件系统会把文件系统根 inode 的属主重置成 root:root,
+# 不 chown 回去, 普通用户就写不进歌曲分区 -> "错误: 歌曲分区不可写"。
+# 关键是**两条路径都要调** ensure_song_mount: 早退路径("表已定型, 只补文件系统")
+# 和完整路径, 漏一条就复现。
+if grep -q "^ensure_song_mount()" "$SCRIPT"; then
+  ok "有 ensure_song_mount 函数"
+else
+  fail "没有 ensure_song_mount 函数"
+fi
+if [[ "$(grep -c 'ensure_song_mount' "$SCRIPT")" -ge 3 ]]; then
+  ok "ensure_song_mount 被多处调用(定义+早退路径+完整路径)"
+else
+  fail "ensure_song_mount 调用点太少 —— 早退路径漏了就复现"
+fi
+if grep -q -- "--fix-mount" "$SCRIPT"; then
+  ok "有 --fix-mount 手动修复入口(不用重启)"
+else
+  fail "没有 --fix-mount —— 用户只能重启"
+fi
+if grep -q 'chown 1000:1000' "$SCRIPT"; then
+  ok "会把属主交还普通用户(1000:1000)"
+else
+  fail "没有 chown 逻辑"
+fi
+if grep -q 'usb-grow.sh --fix-mount' overlay/usr/local/bin/music; then
+  ok "music 的报错提示给出了修复命令"
+else
+  fail "music 的报错提示没给修复命令"
+fi
+
 echo "== 真跑一次(用最小 PATH 模拟普通用户) =="
 # 有这些工具才跑得动完整诊断; 构建机上没有就跳过功能部分(静态检查已经守住了)
 if command -v sgdisk >/dev/null 2>&1 && command -v sgdisk >/dev/null 2>&1; then

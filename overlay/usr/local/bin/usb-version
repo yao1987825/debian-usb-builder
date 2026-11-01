@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+#
+# usb-version —— 查这套 U 盘系统的版本, 以及"这一版都修了什么/加了什么"
+#
+# 为什么要有这个:
+#   刷完盘以后, 用户手上只有一个 U 盘 —— 想知道:
+#     1) 这是哪一版(构建时是哪个 commit)?
+#     2) 这一版**修了哪些坑、加了哪些功能**?
+#     3) 镜像里到底装了哪些东西(哪些命令能用)?
+#   以前这些信息只打印在构建日志里, 刷完就没了。现在构建期把版本元数据、
+#   组件清单和 CHANGELOG 一起写进镜像, 随时能查。
+#
+# 用法:
+#   usb-version              # 版本 + 构建信息 + 本版包含的功能
+#   usb-version --changelog  # 只看这一版的变更记录(修了什么)
+#   usb-version --all        # 完整 CHANGELOG(所有版本)
+#   usb-version --tools      # 只看功能清单
+#   usb-version --json       # 机器可读(给脚本/AI 用)
+#
+set -uo pipefail
+
+# 目录可以用 USB_VERSION_SHARE 覆盖 —— 测试脚本要在临时目录里跑,
+# 不然会往系统目录里写东西(测试机上未必有权限)。
+SHARE="${USB_VERSION_SHARE:-/usr/local/share/debian-usb}"
+VER_FILE="${SHARE}/version.txt"
+TOOLS_FILE="${SHARE}/components.txt"
+LOG_FILE="${SHARE}/CHANGELOG.md"
+
+B=$'\033[1;34m'; G=$'\033[1;32m'; Y=$'\033[1;33m'; D=$'\033[2;37m'; N=$'\033[0m'
+
+if [[ ! -f "$VER_FILE" ]]; then
+  echo "usb-version: 镜像里没有版本信息(${VER_FILE} 不存在)" >&2
+  echo "  这一版镜像是在加这个功能之前构建的, 升级到 v1.6.2+ 就有。" >&2
+  exit 1
+fi
+
+# 读 key=value 形式
+get_kv() { sed -n "s/^$1=//p" "$VER_FILE" | head -1; }
+
+VER="$(get_kv version)"
+SHA="$(get_kv git_sha)"
+BUILT="$(get_kv built_at)"
+SUITE="$(get_kv suite)"
+HOST="$(get_kv hostname)"
+IMGSZ="$(get_kv image_mb)"
+# git describe 可能是 v1.6.1-3-gabc123, 取基线版本号去 CHANGELOG 里找对应段
+BASE_VER="$(printf '%s' "$VER" | sed 's/-[0-9].*$//; s/+.*$//')"
+
+MODE="summary"
+case "${1:-}" in
+  --changelog) MODE="changelog" ;;
+  --all)       MODE="all" ;;
+  --tools)     MODE="tools" ;;
+  --json)      MODE="json" ;;
+  -h|--help)   sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+esac
+
+print_tools() {
+  [[ -f "$TOOLS_FILE" ]] || { echo "  (镜像里没有组件清单)"; return; }
+  while IFS='|' read -r name ver desc; do
+    [[ -n "$name" ]] || continue
+    printf '  %s%-14s%s %s%-8s%s %s\n' "$G" "$name" "$N" "$D" "$ver" "$N" "$desc"
+  done < "$TOOLS_FILE"
+}
+
+print_changelog_section() {
+  if [[ ! -f "$LOG_FILE" ]]; then
+    echo "  (镜像里没有 CHANGELOG)"
+    return
+  fi
+  awk -v ver="$BASE_VER" '
+    /^## / { inside = (index($0, ver) > 0) }
+    inside { print }
+  ' "$LOG_FILE" | sed 's/^/  /'
+}
+
+if [[ "$MODE" == "json" ]]; then
+  printf '{\n'
+  printf '  "version": "%s",\n' "$VER"
+  printf '  "base_version": "%s",\n' "$BASE_VER"
+  printf '  "git_sha": "%s",\n' "$SHA"
+  printf '  "built_at": "%s",\n' "$BUILT"
+  printf '  "suite": "%s",\n' "$SUITE"
+  printf '  "hostname": "%s",\n' "$HOST"
+  printf '  "image_mb": "%s",\n' "$IMGSZ"
+  printf '  "components": ['
+  first=1
+  if [[ -f "$TOOLS_FILE" ]]; then
+    while IFS='|' read -r name cver desc; do
+      [[ -n "$name" ]] || continue
+      [[ $first -eq 1 ]] || printf ','
+      first=0
+      printf '\n    {"name": "%s", "version": "%s", "desc": "%s"}' "$name" "$cver" "$desc"
+    done < "$TOOLS_FILE"
+  fi
+  printf '\n  ]\n}\n'
+  exit 0
+fi
+
+case "$MODE" in
+  tools)
+    echo "镜像里可用的功能:"
+    print_tools
+    exit 0
+    ;;
+  changelog)
+    echo "== ${BASE_VER} 的变更记录 =="
+    print_changelog_section
+    exit 0
+    ;;
+  all)
+    [[ -f "$LOG_FILE" ]] && cat "$LOG_FILE" || echo "(镜像里没有 CHANGELOG)"
+    exit 0
+    ;;
+esac
+
+# ---- 默认: 摘要 ----
+printf '%s=== Debian U 盘系统 ===%s\n' "$B" "$N"
+printf '  版本      : %s%s%s\n' "$G" "${VER:-未知}" "$N"
+printf '  基线版本  : %s (CHANGELOG 里对应这一段)\n' "$BASE_VER"
+printf '  构建时间  : %s\n' "${BUILT:-未知}"
+printf '  commit    : %s\n' "${SHA:-未知}"
+printf '  发行版    : Debian %s · 主机名 %s\n' "${SUITE:-?}" "${HOST:-?}"
+printf '  镜像大小  : %s MiB (定长镜像, 写进大 U 盘后会自动扩到整盘)\n' "${IMGSZ:-?}"
+echo
+printf '%s本版包含的功能:%s\n' "$B" "$N"
+print_tools
+echo
+printf '%s看这一版修了什么:%s usb-version --changelog\n' "$D" "$N"
+printf '%s完整变更记录:%s     usb-version --all\n' "$D" "$N"

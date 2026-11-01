@@ -648,6 +648,70 @@ step "4/9 写入 overlay(输入法/快捷脚本/桌面配置)"
 if [[ -d "${REPO_DIR}/overlay" ]]; then
   cp -a "${REPO_DIR}/overlay/." "${ROOTFS}/"
 fi
+
+# ---- 版本元数据: 让刷完盘的 U 盘能自报家门 ----
+# 以前 BUILDER_VERSION 只打印在构建日志里, 刷完盘就没人知道了 ——
+# 用户拿到手只能靠猜"这是哪一版、修了什么"。现在把这些写进镜像:
+#   /usr/local/share/debian-usb/version.txt     版本/时间/commit/套件/镜像大小
+#   /usr/local/share/debian-usb/components.txt  这套镜像里实际装了哪些功能(带版本)
+#   /usr/local/share/debian-usb/CHANGELOG.md    全部版本的变更记录
+# 然后 `usb-version` 就能回答"我刷的是哪一版、这一版修了什么"。
+BUILD_SHA="$(git -C "${REPO_DIR}" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+[[ -n "$BUILD_SHA" ]] || BUILD_SHA="unknown"
+mkdir -p "${ROOTFS}/usr/local/share/debian-usb"
+{
+  printf 'version=%s\n' "${BUILDER_VERSION}"
+  printf 'git_sha=%s\n' "${BUILD_SHA}"
+  printf 'built_at=%s\n' "$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+  printf 'suite=%s\n' "${SUITE}"
+  printf 'hostname=%s\n' "${HOSTNAME_DEB}"
+  printf 'image_mb=%s\n' "${IMG_SIZE_MB}"
+  printf 'builder=%s\n' "github.com/yao1987825/debian-usb-builder"
+} > "${ROOTFS}/usr/local/share/debian-usb/version.txt"
+
+# 组件清单: **按镜像里实际存在的东西**生成, 不写死 —— 写死的话哪天少装一个
+# 组件, 这张表还在骗人。
+# 注意: 这个小函数必须定义在顶层(顶格), 缩进在 { } 块里的话 lint-helpers
+# 认不出来, 会报"调用了没有定义的函数"(2026-10-31 踩过)。
+_c_add() {  # _c_add <名字> <版本> <说明>
+  printf '%s|%s|%s\n' "$1" "$2" "$3"
+}
+{
+  if [[ -x "${ROOTFS}/usr/local/bin/music-shell" ]]; then
+    _c_add "music-shell" "${MUSIC_SHELL_VERSION}" "终端播放器(music play)"
+  fi
+  if [[ -x "${ROOTFS}/usr/local/bin/net" ]]; then
+    _c_add "netkit" "1.1.0" "局域网诊断(net topo/probe/fix)"
+  fi
+  if [[ -x "${ROOTFS}/usr/local/lib/opencode/opencode" ]]; then
+    _c_add "opencode" "${OPENCODE_VERSION}" "AI 助手(排障/画图/旅游/查票)"
+  fi
+  if [[ -x "${ROOTFS}/usr/local/bin/train" ]]; then
+    _c_add "train" "1.1.0" "12306 火车票余票"
+  fi
+  if [[ -x "${ROOTFS}/usr/local/bin/travel" ]]; then
+    _c_add "travel-planner" "0.4.7" "旅游攻略/高德导航/天气"
+  fi
+  if [[ -x "${ROOTFS}/usr/local/bin/wifit3" ]]; then
+    _c_add "wifit3" "${WIFIT3_VERSION}" "USB 无线网卡审计"
+  fi
+  if [[ -x "${ROOTFS}/usr/local/bin/next-ai-drawio-mcp" ]]; then
+    _c_add "drawio-mcp" "${DRAWIO_MCP_VERSION}" "draw.io 画图 MCP"
+  fi
+  if [[ -x "${ROOTFS}/usr/local/bin/usb-version" ]]; then
+    _c_add "usb-version" "1.0.0" "版本与变更记录查询(本命令)"
+  fi
+} > "${ROOTFS}/usr/local/share/debian-usb/components.txt"
+
+if [[ -f "${REPO_DIR}/CHANGELOG.md" ]]; then
+  cp "${REPO_DIR}/CHANGELOG.md" "${ROOTFS}/usr/local/share/debian-usb/CHANGELOG.md"
+fi
+[[ -f "${ROOTFS}/usr/local/share/debian-usb/components.txt" ]] \
+  || die "组件清单没生成 —— usb-version 会显示不出功能"
+[[ -x "${ROOTFS}/usr/local/bin/usb-version" ]] \
+  || die "overlay 里缺 /usr/local/bin/usb-version —— 用户没法查版本"
+log "版本信息已写入镜像: ${BUILDER_VERSION} (${BUILD_SHA})"
+
 # Windows 上 git 可能没记录执行位, 这里统一补上
 find "${ROOTFS}/usr/local/bin" -type f -exec chmod 0755 {} + 2>/dev/null || true
 chmod 0755 "${ROOTFS}/usr/local/lib/musictools/single.py" 2>/dev/null || true
@@ -756,6 +820,17 @@ grep -q "^sudo:" "${ROOTFS}/etc/group" \
 grep -q "^Package: libusb-1.0-0$" "${ROOTFS}/var/lib/dpkg/status" \
   || warn "缺 libusb-1.0-0 —— wifit3 自带的 libusb 要是被换掉就会起不来"
 ok "无线审计: wifit3 ${WIFIT3_VERSION} 已装入镜像"
+
+# ---- 版本查询(usb-version) ----
+[[ -x "${ROOTFS}/usr/local/bin/usb-version" ]] \
+  || die "overlay 里缺 /usr/local/bin/usb-version —— 用户没法查版本"
+[[ -f "${ROOTFS}/usr/local/share/debian-usb/version.txt" ]] \
+  || die "镜像里没有 version.txt —— 刷完盘查不到版本"
+[[ -f "${ROOTFS}/usr/local/share/debian-usb/components.txt" ]] \
+  || die "镜像里没有 components.txt —— 查不到本版装了哪些功能"
+[[ -f "${ROOTFS}/usr/local/share/debian-usb/CHANGELOG.md" ]] \
+  || die "镜像里没有 CHANGELOG.md —— 查不到这一版修了什么"
+ok "版本信息: version.txt + components.txt + CHANGELOG.md 就位"
 
 # ---- draw.io MCP(画图) ----
 [[ -x "${ROOTFS}/usr/local/bin/next-ai-drawio-mcp" ]] \

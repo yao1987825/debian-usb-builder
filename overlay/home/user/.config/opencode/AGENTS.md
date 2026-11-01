@@ -15,12 +15,18 @@
 | `net report` | 看历史报告(`~/net-reports/`) |
 | `wifi scan/connect/status` | 无线网卡入口 |
 | `train 北京 上海` | 12306 火车票余票 |
+| `usb-version` | 版本/构建信息/本版功能清单(`--changelog` 看这一版修了什么) |
 | `travel plan/nav/weather` | 旅游攻略/行程规划/高德导航/天气(travel-planner 技能) |
 
 技能(skills)在 `~/.config/opencode/skills/`, 用到时按需加载:
 `lan-topology` 看拓扑、`lan-triage` 分层定位、`lan-repair` 执行修复、
 `lan-capture` 抓包、`wifi-triage` 无线专项、`travel-planner` 旅游攻略与行程规划
 (高德 key 已配在技能目录的 `.env` 里, 直接用)。
+
+## 回答"这是哪一版/有什么功能"时
+
+先跑 `usb-version`(版本 + 构建时间 + commit + 本版功能清单),
+再跑 `usb-version --changelog` 看这一版具体修了什么。**不要凭记忆回答版本号。**
 
 ## 工作纪律
 

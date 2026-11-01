@@ -9,6 +9,7 @@
 #   usb-grow.sh                 # 默认 root 分 30%, MUSIC 分 70%
 #   usb-grow.sh --root-percent 50
 #   usb-grow.sh --check        # 只诊断, 不改任何东西(不需要 root)
+#   usb-grow.sh --fix-mount    # 只修"歌曲分区不可写"(挂载 + 交还属主), 不碰分区表
 #   usb-grow.sh --dry-run      # 打印将执行的改动, 但不动分区表
 #   usb-grow.sh --auto         # 开机自扩容用(usb-grow.service 调它), 幂等
 #   usb-grow.sh --self-test    # 分区识别逻辑自测(不需要 root)
@@ -69,6 +70,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --root-percent) ROOT_PERCENT="${2:?--root-percent 需要一个数字}"; shift 2 ;;
     --check)        MODE=check; shift ;;
+    --fix-mount)    MODE=fix-mount; shift ;;
     --dry-run)      DRY_RUN=1; shift ;;
     --auto)         AUTO=1; shift ;;
     --self-test)    MODE=selftest; shift ;;
@@ -327,6 +329,49 @@ trap 'on_err "$?" "$LINENO" "$BASH_COMMAND"' ERR
 # 先触发 ERR 陷阱, 把一段自测失败变成一场"脚本崩了"的假象。
 if [[ "$MODE" == "selftest" ]]; then
   if self_test; then exit 0; else exit 1; fi
+fi
+
+# ---------------- 歌曲分区: 挂载 + 把属主交还普通用户 ----------------
+# 为什么必须做这一步:
+#   resize2fs 补完文件系统后, 会把**文件系统根 inode 的属主重置成 superblock 里
+#   存的值**(一般是 root:root)。不 chown 回去, 歌曲分区对普通用户就是只读的 ——
+#   表现是 "错误: 歌曲分区不可写: /mnt/songdisk"(2026-10-31 真机踩到:
+#   走了"表已定型, 只补文件系统"这条早退路径, 补完就退出了, 压根没 chown)。
+#   早退路径和完整路径都要调这个函数, 漏一条就会复现。
+ensure_song_mount() {
+  if ! mountpoint -q /mnt/songdisk; then
+    mount /mnt/songdisk 2>/dev/null \
+      || warn "自动挂载 /mnt/songdisk 失败, 请手动: sudo mount /mnt/songdisk"
+  fi
+  if mountpoint -q /mnt/songdisk; then
+    _owner="$(try stat -c '%u:%g' /mnt/songdisk)"
+    if [[ "$_owner" != "1000:1000" ]]; then
+      if try chown 1000:1000 /mnt/songdisk; then
+        ok "歌曲分区属主已交还普通用户 (1000:1000)"
+      else
+        warn "改不了 /mnt/songdisk 的属主, 普通用户可能写不进去"
+        warn "手动修: sudo chown 1000:1000 /mnt/songdisk"
+      fi
+    fi
+  fi
+}
+
+# --fix-mount: 只修"歌曲分区不可写"这一件事(挂载 + 把属主交还普通用户),
+# 不碰分区表、不动文件系统。给用户一个不用重启就能修的手段。
+if [[ "$MODE" == "fix-mount" ]]; then
+  if [[ "$(id -u)" != "0" ]]; then
+    command -v sudo >/dev/null 2>&1 \
+      || die "修挂载点需要 root, 请用: sudo usb-grow.sh --fix-mount"
+    exec sudo -E bash "$0" ${ORIG_ARGS[@]+"${ORIG_ARGS[@]}"}
+  fi
+  step "修复歌曲分区的挂载与属主"
+  ensure_song_mount
+  _owner="$(try stat -c '%u:%g' /mnt/songdisk)"
+  if [[ "$_owner" == "1000:1000" ]]; then
+    ok "歌曲分区已就绪: /mnt/songdisk 属主 1000:1000, 普通用户可写"
+    exit 0
+  fi
+  die "修不了 /mnt/songdisk 的属主(现在是 ${_owner:-未知})。手动查: mountpoint /mnt/songdisk && ls -ld /mnt/songdisk"
 fi
 
 # ---------------- 自动提权 ----------------
@@ -633,6 +678,9 @@ if (( FREE_SECTORS < 4096 )); then
   if (( ROOT_FS_LAG || MUSIC_FS_LAG )); then
     say "剩余空间不足一个对齐单位( $(to_gib 4096) GiB), 表已定型, 只补文件系统"
     finish_fs_growth || true
+    # 补完文件系统必须把属主交还回去(见 ensure_song_mount 的注释):
+    # resize2fs 会把根 inode 重置成 root:root, 不 chown 歌曲分区就是只读的
+    ensure_song_mount
     step "结果"
     df -h / /mnt/songdisk 2>/dev/null | sed 's/^/    /' || true
     log_hint
@@ -831,19 +879,13 @@ else
   ok "文件系统与分区表已经一致, 无需补齐"
 fi
 
-mount /mnt/songdisk 2>/dev/null || warn "自动挂载 /mnt/songdisk 失败, 请手动: sudo mount /mnt/songdisk"
-
-# ---- 把挂载点交还给普通用户 ----
+# 挂载 + 交还属主(见 ensure_song_mount 的注释)。
 # 踩过的坑(真机 v1.0.4): mkfs 出来的 ext4 根目录属主是 root:root, 迁移数据时
 # rsync 只搬目录内容(搬运路径自带属主), 盘根 inode 永远是 root —— user 往盘里
 # 下载/搜索时直接报"歌曲分区不可写"。镜像构建期把 rootfs 挂载点 chown 了也
-# 没用: mount 一上, 看到的就是磁盘里的根 inode。这里显式交还, 幂等无害。
+# 没用: mount 一上, 看到的就是磁盘里的根 inode。
 # 镜像是我们自己产的, 普通用户固定 uid=1000(user)。
-if mountpoint -q /mnt/songdisk; then
-  _SONG_OWNER="$(try stat -c '%u:%g' /mnt/songdisk)"
-  [[ "$_SONG_OWNER" == "1000:1000" ]] \
-    || try chown 1000:1000 /mnt/songdisk
-fi
+ensure_song_mount
 
 step "结果"
 df -h / /mnt/songdisk 2>/dev/null | sed 's/^/    /' || true

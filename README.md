@@ -704,6 +704,42 @@ Next.js 应用** —— 这个包自带 draw.io 编辑器和本地预览服务�
 图默认存在 `~/.next-ai-drawio/`；自己写"一律用极简风格"这类规则放进
 同目录的 `instructions.md` 就生效。
 
+### 4i. 查版本：这一版修了什么（`usb-version`）
+
+刷完盘以后，想知道"我刷的是哪一版、这一版修了哪些坑、镜像里有哪些功能"：
+
+```bash
+usb-version              # 版本 + 构建时间 + commit + 本版功能清单
+usb-version --changelog  # 只看这一版的变更记录（修了什么）
+usb-version --all        # 完整变更记录（所有版本）
+usb-version --tools      # 只看功能清单
+usb-version --json       # 机器可读（给脚本或 AI 用）
+```
+
+```
+=== Debian U 盘系统 ===
+  版本      : v1.6.1
+  基线版本  : v1.6.1 (CHANGELOG 里对应这一段)
+  构建时间  : 2026-10-31 04:20:33 UTC
+  commit    : 10dc719
+  发行版    : Debian bookworm · 主机名 debian-usb
+  镜像大小  : 8192 MiB (定长镜像, 写进大 U 盘后会自动扩到整盘)
+
+本版包含的功能:
+  music-shell   0.5.0    终端播放器(music play)
+  netkit        1.1.0    局域网诊断(net topo/probe/fix)
+  opencode      1.19.4   AI 助手(排障/画图/旅游/查票)
+  train         1.1.0    12306 火车票余票
+  travel-planner0.4.7    旅游攻略/高德导航/天气
+  wifit3        0.6.0    USB 无线网卡审计
+  drawio-mcp    0.4.7    draw.io 画图 MCP
+  usb-version   1.0.0    版本与变更记录查询(本命令)
+```
+
+实现：构建期把版本元数据、组件清单和整份 `CHANGELOG.md` 写进镜像的
+`/usr/local/share/debian-usb/`，所以刷完盘就能查 —— 不用回头翻 GitHub。
+组件清单是**按镜像里实际存在的东西**生成的（不是写死的），少装一个组件这张表就会如实反映。
+
 ### 5. 基础命令行工具（以后往里加新功能用）
 
 需求是"以后会再这个 u 盘系统中添加各种新功能，主要是终端命令方面，

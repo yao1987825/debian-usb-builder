@@ -102,6 +102,10 @@ songdisk_check() {
   fi
   if [[ ! -w "$dir" ]]; then
     echo "错误: 歌曲分区不可写: ${dir}" >&2
+    # 为什么会这样: resize2fs 补完文件系统会把文件系统根 inode 的属主重置成
+    # root:root(2026-10-31 真机踩到)。给一条能直接抄的修法, 别让用户自己猜。
+    echo "      修复: sudo usb-grow.sh --fix-mount" >&2
+    echo "      或  : sudo chown 1000:1000 ${dir}" >&2
     return 1
   fi
   return 0
