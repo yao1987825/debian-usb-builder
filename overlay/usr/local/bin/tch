@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+#
+# tch —— 国家中小学智慧教育平台 电子课本下载
+#
+# 查教材 + 下 PDF(统编版/人教版等, 小学到高中, 语文数学英语都有)。
+# 默认游客模式, 不用扫码、不用账号, 命令直接能用。
+#
+# 用法:
+#   tch search -g 四年级 -s 语文 -t 下册      查教材
+#   tch download -g 四年级 -s 语文 -t 下册    下载(多本候选用 --pick N 选)
+#   tch download --id <contentId>             按 ID 下载
+#   tch login / status / logout               登录状态(游客模式一般不用管)
+#
+# 说明:
+#   实现放在 /usr/local/lib/tchtools/(上游 https://github.com/happycola233/tchMaterial-parser
+#   的改造版, 去掉了 GUI 与 Docker 方案, 全部功能走命令行);
+#   依赖: requests / qrcode / pycryptodome / pypdf(镜像里已装);
+#   token 存在 ~/.config/tchMaterial-parser/data.json(仅本机可读);
+#   默认下载到系统临时目录, 想留住记得加 -o 指定目录(临时目录重启就没了)。
+set -uo pipefail
+
+B="$(readlink -f "${BASH_SOURCE[0]}")"
+LIB="$(dirname "${B}")/../lib/tchtools"
+
+if [[ ! -d "${LIB}/src/cli" ]]; then
+  echo "tch: 找不到 ${LIB}/src/cli, 镜像装坏了" >&2
+  exit 127
+fi
+
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "tch: 没有 python3" >&2
+  exit 127
+fi
+
+export PYTHONPATH="${LIB}/src${PYTHONPATH:+:$PYTHONPATH}"
+exec python3 -m cli.__main__ "$@" 2>&1

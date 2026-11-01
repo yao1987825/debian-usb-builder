@@ -298,6 +298,10 @@ FONT_PKGS="fonts-wqy-zenhei"
 #   avahi-utils: avahi-browse 收 mDNS 广播, 能拿到设备真实主机名和服务类型
 #     (打印机/NAS/摄像头/音箱一眼认出来)。
 #   lldpd: lldpcli 读交换机 LLDP 通告, 知道网关背后接的是哪台交换机、什么型号。
+# python3-qrcode / python3-pypdf / python3-pycryptodome: tch(电子课本下载)的依赖
+#   (qrcode = 终端里画登录二维码, pypdf = 给下载的 PDF 加书签,
+#    pycryptodome = 游客登录的 token 加密; 它的 Cryptodome 命名空间正是上游代码
+#    优先 import 的那个 ✓)
 # nodejs/npm: next-ai-draw-io 的 draw.io MCP 服务是 npm 包, 要 node >= 18
 #   (Debian 12 的 nodejs 是 18.19, 满足; 2026-10-30 真机实测 v18.20.4 ✓)
 # libusb-1.0-0: wifit3 的 USB 访问底座(PyInstaller 版其实自带 libusb,
@@ -334,6 +338,7 @@ chroot_run apt-get install -y --no-install-recommends \
   wmctrl xdotool scrot \
   iputils-arping arp-scan ethtool avahi-utils lldpd \
   python3-requests libusb-1.0-0 \
+  python3-qrcode python3-pypdf python3-pycryptodome \
   nodejs npm \
   libasound2 alsa-utils
 
@@ -689,6 +694,9 @@ _c_add() {  # _c_add <名字> <版本> <说明>
   if [[ -x "${ROOTFS}/usr/local/bin/train" ]]; then
     _c_add "train" "1.1.0" "12306 火车票余票"
   fi
+  if [[ -x "${ROOTFS}/usr/local/bin/tch" ]]; then
+    _c_add "tch-material" "1.0.0" "国家中小学平台电子课本下载"
+  fi
   if [[ -x "${ROOTFS}/usr/local/bin/travel" ]]; then
     _c_add "travel-planner" "0.4.7" "旅游攻略/高德导航/天气"
   fi
@@ -820,6 +828,21 @@ grep -q "^sudo:" "${ROOTFS}/etc/group" \
 grep -q "^Package: libusb-1.0-0$" "${ROOTFS}/var/lib/dpkg/status" \
   || warn "缺 libusb-1.0-0 —— wifit3 自带的 libusb 要是被换掉就会起不来"
 ok "无线审计: wifit3 ${WIFIT3_VERSION} 已装入镜像"
+
+# ---- tch(国家中小学智慧教育平台电子课本) ----
+[[ -x "${ROOTFS}/usr/local/bin/tch" ]] \
+  || die "overlay 里缺 /usr/local/bin/tch —— 用户没有下载电子课本的入口"
+for _m in __main__ auth catalog common config download; do
+  [[ -f "${ROOTFS}/usr/local/lib/tchtools/src/cli/${_m}.py" ]] \
+    || die "缺 tchtools/src/cli/${_m}.py —— tch 命令跑不起来"
+done
+for _p in python3-qrcode python3-pypdf python3-pycryptodome; do
+  grep -q "^Package: ${_p}$" "${ROOTFS}/var/lib/dpkg/status" \
+    || die "缺 ${_p} —— tch 的登录/下载/加书签会失败"
+done
+[[ -f "${ROOTFS}/home/${USER_NAME}/.config/opencode/skills/textbook-fetch/SKILL.md" ]] \
+  || die "缺 textbook-fetch 技能 —— AI 不会自己找教材"
+ok "电子课本: tch 命令 + 依赖包 + 技能就位"
 
 # ---- 版本查询(usb-version) ----
 [[ -x "${ROOTFS}/usr/local/bin/usb-version" ]] \

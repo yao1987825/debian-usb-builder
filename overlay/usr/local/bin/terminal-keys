@@ -51,6 +51,7 @@ cat <<'EOF'
 │    wifit3            USB 无线网卡审计(需专用网卡, 见 README 选卡指南)   │
 │    opencode          AI 助手(排障/画图/旅游/查票, 技能已预装)         │
 │    usb-version       查版本/这版修了什么(--changelog 看变更记录)      │
+│    tch search -g 四年级 -s 语文   电子课本查/下载(中小学智慧教育平台)     │
 │    wifi              连无线网(扫描/连接/断开)  wifi status 看状态      │
 │    music screen      按显示器原生分辨率调整                             │
 │    music quark-login 夸克网盘扫码登录(拿 cookie)                       │

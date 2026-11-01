@@ -740,6 +740,29 @@ usb-version --json       # 机器可读（给脚本或 AI 用）
 `/usr/local/share/debian-usb/`，所以刷完盘就能查 —— 不用回头翻 GitHub。
 组件清单是**按镜像里实际存在的东西**生成的（不是写死的），少装一个组件这张表就会如实反映。
 
+### 4j. 电子课本下载（`tch` 命令）
+
+接入了 [tchMaterial-parser](https://github.com/happycola233/tchMaterial-parser) 的
+命令行版：**国家中小学智慧教育平台**（basic.smartedu.cn）的电子课本 PDF ——
+小学到高中、统编版/人教版等，语文数学英语都有。
+
+```bash
+tch search -g 四年级 -s 语文 -t 下册          # 查教材
+tch download -g 四年级 -s 语文 -t 下册 --pick 1 -o ~/textbooks   # 下载
+tch download --id <contentId> -o ~/textbooks  # 按 ID 下载(最准)
+tch status / logout                          # 登录状态
+```
+
+**不用扫码、不用账号** —— 默认游客模式，命令直接能用 ✓（平台网关偶发拒绝时工具会自己重试，实测第 7 轮成功）。
+
+> ⚠️ **下载一定要加 `-o` 指定目录**：默认落在系统临时目录，**重启就没了**。
+> 建议 `~/textbooks`（普通目录），想放到歌曲分区也行：`-o /mnt/songdisk/教材`。
+
+下载完自动按书名命名，并给 PDF **加书签**（可用 `--no-bookmarks` 关掉）。
+实测下载的《义务教育教科书·语文四年级下册》17.9MB / **151 页 / 16 个书签** ✓。
+
+对 AI 来说这是一个 opencode 技能（`textbook-fetch`），你说"帮我找一下四年级语文下册的电子课本"它就会自己查、下载并告诉你文件在哪。
+
 ### 5. 基础命令行工具（以后往里加新功能用）
 
 需求是"以后会再这个 u 盘系统中添加各种新功能，主要是终端命令方面，

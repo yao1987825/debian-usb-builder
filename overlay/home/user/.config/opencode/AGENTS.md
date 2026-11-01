@@ -16,6 +16,7 @@
 | `wifi scan/connect/status` | 无线网卡入口 |
 | `train 北京 上海` | 12306 火车票余票 |
 | `usb-version` | 版本/构建信息/本版功能清单(`--changelog` 看这一版修了什么) |
+| `tch search/download` | 国家中小学智慧教育平台电子课本查/下载(游客模式免登录) |
 | `travel plan/nav/weather` | 旅游攻略/行程规划/高德导航/天气(travel-planner 技能) |
 
 技能(skills)在 `~/.config/opencode/skills/`, 用到时按需加载:

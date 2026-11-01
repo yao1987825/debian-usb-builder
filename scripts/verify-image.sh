@@ -305,6 +305,17 @@ struct_check() {
     done
     ok "netkit 模块齐全(拓扑/发现/检测)"
 
+    # ---- tch(电子课本下载) ----
+    if $SUDO debugfs -R "stat /usr/local/bin/tch" "$p3" 2>/dev/null | grep -q "Inode:"; then
+      ok "电子课本工具已装: /usr/local/bin/tch"
+    else
+      die "缺 /usr/local/bin/tch —— 用户没有下载电子课本的入口"
+    fi
+    if ! $SUDO debugfs -R "stat /usr/local/lib/tchtools/src/cli/__main__.py" "$p3" 2>/dev/null | grep -q "Inode:"; then
+      die "缺 tchtools/src/cli/__main__.py —— tch 命令跑不起来"
+    fi
+    ok "tchtools 模块齐全"
+
     # ---- wifit3(USB 无线网卡审计) ----
     if $SUDO debugfs -R "stat /usr/local/bin/wifit3" "$p3" 2>/dev/null | grep -q "Inode:"; then
       ok "无线审计工具已装: /usr/local/bin/wifit3"

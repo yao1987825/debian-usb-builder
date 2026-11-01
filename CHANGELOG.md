@@ -13,6 +13,40 @@ GitHub Actions 自动构建镜像并发布到 [Releases](https://github.com/yao1
 
 ---
 
+## v1.7.0 (2026-11-01)
+
+- **新增功能: `tch` —— 国家中小学智慧教育平台电子课本下载进镜像**
+
+### 📚 电子课本下载
+
+接入 [tchMaterial-parser](https://github.com/happycola233/tchMaterial-parser) 的命令行版
+(上游去掉 GUI 与 Docker 方案, 全部功能走 `tch` 命令)。
+
+```bash
+tch search -g 四年级 -s 语文 -t 下册                        # 查教材
+tch download -g 四年级 -s 语文 -t 下册 --pick 1 -o ~/textbooks   # 下载
+tch download --id <contentId> -o ~/textbooks               # 按 ID 下载
+```
+
+- **游客模式, 不用扫码不用账号** ✓ —— 平台网关偶发拒绝时工具自己重试
+  (2026-11-01 真机实测: 第 7 轮创建会话成功 ✓);
+- 依赖 `requests` / `qrcode` / `pypdf` / `pycryptodome`(全部 apt 装,
+  `Cryptodome` 命名空间正是上游代码优先 import 的那个 ✓);
+- 下载完自动按书名命名, 并给 PDF 加书签(可关);
+- **下载一定要加 `-o`**: 默认落系统临时目录, 重启就没了 ✓(README 与技能都写了这条);
+- 新增 opencode 技能 `textbook-fetch`: 你说"找一下四年级语文下册的电子课本",
+  AI 自己查、自己下、告诉你文件在哪。
+
+真机端到端验证(2026-11-01):
+
+```
+tch login                -> 游客模式登录成功, token 校验通过 ✓
+tch search -g 四年级 -s 语文 -t 下册 -> 找到 5 本(含统编版/五·四学制/特教) ✓
+tch download --id 53d6315e-... -> 17.9MB ✓ 151 页 ✓ 16 个书签 ✓
+```
+
+---
+
 ## v1.6.2 (2026-10-31)
 
 - **新增功能: `usb-version` —— 刷完盘随时查"这是哪一版、这版修了什么"**
