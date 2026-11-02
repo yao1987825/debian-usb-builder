@@ -100,6 +100,18 @@ case "${1:-daemon}" in
     exit 0
     ;;
   --daemon|daemon) ;;
+  # --help/-h 是"问用法", 不是"用错了": 打用法然后正常退出(0),
+  # 跟绝大多数命令的直觉一致。以前它落在下面的默认分支里, 退出码是 2。
+  -h|--help)
+    echo "用法: terminal-keepalive [--daemon|--status|--pause|--resume|--once]"
+    echo
+    echo "  --daemon   守护主循环(开机自启项用的就是这个)"
+    echo "  --status   看当前状态(桌面上还有几个终端)"
+    echo "  --pause    暂停守护(别再自动开终端)"
+    echo "  --resume   恢复守护"
+    echo "  --once     只检查一次, 不进入守护循环"
+    exit 0
+    ;;
   *) echo "用法: terminal-keepalive [--daemon|--status|--pause|--resume|--once]" >&2; exit 2 ;;
 esac
 

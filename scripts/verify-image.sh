@@ -149,24 +149,53 @@ struct_check() {
     # "按 Shift 没反应", 极难定位 —— 所以直接查文件内容。
     # 路径必须是 Rime 用户目录 ~/.local/share/fcitx5/rime/(真机 v1.0.4 的坑:
     # 配置放在 ~/.config/fcitx5/rime/ 下 Rime 根本不看)。
-    local _rime
+    #
+    # **查活动方案那一份**(2026-11-02 真机实测):
+    # Rime 先加载 ".default" 方案, 再按 schema_list 切到 luna_pinyin_simp,
+    # 之后引擎读的是**切换后**那个方案的配置。所以功能性配置写在
+    # default.custom.yaml 里是**不生效**的 —— 以前这里查的就是那一份,
+    # 断言一直过, 真机按 Shift 没反应。
+    local _rime _rime_schema _rime_dict
     _rime="$($SUDO debugfs -R "cat /home/user/.local/share/fcitx5/rime/default.custom.yaml" "$p3" 2>/dev/null || true)"
     if [[ -z "$_rime" ]]; then
       die "Rime 用户目录里没有 default.custom.yaml(必须在 /home/user/.local/share/fcitx5/rime/), Rime 配置根本没被读到"
     fi
+    _rime_schema="$($SUDO debugfs -R "cat /home/user/.local/share/fcitx5/rime/luna_pinyin_simp.custom.yaml" "$p3" 2>/dev/null || true)"
+    if [[ -z "$_rime_schema" ]]; then
+      die "Rime 用户目录里没有 luna_pinyin_simp.custom.yaml —— 活动方案没有任何配置(Shift 切换/候选词数量/自定义词库全都不生效)"
+    fi
     # 正则里的 "?" 不能省: YAML 的 key 带引号, 冒号前面还有一个引号
-    if grep -qE 'ascii_composer/switch_key/(Shift_L|Shift_R)"?: inline_ascii' <<<"$_rime"; then
-      ok "Rime 的 Shift 切中英文已用扁平键配置(inline_ascii)"
-    elif grep -q 'ascii_composer/switch_key' <<<"$_rime"; then
+    if grep -qE 'ascii_composer/switch_key/(Shift_L|Shift_R)"?: inline_ascii' <<<"$_rime_schema"; then
+      ok "Rime 的 Shift 切中英文已用扁平键配置(inline_ascii, 活动方案)"
+    elif grep -q 'ascii_composer/switch_key' <<<"$_rime_schema"; then
       die "Rime 的 ascii_composer 写成了字符串而不是 键->动作 映射, Shift 永远不会生效"
     else
-      die "Rime 没配 Shift 切中英文(按 Shift 不会有反应)"
+      die "Rime 没配 Shift 切中英文(按 Shift 不会有反应) —— 要配在 luna_pinyin_simp.custom.yaml 里"
     fi
     if grep -q "schema: luna_pinyin_simp" <<<"$_rime"; then
       ok "Rime 已锁定简体方案 luna_pinyin_simp"
     else
       die "Rime 没指定简体方案 luna_pinyin_simp —— 打出来会是繁体字"
     fi
+    # 自定义词库: 挂成副词库 + 文件格式对
+    if ! grep -q '"translator/packs"' <<<"$_rime_schema"; then
+      die "Rime 活动方案里没有 translator/packs —— 自定义词库挂不上去"
+    fi
+    _rime_dict="$($SUDO debugfs -R "cat /home/user/.local/share/fcitx5/rime/user.dict.yaml" "$p3" 2>/dev/null || true)"
+    if [[ -z "$_rime_dict" ]]; then
+      die "Rime 用户目录里没有 user.dict.yaml —— 预置词库没进镜像"
+    fi
+    if ! grep -qx '\.\.\.' <<<"$_rime_dict"; then
+      die "Rime 词库少了 '...' 结束标记 —— Rime 会把整个文件当 YAML 读, 词条一条都上不了屏"
+    fi
+    if grep -qE '^\s*entries:' <<<"$_rime_dict"; then
+      die "Rime 词库用了 entries: 的 YAML 写法 —— Rime 的词库读取器不认"
+    fi
+    _rime_n="$(grep -cP '^[^\s#].*\t' <<<"$_rime_dict" 2>/dev/null || echo 0)"
+    if [[ "${_rime_n:-0}" -lt 50 ]]; then
+      die "Rime 词库只认出 ${_rime_n:-0} 条词条(至少 50 条) —— 词条格式或位置不对"
+    fi
+    ok "Rime 自定义词库就位(${_rime_n} 条词条, 已挂成副词库)"
     if $SUDO debugfs -R "cat /home/user/.xprofile" "$p3" 2>/dev/null | grep -q "GTK_IM_MODULE=fcitx"; then
       ok "已写入 ~/.xprofile 的 IM 环境变量(不依赖 im-config 钩子)"
     else
@@ -358,12 +387,35 @@ struct_check() {
     else
       die "缺 opencode.json 或没放开权限 —— AI 跑不了诊断命令"
     fi
-    for _sk in lan-topology lan-triage lan-repair lan-capture wifi-triage; do
+    # 8 个技能都要查: 以前只查 5 个网络排障的,
+    # diagram-drawio / textbook-fetch / travel-planner 三个**装进镜像了却没人查** ——
+    # 少一个技能, 结构校验照样放行, 用户刷完盘才发现 AI 不会用。
+    for _sk in lan-topology lan-triage lan-repair lan-capture wifi-triage \
+               travel-planner diagram-drawio textbook-fetch; do
       if ! $SUDO debugfs -R "stat /home/user/.config/opencode/skills/${_sk}/SKILL.md" "$p3" 2>/dev/null | grep -q "Inode:"; then
-        die "缺网络排障技能 ${_sk}"
+        die "缺技能 ${_sk} —— AI 少了一块专业知识"
       fi
     done
-    ok "5 个网络排障 skills 已就位"
+    ok "8 个 opencode 技能已就位"
+    # AGENTS.md 是 AI 的"这台机器有什么"清单, 必须提到每个技能和主要命令
+    _agents_md="$($SUDO debugfs -R "cat /home/user/.config/opencode/AGENTS.md" "$p3" 2>/dev/null || true)"
+    if [[ -n "$_agents_md" ]]; then
+      for _sk in travel-planner diagram-drawio textbook-fetch wifit3; do
+        if ! grep -q "$_sk" <<<"$_agents_md"; then
+          die "AGENTS.md 里没提 ${_sk} —— AI 不知道自己有这个"
+        fi
+      done
+      ok "AGENTS.md 提到了新增的技能与命令"
+    else
+      die "镜像里没有 AGENTS.md —— AI 不知道这台机器是干什么的"
+    fi
+    # 以前这几个命令在 verify-image.sh 里一个都没查过 —— 缺了照样过闸
+    for _cmd in travel usb-version keyboard-fix next-ai-drawio-mcp music-im-fix; do
+      if ! $SUDO debugfs -R "stat /usr/local/bin/${_cmd}" "$p3" 2>/dev/null | grep -q "Inode:"; then
+        die "缺 /usr/local/bin/${_cmd} —— 用户没有这个入口"
+      fi
+    done
+    ok "travel / usb-version / keyboard-fix / draw.io MCP 等入口已就位"
 
     # ---- 音频直通 ----
     if $SUDO debugfs -R "stat /usr/local/bin/audio-setup" "$p3" 2>/dev/null | grep -q "Inode:"; then

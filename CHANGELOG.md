@@ -13,7 +13,109 @@ GitHub Actions 自动构建镜像并发布到 [Releases](https://github.com/yao1
 
 ---
 
-## v1.7.0 (2026-11-01)
+## v1.8.0 (2026-11-02)
+
+**一句话：这一版把"写了配置但没生效"和"命令没断言/没文档"这两类集成问题清了一遍。**
+最严重的一个是中文输入法 —— Shift 切换、候选词数量、自定义词库在镜像里**从来没生效过**，
+而构建期的断言一直显示通过。
+
+### 🈶 中文输入法：Shift 切换 / 候选词数量 / 自定义词库全部不生效（已修）
+
+**症状**：刷完盘按 Shift 中英文切换没反应、候选词还是 5 个、
+词库里自己加的 `周杰伦` 出不来。可构建日志里 Rime 断言是**绿的**。
+
+**根因**（查 librime 1.8.5 源码 + 真机实测确认）：
+
+Rime 启动时先加载 `.default` 方案，再由 Switcher 按 `schema_list` 切到
+`luna_pinyin_simp`，**之后**引擎才读切换后方案的配置
+（`src/rime/engine.cc:290`）。所以：
+
+| 文件 | 以前 | 现在 |
+| --- | --- | --- |
+| `default.custom.yaml` | 塞了 Shift 切换 + 候选数 + 词库挂法 → **全部不生效** | 只留 `schema_list`（锁定简体方案） |
+| `luna_pinyin_simp.custom.yaml` | **不存在** | 活动方案的完整功能配置 |
+| 构建断言 | 查 `default.custom.yaml`（断言绿灯，真机没反应） | 查 `luna_pinyin_simp.custom.yaml` |
+
+顺带查出 `user.dict.yaml` **格式本身就是错的**（写成了 YAML 列表 `- 词`）——
+就算配置接对了，词库也解析不出来。已改成 Rime 的正确格式：
+头部 YAML 用一行 `...` 收尾，之后每行 `词<TAB>音节`，71 条词条去重。
+
+另外三个查源码确认的坑，一并记进 README：
+- `translator/dictionary` 是**单个**词典名，不按空格切分；
+  副词库必须用 `translator/packs: [user]`；
+- 词库文件解析 root = `user_data_dir`，所以放
+  `~/.local/share/fcitx5/rime/user.dict.yaml` 位置是对的；
+- 只改词库不改主词库校验和时 librime 不会重编 pack → 真机上要删 `build/` 才生效。
+
+新增回归测试 `scripts/test-rime-config.sh`：查配置**写在哪个文件里**、
+词库格式、packs 挂法、词条数 —— 保证以后不会再"断言绿灯、真机没反应"。
+
+### 🧰 用户会敲的 10 个命令，一个测试都没有（已补）
+
+`overlay/usr/local/bin` 下有 23 个命令，只有 13 个有回归测试。
+另外 10 个恰恰是**开机第一眼就会碰到的那批**：
+`keyboard-fix` `music-im-fix` `net-doctor` `net-rescue` `proxy`
+`screen-fit` `terminal-keepalive` `terminal-new` `terminal-setup` `terminal-welcome`。
+
+终端体系尤其关键：桌面没有面板也没有图标，关掉最后一个终端就只剩黑屏，
+守护脚本是唯一的兜底 —— 它们坏了没人知道。
+
+新增 `scripts/test-commands.sh`，在沙箱里跑（带 `xfce4-terminal`/`xfconf-query`
+桩程序），守三件事：文件在 + 语法对 + **能跑出明确结果**。
+其中两条专门抓"静悄悄地什么都不干"：
+`terminal-new`/`terminal-setup` 在缺 `xfce4-terminal` 时必须**明确报错**，
+不能返回 0 装作成功。
+
+顺带修：`terminal-keepalive -h/--help` 以前落在默认分支、退出码 2，
+现在打用法后正常退出 0。
+
+### 🤖 AI 功能清单：命令表整个缺失、技能表少了 3 个（已补）
+
+- `AGENTS.md` 的技能表只列了 5 个，实际有 8 个 —— 补上
+  `travel-planner` / `diagram-drawio` / `textbook-fetch`；
+- 命令表**整个没有**，AI 不知道这台机器上能敲什么 —— 现在全列；
+- 构建期断言从"文件在"升级为"内容在"（8 个技能 + 13 个命令逐条查）。
+
+### 📋 `usb-version` 补命令清单与技能清单
+
+以前只有"组件清单"一张表，9 个组件里连 `wifi`、`proxy`、`screen-fit`、
+`audio-setup`、`net-doctor` 这些用户天天敲的命令一个都没列 ——
+用户问"我这台机器到底能敲什么"，答不完整。
+
+现在构建期多生成 `commands.txt` / `skills.txt`（按镜像里**实际存在**的东西生成），
+`usb-version` 与 `--json` 都带上。
+
+### 🛠️ 构建脚本修正
+
+- `travel-planner` 组件版本抄错了 `DRAWIO_MCP_VERSION`（0.4.7）——
+  改用独立常量，上游没有版本号时如实显示 `-`，不编；
+- `screen-fit` 断言从 `-f`（存在）改成 `-x`（可执行）；
+- `proxy` 的存在性/语法断言**前移到首次使用之前**（以前用了才查，报错位置莫名其妙）；
+- 新增 `single.py` 存在/可执行/语法断言（音乐下载的核心实现，以前完全没查）；
+- `netkit` 模块清单补 `__init__`；
+- `python3-requests` 加入 tch 依赖断言；
+- `travel-planner` 补 `food_price_scraper.py` + data/ + references/ 共 11 个文件断言；
+- drawio npm 安装改 3 次重试 + 失败即 `die` + 日志保留到 `build/npm-drawio.log`；
+- overlay 拷贝后删除 `__pycache__` / `*.pyc`（脏产物不进镜像）；
+- `verify-image.sh` 技能检查 5 → 8 个，补 AGENTS.md 内容检查，
+  补 `travel` / `usb-version` / `keyboard-fix` / `next-ai-drawio-mcp` / `music-im-fix` 入口检查。
+
+### ✅ CI：写了但从没接进 workflow 的测试（已接）
+
+- `scripts/test-wifit3.sh` —— 文件说明里写着"CI 里跑"，**但 workflow 里没有这一步**，
+  于是 wifit3 的版本钉死 / sha256 / 产物平台 / 提权前提整套断言一次都没在 CI 跑过；
+- 新增 `test-rime-config.sh`、`test-commands.sh` 同步接入。
+
+### 📖 文档
+
+- README 中文输入法章节重写（正确词库格式、两个文件的分工、为什么以前不生效）；
+- README 仓库目录树补全（`scripts/` 下 15 个测试脚本、`overlay/` 下漏掉的
+  `wifi` / `wifit3` / `tch` / `train` / `travel` / `screenshot` / `keyboard-fix` /
+  `next-ai-drawio-mcp` / `usb-version` 等）；
+- `usb-version` 输出示例更新为当前真实输出。
+
+---
+
 
 - **新增功能: `tch` —— 国家中小学智慧教育平台电子课本下载进镜像**
 

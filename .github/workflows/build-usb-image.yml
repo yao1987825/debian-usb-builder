@@ -176,6 +176,18 @@ jobs:
       - name: 电子课本 tch 回归测试
         run: bash scripts/test-tch.sh
 
+      # 2026-11-02: test-wifit3.sh 写的时候说明里写着"CI 里跑", 但**从来没接进 workflow** ——
+      # 于是 wifit3 的版本钉死/sha256/产物平台/提权前提这整套断言一次都没在 CI 里跑过。
+      # 同样的漏接还有 Rime 配置(Shift 切换曾经挂在没人用的方案里, 断言却查的是那一份)。
+      - name: USB 无线网卡审计 wifit3 回归测试
+        run: bash scripts/test-wifit3.sh
+
+      - name: Rime 输入法配置回归测试
+        run: bash scripts/test-rime-config.sh
+
+      - name: 用户命令(终端体系/代理/诊断)回归测试
+        run: bash scripts/test-commands.sh
+
       - name: 构建镜像
         run: |
           # 构建日志同时落一份到 build-image.log: 构建失败时作为 artifact 上传,

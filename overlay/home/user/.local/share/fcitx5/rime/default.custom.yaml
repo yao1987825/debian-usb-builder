@@ -1,44 +1,31 @@
-# Rime 全局配置补丁: 简体拼音 + Shift 切中英文
+# Rime 默认方案(".default")的配置补丁
+#
+# 这个文件只放**给 ".default" 方案**的设置 —— 目前只有 schema_list。
+#
+# 为什么不把 Shift 切换、候选词数量这些放这里
+# ============================================
+#
+# Rime 启动时先加载 ".default" 方案(编译后的 build/default.yaml),
+# 然后由 Switcher 按 schema_list 切到**真正在用的方案**(本镜像是 luna_pinyin_simp);
+# 切换之后, 引擎读的是切换后的那个方案的配置。
+# 也就是说: 写在 default.custom.yaml 里的功能性补丁, 全部留在没人用的
+# ".default" 方案里, 一个都不会生效。
+#
+# 真机实测(2026-11-02): Shift 切中英文、候选词数量曾经全都写在下面这个文件里,
+# 构建期的断言查的也是这个文件 —— 断言一直过, 真机上按 Shift 没反应。
+# 功能性配置现在统一放在 **luna_pinyin_simp.custom.yaml**(同目录),
+# 那里有一份详细的说明, 改配置请改那一份。
 #
 # 位置很关键: fcitx5-rime 的"用户目录"是 ~/.local/share/fcitx5/rime/,
 # 放在 ~/.config/fcitx5/rime/ 下 Rime 根本不看 —— 踩过这个坑:
 # 配置写了很久从没生效过, 表现就是"按 Shift 没反应"。
-# 改完这个文件要重新部署(删 build 目录或重启 fcitx5), 否则还是旧方案。
+# 改完要重新部署(删 build 目录或重启 fcitx5), 否则还是旧方案。
 
 patch:
-  # 候选词数量
-  "menu/page_size": 7
-  # 上屏第一个候选
-  "switcher/select_first": true
-
-  # ---- 左右 Shift 都能切中英文 ----
-  # 必须是扁平写法 "路径/键名": 值; 写成 "ascii_composer/switch_key": "Shift_L"
-  # 是给整个键赋了个字符串, Rime 不认, Shift 永远不会生效。
-  # 动作选 inline_ascii: 预编辑为空时按一下进 ASCII 直写(英文), 再按一下回中文。
-  # 共享 default.yaml 里右 Shift 默认是 commit_text(只提交不切换),
-  # 习惯按右 Shift 的人会觉得"切换不了", 这里左右统一成 inline_ascii。
-  # 注意: Rime 的 ascii_composer 只在"没有预编辑"时才处理 Shift —— 正在打拼音
-  # 想临时切英文, 先按 Esc 清掉预编辑, 再按 Shift。
-  "ascii_composer/switch_key/Shift_L": inline_ascii
-  "ascii_composer/switch_key/Shift_R": inline_ascii
-  # Control 不参与切换, 免得 Ctrl+字母被误吞
-  "ascii_composer/switch_key/Control_L": noop
-  "ascii_composer/switch_key/Control_R": noop
-
-  # ---- CapsLock: 用 Rime 的经典行为, 别自己定义 ----
-  # 真机实测: librime 1.8.5 的默认 yaml 里 good_old_caps_lock 就是 true,
-  # 此时 CapsLock 由 Rime 单独接管 —— **直接切中西文状态**(按一下切, 再按一下回),
-  # 不需要回车, 也不受"有没有预编辑"影响, 是三种切换里最稳的一条。
+  # 只留简体方案: 默认是繁体 luna_pinyin(真机 v1.0.4: 用户打出繁体字),
+  # 镜像里的简繁转换也只对这一套方案生效。
   #
-  # 之前这里写的是 "ascii_composer/switch_key/Caps_Lock": inline_ascii,
-  # 那是多余且有害的: switch_key/Caps_Lock 只在 good_old_caps_lock 为 false
-  # 时才生效, 写了反而把 CapsLock 降级成"临时西文"(要按两次才回来),
-  # 比默认还难用。现在只把 good_old_caps_lock 显式写成 true, 语义写清楚。
-  "ascii_composer/good_old_caps_lock": true
-
-  # ascii_mode 开关显示在 F4 方案菜单里, reset: 0 = 每次启动都是中文
-  "switches/@0/reset": 0
-
-  # 默认使用简体中文方案(luna_pinyin_simp 走简体表, 默认的 luna_pinyin 是繁体)
+  # schema_list 必须留在这个文件里 —— Switcher 是拿 ".default" 方案的配置
+  # 来读它, 并据此决定切到哪个方案。删了这里就没有活动方案了。
   "schema_list":
     - schema: luna_pinyin_simp

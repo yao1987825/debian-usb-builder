@@ -125,6 +125,18 @@ WIFIT3_SHA256="${WIFIT3_SHA256:-b47b42dd3ab3d1e2898b7e281aa06499e2eb9b734dc90dd2
 DRAWIO_MCP_VERSION="${DRAWIO_MCP_VERSION:-0.4.7}"
 NPM_REGISTRY="${NPM_REGISTRY:-https://registry.npmmirror.com}"
 
+# ---- 自己写的组件的版本号(写进 components.txt) ----
+# 以前这些版本号是**散在 components.txt 生成处写死的字面量**, 有两个后果:
+#   1) 改版本号要翻构建脚本找那一行, 容易漏;
+#   2) travel-planner 的版本号"0.4.7"其实是**照抄 DRAWIO_MCP_VERSION**来的 ——
+#      travel-planner 自己根本没有版本号, 那个数字是凭空来的。
+# 现在统一在这里声明, 组件清单只引用变量; 没有版本概念的写 "-" 而不是编一个。
+COMP_VER_NETKIT="${COMP_VER_NETKIT:-1.1.0}"     # 局域网诊断工具(本仓库自写)
+COMP_VER_TRAIN="${COMP_VER_TRAIN:-1.1.0}"       # 火车票查询(本仓库自写, 标准库重写版)
+COMP_VER_TCH="${COMP_VER_TCH:-1.0.0}"           # 电子课本下载(改自 tchMaterial-parser)
+COMP_VER_TRAVEL="${COMP_VER_TRAVEL:--}"         # 旅游攻略技能: 上游没有版本号, 不编
+COMP_VER_USBVERSION="${COMP_VER_USBVERSION:-1.0.0}"
+
 
 BUILD_DIR="${BUILD_DIR:-${REPO_DIR}/build}"
 OUT_DIR="${OUT_DIR:-${REPO_DIR}/out}"
@@ -636,23 +648,52 @@ log "wifit3 ${WIFIT3_VERSION} 已装入镜像 /usr/local/bin/wifit3"
 #   opencode mcp list -> "✓ drawio connected" ✓
 log "draw.io MCP: 安装 @next-ai-drawio/mcp-server@${DRAWIO_MCP_VERSION}"
 _mcp_tmp="$(mktemp -d)"
-if ! chroot_run npm install -g --prefix /usr/local \
-      --registry="${NPM_REGISTRY}" \
-      "@next-ai-drawio/mcp-server@${DRAWIO_MCP_VERSION}" \
-      >"${_mcp_tmp}/npm.log" 2>&1; then
-  warn "draw.io MCP 安装失败(详见 ${_mcp_tmp}/npm.log 的末尾), 继续构建"
-else
-  ok "draw.io MCP 已装入镜像"
+# npm 源偶尔抽风。直接失败就 die 的话, 一次网络抖动能把 90 分钟的构建整个废掉,
+# 所以先重试几次; 但重试完还不行就必须 die ——
+#
+# 以前这里是 warn("继续构建"), 200 多行之后又 die("缺 next-ai-drawio-mcp"),
+# 两句话自相矛盾: 前面承诺"其余功能不受影响", 后面直接判死, 而且报错指向
+# "缺文件", 真正的原因(装不上)在 200 行前就被 warn 掉了, 排查只能靠猜。
+# 而且 npm.log 那时候已经被 rm 掉了, 连日志都没留下。
+_mcp_ok=0
+for _mcp_try in 1 2 3; do
+  if chroot_run npm install -g --prefix /usr/local \
+        --registry="${NPM_REGISTRY}" \
+        "@next-ai-drawio/mcp-server@${DRAWIO_MCP_VERSION}" \
+        >"${_mcp_tmp}/npm.log" 2>&1; then
+    _mcp_ok=1
+    break
+  fi
+  warn "draw.io MCP 安装失败(第 ${_mcp_try}/3 次), 60 秒后重试"
+  sleep 60
+done
+if [[ "$_mcp_ok" -ne 1 ]]; then
+  # 日志留下: 构建失败时构建日志会作为 artifact 上传, 这里再单独留一份 npm 日志,
+  # 免得在几百行构建日志里翻 npm 的报错。
+  cp "${_mcp_tmp}/npm.log" "${BUILD_DIR}/npm-drawio.log" 2>/dev/null || true
+  tail -30 "${_mcp_tmp}/npm.log" >&2 2>/dev/null || true
+  rm -rf "${_mcp_tmp}"
+  die "draw.io MCP 装不上(重试 3 次仍失败) —— 画图功能是镜像的既定功能, 不能带病放行。完整日志见 ${BUILD_DIR}/npm-drawio.log"
 fi
 rm -rf "${_mcp_tmp}"
 [[ -x "${ROOTFS}/usr/local/bin/next-ai-drawio-mcp" ]] \
-  || warn "镜像里没有 next-ai-drawio-mcp —— draw.io 画图功能不可用(其余功能不受影响)"
+  || die "npm 装完了但镜像里没有 next-ai-drawio-mcp —— draw.io 画图功能不可用"
+ok "draw.io MCP 已装入镜像"
 
 ####################### 第 4 步: overlay 文件与用户配置 #######################
 step "4/9 写入 overlay(输入法/快捷脚本/桌面配置)"
 if [[ -d "${REPO_DIR}/overlay" ]]; then
   cp -a "${REPO_DIR}/overlay/." "${ROOTFS}/"
 fi
+
+# Python 缓存目录不能进镜像。
+# .gitignore 挡住了提交, 但 cp -a 是**照搬整个目录**, 挡不住 —— 本地跑过
+# 一次 python 就会在 overlay 里留下 __pycache__/, 带着上次调试的 .pyc 一起进镜像。
+# 三个坏处: 镜像里多一堆垃圾; .pyc 的字节码版本比镜像里的 Python 新时会被忽略
+# (bookworm 是 3.11, 本地是 3.13), 留着纯属误导; 万一版本刚好对上, 改过的
+# .py 会被旧字节码盖住, 排查起来能疯掉。
+find "${ROOTFS}" -type d -name '__pycache__' -prune -exec rm -rf {} + 2>/dev/null || true
+find "${ROOTFS}" -type f -name '*.pyc' -delete 2>/dev/null || true
 
 # Windows 上 git 可能没记录执行位, 这里统一补上。
 # **必须紧跟在 overlay 拷贝之后**: 后面所有 "[[ -x ... ]]" 的断言都依赖这个执行位。
@@ -695,19 +736,19 @@ _c_add() {  # _c_add <名字> <版本> <说明>
     _c_add "music-shell" "${MUSIC_SHELL_VERSION}" "终端播放器(music play)"
   fi
   if [[ -x "${ROOTFS}/usr/local/bin/net" ]]; then
-    _c_add "netkit" "1.1.0" "局域网诊断(net topo/probe/fix)"
+    _c_add "netkit" "${COMP_VER_NETKIT}" "局域网诊断(net topo/probe/fix)"
   fi
   if [[ -x "${ROOTFS}/usr/local/lib/opencode/opencode" ]]; then
     _c_add "opencode" "${OPENCODE_VERSION}" "AI 助手(排障/画图/旅游/查票)"
   fi
   if [[ -x "${ROOTFS}/usr/local/bin/train" ]]; then
-    _c_add "train" "1.1.0" "12306 火车票余票"
+    _c_add "train" "${COMP_VER_TRAIN}" "12306 火车票余票"
   fi
   if [[ -x "${ROOTFS}/usr/local/bin/tch" ]]; then
-    _c_add "tch-material" "1.0.0" "国家中小学平台电子课本下载"
+    _c_add "tch-material" "${COMP_VER_TCH}" "国家中小学平台电子课本下载"
   fi
   if [[ -x "${ROOTFS}/usr/local/bin/travel" ]]; then
-    _c_add "travel-planner" "0.4.7" "旅游攻略/高德导航/天气"
+    _c_add "travel-planner" "${COMP_VER_TRAVEL}" "旅游攻略/高德导航/天气"
   fi
   if [[ -x "${ROOTFS}/usr/local/bin/wifit3" ]]; then
     _c_add "wifit3" "${WIFIT3_VERSION}" "USB 无线网卡审计"
@@ -716,15 +757,41 @@ _c_add() {  # _c_add <名字> <版本> <说明>
     _c_add "drawio-mcp" "${DRAWIO_MCP_VERSION}" "draw.io 画图 MCP"
   fi
   if [[ -x "${ROOTFS}/usr/local/bin/usb-version" ]]; then
-    _c_add "usb-version" "1.0.0" "版本与变更记录查询(本命令)"
+    _c_add "usb-version" "${COMP_VER_USBVERSION}" "版本与变更记录查询(本命令)"
   fi
 } > "${ROOTFS}/usr/local/share/debian-usb/components.txt"
+
+# 命令清单: components.txt 列的是"装了哪些组件", 但用户真正会敲的是**命令**。
+# 以前 components.txt 只列了 9 个组件, wifi/proxy/screen-fit/audio-setup/
+# net-doctor/net-rescue/music-health/music-im-fix/screenshot/keyboard-fix/music/
+# terminal-* 这些用户天天用的命令一个都没列 —— "usb-version --tools 说这套镜像
+# 有什么功能"这个问题, 答得并不完整。
+# 这里按**镜像里实际存在的可执行文件**生成, 少一个就少一个, 不会骗人。
+{
+  _bin_dir="${ROOTFS}/usr/local/bin"
+  if [[ -d "$_bin_dir" ]]; then
+    find "$_bin_dir" -maxdepth 1 -type f -perm -u+x -printf '%f\n' 2>/dev/null | sort
+  fi
+} > "${ROOTFS}/usr/local/share/debian-usb/commands.txt"
+
+# 技能清单: opencode 的技能也属于"这套镜像有什么", 一并列出来
+{
+  _sk_dir="${ROOTFS}/home/${USER_NAME}/.config/opencode/skills"
+  if [[ -d "$_sk_dir" ]]; then
+    find "$_sk_dir" -mindepth 2 -maxdepth 2 -name 'SKILL.md' -printf '%h\n' 2>/dev/null |
+      sed 's|.*/||' | sort
+  fi
+} > "${ROOTFS}/usr/local/share/debian-usb/skills.txt"
 
 if [[ -f "${REPO_DIR}/CHANGELOG.md" ]]; then
   cp "${REPO_DIR}/CHANGELOG.md" "${ROOTFS}/usr/local/share/debian-usb/CHANGELOG.md"
 fi
 [[ -f "${ROOTFS}/usr/local/share/debian-usb/components.txt" ]] \
   || die "组件清单没生成 —— usb-version 会显示不出功能"
+[[ -s "${ROOTFS}/usr/local/share/debian-usb/commands.txt" ]] \
+  || die "命令清单没生成 —— usb-version 显示不出有哪些命令"
+[[ -s "${ROOTFS}/usr/local/share/debian-usb/skills.txt" ]] \
+  || die "技能清单没生成 —— usb-version 显示不出有哪些 AI 技能"
 [[ -x "${ROOTFS}/usr/local/bin/usb-version" ]] \
   || die "overlay 里缺 /usr/local/bin/usb-version —— 用户没法查版本"
 log "版本信息已写入镜像: ${BUILDER_VERSION} (${BUILD_SHA})"
@@ -776,7 +843,9 @@ ok "无线: 固件齐备 + polkit 放行 + 开机自动解锁 + wifi 命令就�
   || die "overlay 里缺 /usr/local/bin/net —— 用户没有局域网诊断入口"
 [[ -f "${ROOTFS}/usr/local/lib/netkit/cli.py" ]] \
   || die "缺 netkit/cli.py —— net 命令跑不起来"
-for _m in util netinfo devclass discover topo probe; do
+# __init__.py 也要在清单里: 少了它, `import netkit.xxx` 这种写法直接报错
+# (traintools/tchtools 的清单里都有它, 这里以前漏了)。
+for _m in __init__ util netinfo devclass discover topo probe; do
   [[ -f "${ROOTFS}/usr/local/lib/netkit/${_m}.py" ]] \
     || die "缺 netkit/${_m}.py —— 拓扑/检测功能不完整"
 done
@@ -840,7 +909,9 @@ for _m in __main__ auth catalog common config download; do
   [[ -f "${ROOTFS}/usr/local/lib/tchtools/src/cli/${_m}.py" ]] \
     || die "缺 tchtools/src/cli/${_m}.py —— tch 命令跑不起来"
 done
-for _p in python3-qrcode python3-pypdf python3-pycryptodome; do
+# requests 是 tch 的**硬依赖**(tchtools/src/cli/common.py 里 import requests),
+# 漏了它的话 tch 一跑就 ImportError —— 所以不能只查 qrcode/pypdf/pycryptodome。
+for _p in python3-requests python3-qrcode python3-pypdf python3-pycryptodome; do
   grep -q "^Package: ${_p}$" "${ROOTFS}/var/lib/dpkg/status" \
     || die "缺 ${_p} —— tch 的登录/下载/加书签会失败"
 done
@@ -889,6 +960,19 @@ grep -q "^AMAP_KEY=" "${_TS}/.env" \
   || die "travel-planner 的 .env 里没有 AMAP_KEY —— 导航/天气都用不了"
 [[ -x "${ROOTFS}/usr/local/bin/travel" ]] \
   || die "overlay 里缺 /usr/local/bin/travel —— 用户没有旅游规划的入口"
+# 价格抓取脚本: `travel price` 直接调它。之前只断言了 amap_nav.py/generate_plan.py,
+# 这个脚本没了 travel price 就静悄悄地不干活。
+[[ -f "${_TS}/scripts/food_price_scraper.py" ]] \
+  || die "travel-planner 技能里缺 food_price_scraper.py —— travel price 没得用"
+# 技能的资料库与数据: 5 个城市的景点库、88 条小红书笔记、价格历史 ——
+# 这些是 AI 答得准不准的底料, 少一份 AI 就少一分依据, 必须在构建期卡住。
+for _f in data/latest_prices.json data/latest_summary.md data/price_history.json \
+          references/amap_api.md references/cities_attractions.md references/food_guide.md \
+          references/money_saving.md references/travel_api.md references/travel_schema.md \
+          references/xiaohongshu_all_cities.md references/xiaohongshu_qingyuan.md; do
+  [[ -s "${_TS}/${_f}" ]] \
+    || die "travel-planner 技能里缺 ${_f} —— AI 的旅游资料不全"
+done
 # 脚本要能读到 key: 不能只依赖 python-dotenv(镜像不装它), 必须自己解析 .env
 grep -q "_load_env_file" "${_TS}/scripts/amap_nav.py" \
   || die "amap_nav.py 没有自己解析 .env —— 从别的目录跑会读不到 AMAP_KEY"
@@ -913,6 +997,24 @@ grep -q '"bash": "allow"' "$_oc_cfg" || die "opencode.json 没放开 bash 权限
 for _sk in lan-topology lan-triage lan-repair lan-capture wifi-triage; do
   [[ -f "${ROOTFS}/home/${USER_NAME}/.config/opencode/skills/${_sk}/SKILL.md" ]] \
     || die "缺网络排障技能 ${_sk} —— AI 少了这块专业知识"
+done
+# ---- AGENTS.md 是 AI 的"这台机器有什么"清单, 必须跟镜像里的实际内容对得上 ----
+# 只断言"文件在"是不够的: 之前 diagram-drawio 和 textbook-fetch 两个技能装进镜像了,
+# 技能目录里也有, 但 AGENTS.md 里一个字都没提 —— AI 不知道自己有这两样本事,
+# 用户得自己点名它才会用。同理 wifit3/proxy/screen-fit 这些命令也不在清单里。
+# 所以这里逐个核对: 技能和用户会敲的命令, AGENTS.md 里必须都提到。
+_AGENTS_MD="${ROOTFS}/home/${USER_NAME}/.config/opencode/AGENTS.md"
+for _sk in lan-topology lan-triage lan-repair lan-capture wifi-triage \
+           travel-planner diagram-drawio textbook-fetch; do
+  [[ -f "${ROOTFS}/home/${USER_NAME}/.config/opencode/skills/${_sk}/SKILL.md" ]] \
+    || die "缺技能 ${_sk} —— 技能目录里没有"
+  grep -q "${_sk}" "$_AGENTS_MD" \
+    || die "AGENTS.md 里没提技能 ${_sk} —— AI 不知道自己有这本经, 不会主动用"
+done
+for _cmd in net wifi wifit3 proxy train tch travel music screen-fit screenshot \
+            keyboard-fix usb-version usb-grow.sh; do
+  grep -q "${_cmd}" "$_AGENTS_MD" \
+    || die "AGENTS.md 里没提命令 ${_cmd} —— AI 不知道用户能敲这个"
 done
 # root 也要有一份: 用户为了 sudo 免密经常直接 `sudo opencode`,
 # 而 opencode 的全局配置按 $HOME 找 —— root 的 HOME 是 /root, 不复制过去的话
@@ -962,6 +1064,14 @@ fi
 printf 'PROXY_URL="%s"\n' "${PROXY_URL_DEFAULT}" > "${ROOTFS}/etc/proxy.conf"
 chmod 0644 "${ROOTFS}/etc/proxy.conf"
 # 模板只从 proxy 脚本本身取(proxy --print-profile-d), 两边各写一份迟早会写岔
+#
+# proxy 是**这里第一次被用到**, 所以它的存在性/可执行位/语法必须**在用之前**查 ——
+# 之前它的 bash -n 检查排在 150 行之后, 脚本一旦缺失, 构建会在这里报
+# "proxy --print-profile-d 生成失败", 报错指向生成器, 真正的原因(文件没了)被掩盖了。
+[[ -x "${ROOTFS}/usr/local/bin/proxy" ]] \
+  || die "overlay 里缺 /usr/local/bin/proxy(或没有执行位) —— 预置代理没法生成"
+bash -n "${ROOTFS}/usr/local/bin/proxy" \
+  || die "overlay 里 proxy 语法错误 —— 预置代理没法生成"
 "${ROOTFS}/usr/local/bin/proxy" --print-profile-d "${PROXY_URL_DEFAULT}" \
   > "${ROOTFS}/etc/profile.d/99-proxy.sh" \
   || die "proxy --print-profile-d 生成失败"
@@ -1015,7 +1125,10 @@ fi
 
 # ---- 显示分辨率: 每次图形登录自动匹配每块屏的原生分辨率 ----
 [[ -x "${ROOTFS}/usr/bin/xrandr" ]] || die "xrandr 没装上, screen-fit 无法工作(x11-xserver-utils)"
-[[ -f "${ROOTFS}/usr/local/bin/screen-fit" ]] || die "overlay 里缺 screen-fit"
+# 必须用 -x 而不是 -f: autostart 里是 Exec=/usr/local/bin/screen-fit --restore,
+# 文件没有执行位的话 XFCE 只会往日志里记一行 "Failed to execute", 用户屏幕上
+# 一点提示都没有 —— 开机自动匹配分辨率就这么静悄悄地不生效了。
+[[ -x "${ROOTFS}/usr/local/bin/screen-fit" ]] || die "overlay 里缺 screen-fit(或没有执行位)"
 [[ -f "${ROOTFS}/usr/local/lib/screentools/fit.py" ]] || die "overlay 里缺 fit.py"
 # debootstrap 的 minbase 不保证有 /etc/xdg/autostart, 直接 cat 会 "No such file or directory"
 mkdir -p "${ROOTFS}/etc/xdg/autostart"
@@ -1069,6 +1182,21 @@ for _panel in xfce4-panel xfdesktop4; do
   fi
 done
 ok "桌面已精简: 无面板、无桌面图标, 登录后直接进终端"
+
+# ---- 下载器内核(single.py) ----
+# single.py 是 `music single` 的命根子 —— 整个 U 盘存在的理由就是它。
+# 之前它只有一句 "chmod 0755 ... || true": 文件不在的时候 chmod 静默失败,
+# 构建照样过, 用户刷完盘敲 `music single` 才报 "can't open file"。
+# overlay/usr/local/bin/music 里也没有存在性检查, 运行时同样不拦。
+# 所以这里必须硬断言。
+SP="${ROOTFS}/usr/local/lib/musictools/single.py"
+[[ -f "$SP" ]] || die "overlay 里缺 single.py —— music single 直接跑不起来(整个 U 盘的核心功能)"
+[[ -x "$SP" ]] || die "single.py 没有执行位 —— music single 会报权限错误"
+if python3 -c "import ast,sys; ast.parse(open(sys.argv[1], encoding='utf-8').read())" "$SP"; then
+  ok "下载器内核 single.py 在位且语法正确"
+else
+  die "single.py 有语法错误 —— music single 跑不起来"
+fi
 
 # 夸克扫码登录: URL 拼接 / 状态码解析 / cookie 提取与打码 / 配置写回
 # 全部是纯逻辑, 不联网就能测。真实接口在开发期人工实测过(拿到真 token、
@@ -1128,8 +1256,19 @@ log "镜像内脚本语法检查通过"
 # 真机表现是"按 Shift 没反应", 根本看不出是配置问题。所以直接检查内容。
 # 路径必须是 Rime 的"用户目录" ~/.local/share/fcitx5/rime/ —— 放在
 # ~/.config/fcitx5/rime/ 下 Rime 根本不看(真机 v1.0.4 的坑: 配置从没生效)。
-RIME_CFG="${ROOTFS}/home/${USER_NAME}/.local/share/fcitx5/rime/default.custom.yaml"
+#
+# **查哪个文件**(2026-11-02 真机实测踩出来的):
+# Rime 启动时先加载 ".default" 方案, 再由 Switcher 按 schema_list 切到
+# luna_pinyin_simp; 之后引擎读的是**切换后**那个方案的配置。
+# 所以 default.custom.yaml 里的功能性补丁全都落在没人用的方案里, 一个都不生效。
+# 功能性配置必须在 luna_pinyin_simp.custom.yaml 里 —— 断言必须查那一份,
+# 否则就是"断言一直过、真机上一个都不生效"(踩过)。
+RIME_DIR="${ROOTFS}/home/${USER_NAME}/.local/share/fcitx5/rime"
+RIME_CFG="${RIME_DIR}/default.custom.yaml"
+RIME_SCHEMA_CFG="${RIME_DIR}/luna_pinyin_simp.custom.yaml"
 [[ -f "$RIME_CFG" ]] || die "Rime 配置缺失: ${RIME_CFG}(必须在 Rime 用户目录里)"
+[[ -f "$RIME_SCHEMA_CFG" ]] \
+  || die "Rime 活动方案的配置缺失: ${RIME_SCHEMA_CFG} —— Shift 切换/候选词数量/自定义词库全都挂在这个文件上, 缺了等于没配"
 # 拼音词库必须真实存在: default.custom.yaml 要求 luna_pinyin_simp 方案,
 # 但 --no-install-recommends 不会带 rime-data-luna-pinyin(见上面装包注释),
 # 词库缺失时 Rime 部署失败, 整个镜像一个中文字都打不出来 —— 构建期就拦下。
@@ -1144,19 +1283,50 @@ ok "Rime 方案已锁定为简体 luna_pinyin_simp"
 # 冒号**前面还有一个引号**。原来的正则写成 (Shift_L|Shift_R): inline_ascii
 # 少了这个引号, 永远匹配不上, 于是掉进 elif 分支直接 die ——
 # v1.0.5 的构建就是这么挂的(镜像其实一次都没构建成功过)。
-if grep -qE 'ascii_composer/switch_key/(Shift_L|Shift_R)"?: inline_ascii' "$RIME_CFG"; then
-  ok "Rime Shift 切换中英文已用扁平键配置(inline_ascii)"
-elif grep -q 'ascii_composer/switch_key' "$RIME_CFG"; then
+#
+# 查的是 luna_pinyin_simp.custom.yaml —— **活动方案**的补丁文件。
+# 查 default.custom.yaml 的话, 断言永远过, 但真机上一个都不生效(2026-11-02 实测)。
+if grep -qE 'ascii_composer/switch_key/(Shift_L|Shift_R)"?: inline_ascii' "$RIME_SCHEMA_CFG"; then
+  ok "Rime Shift 切换中英文已用扁平键配置(inline_ascii, 活动方案)"
+elif grep -q 'ascii_composer/switch_key' "$RIME_SCHEMA_CFG"; then
   die "Rime 的 ascii_composer 写成了字符串而不是 键->动作 映射, Shift 永远不会生效"
 else
-  die "Rime 没配 Shift 切中英文(按 Shift 不会有反应)"
+  die "Rime 没配 Shift 切中英文(按 Shift 不会有反应) —— 要配在 luna_pinyin_simp.custom.yaml 里"
 fi
 # CapsLock 作为第二条切换路(Shift 失灵时的备份)
-if grep -q 'ascii_composer/good_old_caps_lock' "$RIME_CFG"; then
+if grep -q 'ascii_composer/good_old_caps_lock' "$RIME_SCHEMA_CFG"; then
   ok "Rime 另配了 CapsLock 切换键(good_old_caps_lock)"
 else
   warn "Rime 没配 CapsLock 切换键(Shift 失灵时只能靠 Ctrl+Space / music im-toggle)"
 fi
+
+# ---- 自定义词库(user.dict.yaml) ----
+# 用户词条必须挂成**副词库**(translator/packs), 挂在 translator/dictionary 上没用:
+# librime 1.8.5 的 DictionaryComponent::Create 把 translator/dictionary 当成
+# **一个**词典名(不按空格切分), 写成 "luna_pinyin user" 它会去找一个叫
+# "luna_pinyin user.dict.yaml" 的文件, 找不到就直接编译失败, 整个方案部署挂掉。
+RIME_DICT="${RIME_DIR}/user.dict.yaml"
+[[ -f "$RIME_DICT" ]] || die "Rime 自定义词库缺失: ${RIME_DICT}"
+grep -q '"translator/packs"' "$RIME_SCHEMA_CFG" \
+  || die "Rime 活动方案里没有 translator/packs —— 自定义词库挂不上去(挂在了 default.custom.yaml 上的话不会生效)"
+# packs 的值必须就是 user(用 awk 取 packs 下面第一行, 避免 grep -A 抓到别处)
+if ! awk '/"translator\/packs"/ {getline; gsub(/^[ \t]+|[ \t]+$/,""); sub(/^-[ \t]*/,""); print; exit}' "$RIME_SCHEMA_CFG" | grep -qx 'user'; then
+  die "Rime 的 translator/packs 里没有 user —— 自定义词库没被挂成副词库"
+fi
+# 词库文件本身的格式: Rime 读 .dict.yaml 时, 头部 YAML 读到一行 "..." 为止,
+# 之后的行才是词条(词<TAB>音节)。没有 "..." 它会把整个文件当 YAML 解析,
+# 词条一条都读不到; 词条写成 "- 词<TAB>音节" 会被读成 "- 词" 这种带破折号的垃圾。
+grep -qx '\.\.\.' "$RIME_DICT" \
+  || die "Rime 词库 ${RIME_DICT} 少了 YAML 结束标记 '...' —— Rime 会把整个文件当 YAML 读, 词条一条都上不了屏"
+if grep -qE '^\s*entries:' "$RIME_DICT"; then
+  die "Rime 词库 ${RIME_DICT} 用了 entries: 的 YAML 写法 —— Rime 的词库读取器不认, 要写成 '词<TAB>音节' 每行一个"
+fi
+# 词条数下限: 少于这个数说明文件被改坏了(或者词条写在了 "..." 前面)
+# 用 awk 而不是 grep -P: \t 在 POSIX 正则里的含义不统一, 换环境就废。
+_rime_entries="$(awk -F'\t' '!/^[[:space:]]*#/ && NF>=2 && $1 !~ /^[[:space:]]/ {n++} END {print n+0}' "$RIME_DICT")"
+[[ "$_rime_entries" -ge 50 ]] \
+  || die "Rime 词库里只认出 ${_rime_entries} 条词条(至少要 50 条) —— 词条格式或位置不对"
+ok "Rime 自定义词库: ${_rime_entries} 条词条, 已挂成副词库(packs: user)"
 
 # ---- 终端体系(真机反馈: 标签页快捷键不明 / 关光后黑屏 / Ctrl+Alt+T 盖屏) ----
 # 这几项直接决定"小白能不能用", 缺了就卡构建, 别等刷完盘才发现。

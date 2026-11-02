@@ -1,0 +1,85 @@
+# Rime **活动方案**(luna_pinyin_simp)的配置补丁
+#
+# 为什么必须有这个文件, 而不能只改 default.custom.yaml
+# =====================================================
+#
+# Rime 启动时的流程(见 librime 1.8.5 src/rime/engine.cc):
+#
+#     void ConcreteEngine::InitializeComponents() {
+#       ...
+#       if (auto switcher = New<Switcher>(this)) {
+#         processors_.push_back(switcher);
+#         if (schema_->schema_id() == ".default") {        // <- 先是 ".default" 方案
+#           if (Schema* schema = switcher->CreateSchema()) {
+#             schema_.reset(schema);                       // <- 再切到 schema_list 里选中的方案
+#           }
+#         }
+#       }
+#       Config* config = schema_->config();               // <- 后面所有组件读的是**切换后**的配置
+#
+# 也就是说:
+#   * 引擎先加载 ".default" 方案(编译后的 build/default.yaml),
+#     default.custom.yaml 的补丁全部落在它身上;
+#   * 然后 Switcher 按 schema_list 切到真正在用的方案 —— 本镜像是 luna_pinyin_simp;
+#   * 之后引擎用的配置来自 **build/luna_pinyin_simp.schema.yaml**,
+#     也就是只有 luna_pinyin_simp.custom.yaml 的补丁会进到它里面。
+#
+# 踩过的坑(2026-11-02 真机实测):
+#   Shift 切中英文、候选词数量这些配置**全都**写在 default.custom.yaml 里,
+#   构建期的断言查的也是那个文件 —— 断言一直过, 真机上却一个都不生效,
+#   症状是"按 Shift 没反应"。原因是它们根本没进到活动方案里。
+#   同理, 自定义词库挂不上去, 也是因为挂错了地方。
+#
+# 所以规矩是:
+#   default.custom.yaml      —— 只放 schema_list(以及给 ".default" 方案的设置)
+#   <方案 id>.custom.yaml    —— 放**功能性**配置(本文件)
+#
+# 位置也很关键: fcitx5-rime 的"用户目录"是 ~/.local/share/fcitx5/rime/,
+# 放在 ~/.config/fcitx5/rime/ 下 Rime 根本不看。
+# 改完这个文件要重新部署(删掉 build 目录或重启 fcitx5), 否则还是旧方案。
+
+patch:
+  # 候选词数量
+  "menu/page_size": 7
+
+  # ---- 左右 Shift 都能切中英文 ----
+  # 必须是扁平写法 "路径/键名": 值; 写成 "ascii_composer/switch_key": "Shift_L"
+  # 是给整个键赋了个字符串, Rime 不认, Shift 永远不会生效。
+  # 动作选 inline_ascii: 预编辑为空时按一下进 ASCII 直写(英文), 再按一下回中文。
+  # 共享 default.yaml 里右 Shift 默认是 commit_text(只提交不切换),
+  # 习惯按右 Shift 的人会觉得"切换不了", 这里左右统一成 inline_ascii。
+  # 注意: Rime 的 ascii_composer 只在"没有预编辑"时才处理 Shift —— 正在打拼音
+  # 想临时切英文, 先按 Esc 清掉预编辑, 再按 Shift。
+  "ascii_composer/switch_key/Shift_L": inline_ascii
+  "ascii_composer/switch_key/Shift_R": inline_ascii
+  # Control 不参与切换, 免得 Ctrl+字母被误吞
+  "ascii_composer/switch_key/Control_L": noop
+  "ascii_composer/switch_key/Control_R": noop
+
+  # ---- CapsLock: 用 Rime 的经典行为, 别自己定义 ----
+  # 真机实测: librime 1.8.5 的默认 yaml 里 good_old_caps_lock 就是 true,
+  # 此时 CapsLock 由 Rime 单独接管 —— **直接切中西文状态**(按一下切, 再按一下回),
+  # 不需要回车, 也不受"有没有预编辑"影响, 是三种切换里最稳的一条。
+  #
+  # 之前这里写的是 "ascii_composer/switch_key/Caps_Lock": inline_ascii,
+  # 那是多余且有害的: switch_key/Caps_Lock 只在 good_old_caps_lock 为 false
+  # 时才生效, 写了反而把 CapsLock 降级成"临时西文"(要按两次才回来),
+  # 比默认还难用。现在只把 good_old_caps_lock 显式写成 true, 语义写清楚。
+  "ascii_composer/good_old_caps_lock": true
+
+  # ascii_mode 开关显示在 F4 方案菜单里, reset: 0 = 每次启动都是中文
+  "switches/@0/reset": 0
+
+  # ---- 自定义词库 ----
+  # 把 user.dict.yaml 挂成**副词库**(pack), 与主词库 luna_pinyin 合并后一起查。
+  #
+  # 为什么是 packs 而不是把 translator/dictionary 写成 "luna_pinyin user":
+  # librime 1.8.5 的 DictionaryComponent::Create 把 translator/dictionary 当成
+  # **一个**词典名(不是空格分隔的列表), 写成 "luna_pinyin user" 它会去找
+  # 一个叫 "luna_pinyin user.dict.yaml" 的文件, 找不到就直接编译失败,
+  # 整个方案的部署都会挂掉。副词库的正确挂法就是 packs。
+  #
+  # 词条文件在 ~/.local/share/fcitx5/rime/user.dict.yaml(与本文件同目录),
+  # 格式要求见那个文件自己的注释。
+  "translator/packs":
+    - user

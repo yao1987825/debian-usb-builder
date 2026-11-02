@@ -218,32 +218,77 @@ usb-grow.sh --self-test        # 认分区逻辑自测(构建期也会自动跑�
 - 默认已配置好 Fcitx5 + Rime 简体拼音，`Ctrl+Space` 切换输入法，`Shift` 切中英文。
 - 镜像里已经预置了 70 多条歌手/歌名词库（`周杰伦`、`五月天`、`夜曲`…），
   打 `zhoujielun` 就能出「周杰伦」。
-- 想加自己的词：编辑 `~/.local/share/fcitx5/rime/user.dict.yaml`，格式是
-  `词语<TAB>拼音编码`（编码用空格分音节）：
+- 想加自己的词：编辑 `~/.local/share/fcitx5/rime/user.dict.yaml`。
+  **词库格式不是 YAML 列表**，而是 Rime 的 `.dict.yaml` 约定：头部 YAML 用一行
+  `...` 收尾，之后每行一个词条，词和拼音之间是**一个 Tab**：
 
-  ```yaml
-  entries:
-    - 我的歌单	m wo ge dan
+  ```
+  name: user
+  version: "0.1"
+  sort: by_weight
+  use_preset_vocabulary: true
+  ...
+
+  我的歌单	m wo ge dan
   ```
 
-  保存后 Fcitx5 的 Rime 插件会自动重新部署（一般 1 秒内生效）；
-  想手动触发可以执行 `rime_deployer --build`。
+  写成 `entries:` + `- 我的歌单<TAB>...` 的话，Rime 读出来的是
+  `"- 我的歌单"` 这种带破折号的垃圾词条（候选里会看到破折号）。
+
+  保存后 Fcitx5 的 Rime 插件会自动重新部署；想手动触发可以删掉编译缓存再重部署：
+
+  ```bash
+  rm -rf ~/.local/share/fcitx5/rime/build
+  music im-fix     # 让 fcitx5 重新部署
+  ```
+
+  > 只改词库时**必须**删 `build/`：Rime 判断"要不要重编副词库"看的是主词库的
+  > 校验和，主词库没变它就不重编，你新加的词会一直不上屏。
 - 改了输入法配置完全没反应时：`im-config -n fcitx5` 然后注销重登。
 
 > ⚠️ **Rime 的配置目录是 `~/.local/share/fcitx5/rime/`，不是 `~/.config/fcitx5/rime/`。**
 > 放错目录 Rime 根本不会读，症状是"Shift 按了没反应"，而构建期断言查的也是
 > 那个错路径，于是**一直绿灯自欺**。老镜像按下面修：
-
+>
 > ```bash
 > mkdir -p ~/.local/share/fcitx5/rime
 > mv ~/.config/fcitx5/rime/* ~/.local/share/fcitx5/rime/ 2>/dev/null
 > music im-fix     # 让 fcitx5 重新部署
 > ```
 
+> ⚠️ **Rime 有两个配置文件，别改错**（v1.8.0 起修好，见下面的说明）：
+>
+> | 文件 | 放什么 |
+> | --- | --- |
+> | `~/.local/share/fcitx5/rime/default.custom.yaml` | 只放 `schema_list`（锁定简体方案） |
+> | `~/.local/share/fcitx5/rime/luna_pinyin_simp.custom.yaml` | **功能性配置**：Shift 切换、候选词数量、自定义词库挂法 |
+>
+> Rime 启动时先加载 `.default` 方案，再按 `schema_list` 切到 `luna_pinyin_simp`，
+> **之后引擎读的是切换后那个方案的配置**。所以写在 `default.custom.yaml`
+> 里的功能性补丁全部留在没人用的方案里，一个都不生效。
+>
+> v1.8.0 之前，Shift 切中英文、候选词数量、自定义词库挂法**全都**写在
+> `default.custom.yaml` 里，构建期的断言查的也是那一份 —— 断言一直过，
+> 真机按 Shift 没反应。v1.8.0 把它们搬到了 `luna_pinyin_simp.custom.yaml`，
+> 并把构建期断言改成查活动方案那一份。
+>
+> 老镜像按下面修（改完记得 `rm -rf ~/.local/share/fcitx5/rime/build` 重新部署）：
+>
+> ```bash
+> cd ~/.local/share/fcitx5/rime
+> # 把 default.custom.yaml 里的功能性配置搬到活动方案那一份
+> grep -v 'schema_list' default.custom.yaml > luna_pinyin_simp.custom.yaml
+> music im-fix
+> ```
+
 #### 「按 Shift 没反应 / 偶尔失灵」到底是怎么回事
 
 真机反馈里说过"偶尔出现使用 shift 键切换失灵"。这里把原因说清楚，
-免得以为是配置坏了反复折腾。**有两个独立的原因**：
+免得以为是配置坏了反复折腾。**有三个独立的原因**：
+
+**原因零：配置写在了没人用的方案里。** 见上面那条 ⚠️ —— 补丁写在
+`default.custom.yaml` 里，Rime 根本不读。2026-11-02 真机实测就是这个：
+构建期断言一路绿灯，真机上 Shift 完全没反应。
 
 **原因一：状态不对。** Rime 的 `ascii_composer` 只在**输入法接管按键**的时候才管用。
 fcitx5 有三种状态：`关闭(0)` / `英文态 Inactive(1)` / `中文态 Active(2)`。
@@ -718,9 +763,9 @@ usb-version --json       # 机器可读（给脚本或 AI 用）
 
 ```
 === Debian U 盘系统 ===
-  版本      : v1.6.1
-  基线版本  : v1.6.1 (CHANGELOG 里对应这一段)
-  构建时间  : 2026-10-31 04:20:33 UTC
+  版本      : v1.8.0
+  基线版本  : v1.8.0 (CHANGELOG 里对应这一段)
+  构建时间  : 2026-11-02 04:20:33 UTC
   commit    : 10dc719
   发行版    : Debian bookworm · 主机名 debian-usb
   镜像大小  : 8192 MiB (定长镜像, 写进大 U 盘后会自动扩到整盘)
@@ -730,15 +775,61 @@ usb-version --json       # 机器可读（给脚本或 AI 用）
   netkit        1.1.0    局域网诊断(net topo/probe/fix)
   opencode      1.19.4   AI 助手(排障/画图/旅游/查票)
   train         1.1.0    12306 火车票余票
-  travel-planner0.4.7    旅游攻略/高德导航/天气
+  tch-material  1.0.0    国家中小学平台电子课本下载
+  travel-planner -       旅游攻略/高德导航/天气(上游没有版本号, 不编)
   wifit3        0.6.0    USB 无线网卡审计
   drawio-mcp    0.4.7    draw.io 画图 MCP
   usb-version   1.0.0    版本与变更记录查询(本命令)
+
+  可用的命令:
+    audio-setup
+    bat
+    fd
+    keyboard-fix
+    music
+    music-health
+    music-im-fix
+    music-shell
+    net
+    net-doctor
+    net-rescue
+    next-ai-drawio-mcp
+    opencode
+    proxy
+    screen-fit
+    screenshot
+    tch
+    terminal-keepalive
+    terminal-keys
+    terminal-new
+    terminal-setup
+    terminal-welcome
+    train
+    travel
+    usb-grow.sh
+    usb-version
+    wifi
+    wifit3
+
+  AI 技能(opencode):
+    diagram-drawio
+    lan-capture
+    lan-repair
+    lan-topology
+    lan-triage
+    textbook-fetch
+    travel-planner
+    wifi-triage
 ```
 
-实现：构建期把版本元数据、组件清单和整份 `CHANGELOG.md` 写进镜像的
-`/usr/local/share/debian-usb/`，所以刷完盘就能查 —— 不用回头翻 GitHub。
-组件清单是**按镜像里实际存在的东西**生成的（不是写死的），少装一个组件这张表就会如实反映。
+实现：构建期把版本元数据、组件清单、命令清单、技能清单和整份 `CHANGELOG.md`
+写进镜像的 `/usr/local/share/debian-usb/`，所以刷完盘就能查 —— 不用回头翻 GitHub。
+
+三张清单都是**按镜像里实际存在的东西**生成的（不是写死的）：
+少装一个组件、少一个命令、少一个技能，这张表就会如实反映。
+> v1.8.0 之前只有"组件清单"一张表，而它只列了 9 个组件 ——
+> `wifi`、`proxy`、`screen-fit`、`audio-setup`、`net-doctor` 这些用户天天敲的命令
+> 一个都没列。用户问"这套 U 盘上我到底能敲什么"，答不完整。
 
 ### 4j. 电子课本下载（`tch` 命令）
 
@@ -1032,18 +1123,36 @@ debian-usb-builder/
 │   ├── test-lint-helpers.sh                  # 上一个的自测(8 项)
 │   ├── test-music-cli.sh                     # music 命令行回归测试(见下)
 │   ├── test-music-play.sh                    # music play 播放器接线回归测试
+│   ├── test-music-proxy.sh                   # 音乐工具绕开环境代理的回归测试
+│   ├── test-keyboard-shortcuts.sh            # 快捷键清理脚本回归测试
 │   ├── test-net-kit.sh                       # 局域网诊断 netkit + opencode 集成回归测试
+│   ├── test-wifi-cli.sh                      # wifi 命令回归测试
+│   ├── test-train.sh                         # 火车票查询 train 回归测试
+│   ├── test-travel-skill.sh                  # 旅游攻略 travel-planner 技能回归测试
+│   ├── test-drawio-mcp.sh                    # draw.io MCP 服务回归测试
+│   ├── test-wifit3.sh                        # USB 无线网卡审计 wifit3 回归测试
+│   ├── test-tch.sh                           # 电子课本 tch 回归测试
+│   ├── test-usb-grow.sh                      # U 盘扩容脚本回归测试
+│   ├── test-usb-version.sh                   # 版本查询 usb-version 回归测试
+│   ├── test-rime-config.sh                   # Rime 输入法配置回归测试(配置写在哪个文件里)
+│   ├── test-commands.sh                      # 终端体系/代理/诊断等"用户会敲的命令"回归测试
 │   └── tests/                                # lint 的**故意写错**的测试夹具
 │       └── lint-fixture-bad.sh
 ├── overlay/                                  # x86 与 N1 共用, 直接覆盖到镜像 rootfs 里
 │   ├── usr/local/bin/
 │   │   ├── usb-grow.sh                       # x86: 一键扩展分区到整盘(GPT)
+│   │   ├── usb-version                       # 查版本/本版功能清单/变更记录
 │   │   ├── net-doctor                       # 网络逐层自检 + 自动修复
 │   │   ├── net-rescue                       # 没网时的应急联网(只用 systemd 自带能力)
 │   │   ├── net                              # 局域网急救包入口(topo/probe/doctor/fix/ai/report)
+│   │   ├── wifi                              # 无线网卡入口(scan/connect/status)
+│   │   ├── wifit3                            # USB 无线网卡审计(构建期从上游 release 装)
 │   │   ├── audio-setup                      # 把 ALSA 默认输出直通声卡(修"播放器没声音")
 │   │   ├── opencode                         # AI 排障助手(离线可用, 需自配 API key)
+│   │   ├── next-ai-drawio-mcp                # draw.io MCP 服务(构建期从 npm 装)
 │   │   ├── screen-fit                       # 按 EDID 自动匹配每块显示器的原生分辨率
+│   │   ├── screenshot                       # Print 键截图(scrot 封装)
+│   │   ├── keyboard-fix                     # 废掉指向缺失程序的快捷键
 │   │   ├── proxy                            # 代理开关(status/on/off/test)
 │   │   ├── music-health                     # 一次性体检(会话/输入法/终端/分辨率/分区/网络/夸克)
 │   │   ├── music-im-fix                     # 输入法一条命令修好(装包→im-config→自启→拉起)
@@ -1052,6 +1161,9 @@ debian-usb-builder/
 │   │   ├── terminal-keys                    # 键位速查表
 │   │   ├── terminal-setup                   # 改 Ctrl+Alt+T 键位 + 桌面项 Exec
 │   │   ├── terminal-welcome                 # 开机那个终端: 先打键位速查表再进 shell
+│   │   ├── train                            # 12306 火车票余票
+│   │   ├── tch                              # 国家中小学平台电子课本下载
+│   │   ├── travel                           # 旅游攻略/行程规划/高德导航/天气
 │   │   └── music                             # 下载器快捷入口(single/playlist/gui/doctor/net/screen/proxy/keys/im-toggle/terminal)
 │   ├── usr/local/lib/musictools/
 │   │   ├── single.py                         # 命令行单曲搜索下载(纯 requests, 不用 PyQt6)
@@ -1065,11 +1177,17 @@ debian-usb-builder/
 │   │   ├── topo.py                           # 拓扑组装 + ASCII 树渲染
 │   │   ├── probe.py                          # 丢包/MTU/IP冲突/环路/DNS/无线 检测
 │   │   └── cli.py                            # net 子命令分发
+│   ├── usr/local/lib/traintools/             # 火车票查询实现(纯标准库重写)
+│   ├── usr/local/lib/tchtools/               # 电子课本下载实现(游客模式)
 │   ├── home/user/.config/opencode/           # AI 排障助手(全局配置 + 技能)
-│   │   ├── opencode.json                     # 权限配置(全放开) + skills 路径
-│   │   ├── AGENTS.md                         # 告诉 AI 这台机器是干什么的
-│   │   └── skills/                           # lan-topology/lan-triage/lan-repair/lan-capture/wifi-triage
+│   │   ├── opencode.json                     # 权限配置(全放开) + skills 路径 + drawio MCP
+│   │   ├── AGENTS.md                         # 告诉 AI 这台机器是干什么的(命令/技能清单)
+│   │   └── skills/                           # lan-topology/lan-triage/lan-repair/lan-capture/
+│   │                                          # wifi-triage/travel-planner/diagram-drawio/textbook-fetch
 │   ├── home/user/.local/share/fcitx5/rime/   # Rime 配置(注意: 必须在 Rime 用户目录里)
+│   │   ├── default.custom.yaml               # 只放 schema_list(锁定简体方案)
+│   │   ├── luna_pinyin_simp.custom.yaml      # 活动方案的功能配置(Shift 切换/候选数/词库挂法)
+│   │   └── user.dict.yaml                    # 自定义词库(Rime .dict.yaml 格式, 不是 YAML 列表)
 │   ├── home/user/.config/xfce4/terminal/     # 终端配置(字体/滚动/标签页快捷键)
 │   ├── home/user/.config/autostart/          # 开机自启: 终端守护/键位设置
 │   └── home/user/.tmux.conf                  # tmux 预置配置(进阶用, 默认不启用)
