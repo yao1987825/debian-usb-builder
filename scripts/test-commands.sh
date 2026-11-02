@@ -124,11 +124,18 @@ else
 fi
 
 echo "== 行为: net-doctor =="
+# 注意: net-doctor 是诊断工具, 退出码有含义 —— 0 = 全部通过, 1 = **发现了问题**。
+# 所以不能断言"退出码 0"(CI 的 runner 上本来就有一堆问题)。要断言的是:
+# 它**跑完了**、把自检结果打出来了, 而且退出码落在 0/1 这个语义区间里。
+# 跑到一半崩掉、或者被 timeout 杀掉, 才是真问题。
 out="$(run_sandbox net-doctor)"
-if [[ $? -eq 0 ]] && grep -q '网络自检' <<<"$out"; then
-  ok "net-doctor 正常输出自检结果"
+rc=$?
+if ! grep -q '网络自检' <<<"$out"; then
+  fail "net-doctor 没有输出自检结果(退出码 ${rc})"
+elif [[ $rc -eq 0 || $rc -eq 1 ]]; then
+  ok "net-doctor 跑完并输出自检结果(退出码 ${rc}: 0=全部通过 1=发现问题)"
 else
-  fail "net-doctor 没有正常输出自检结果"
+  fail "net-doctor 退出码 ${rc} —— 不在 0/1 里, 中途崩了或被超时杀掉了"
 fi
 
 echo "== 行为: net-rescue =="
