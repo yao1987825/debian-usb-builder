@@ -66,6 +66,14 @@ except ImportError:
     print("⚠️  请先安装 requests：pip install requests")
     sys.exit(1)
 
+# 高德是国内服务, 走代理只会更慢甚至连不上 —— 显式忽略环境里的代理变量。
+# (requests 默认 trust_env=True, 会读 http_proxy; 镜像 v1.9.0 起不再预置代理,
+#  但用户自己 export 的话就会中招。症状: "直连能查天气, 一开代理就报
+#  Missing dependencies for SOCKS support")
+for _proxy_var in ("http_proxy", "https_proxy", "all_proxy",
+                   "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
+    os.environ.pop(_proxy_var, None)
+
 
 # ─── 高德 API 配置 ────────────────────────────────────────────────────────────
 AMAP_BASE = "https://restapi.amap.com/v3"

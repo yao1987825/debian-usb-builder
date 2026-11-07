@@ -181,19 +181,24 @@ if command -v curl >/dev/null 2>&1; then
   fi
 fi
 
-############################### 6. 代理 ###############################
-step "6. 代理设置"
+############################### 6. 代理环境变量 ###############################
+# 镜像本身**不预置代理**(v1.9.0 起删掉了 proxy 命令), 所以这里只检查
+# "用户自己有没有 export 代理变量" —— 有的话, 镜像里那些走国内接口的命令
+# (train/travel/bus)会因为被扔进代理而连不上。
+step "6. 代理环境变量"
 PROXY_ENV="$(env | grep -iE '^(http|https|all|no)_proxy=' || true)"
 if [[ -n "$PROXY_ENV" ]]; then
   warn "当前 shell 里设了代理:"
   echo "$PROXY_ENV" | sed 's/^/      /'
-  info "如果代理没在跑, 会导致所有下载失败: unset http_proxy https_proxy all_proxy"
+  info "train/travel/bus 这类走国内接口的命令会被代理打断(music/bus 会自动绕开)"
+  info "要清掉: unset http_proxy https_proxy all_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY"
+else
+  ok "没有代理环境变量(国内接口直连)"
 fi
 if [[ -f "$HOME/projects/gequhai-downloader/config.json" ]]; then
   CFG_PROXY="$(grep -o '"proxy"[[:space:]]*:[[:space:]]*"[^"]*"' "$HOME/projects/gequhai-downloader/config.json" 2>/dev/null | head -1)"
-  info "下载器代理配置: ${CFG_PROXY:-读不到}"
-  if [[ "$CFG_PROXY" != *'""'* && "$CFG_PROXY" == *'"proxy"'* ]]; then
-    warn "下载器里配了代理但这台机器可能没跑 Clash, 建议清空: music setup-proxy"
+  if [[ -n "$CFG_PROXY" && "$CFG_PROXY" != *'""'* ]]; then
+    warn "下载器里还配着代理(${CFG_PROXY}) —— 直连才通, 建议清空"
   fi
 fi
 

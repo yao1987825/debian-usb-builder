@@ -1,7 +1,7 @@
-# Debian 12 U 盘系统镜像构建器
+# Debian 12 U 盘系统镜像构建器（YAO*OS）
 
-用 **GitHub Actions** 在云端构建一个可以直接写进 U 盘的 Debian 12 系统镜像：
-`Xfce 轻量桌面 + Fcitx5/Rime 中文输入 + 独立歌曲分区 + 预装两个 Python 下载器`。
+用 **GitHub Actions** 在云端构建一个可以直接写进 U 盘的 Debian 12 系统镜像——
+系统名 **YAO*OS**：`Xfce 轻量桌面 + Fcitx5/Rime 中文输入 + 独立歌曲分区 + 预装两个 Python 下载器`。
 **本地零占用**，构建全程发生在 GitHub 的 runner 上，你只需要下载产物、写入 U 盘。
 
 > 本仓库同时支持两条产线：
@@ -15,6 +15,7 @@
 
 | 项目 | 说明 |
 | --- | --- |
+| 系统名 | **YAO*OS**（开机终端横幅 / `usb-version` / 窗口标题都是它；hostname 仍叫 `debian-usb`） |
 | 系统 | Debian 12 (bookworm)，UEFI 启动（写入 shim 签名，传统 BIOS 可选开启） |
 | 桌面 | Xfce4（极轻量，够用就跑 PyQt6 图形下载器） |
 | 中文输入 | Fcitx5 + Rime，默认 `Ctrl+Space` 切换，简体拼音，已预置歌手/歌名词库 |
@@ -108,7 +109,7 @@ sudo dd if=debian-usb-bookworm.img of=/dev/sdX bs=4M status=progress conv=fsync
 
 ### 0. 终端：只有一个窗口，标签页自己管
 
-开机自动弹出的那个终端里，已经预先打好了**键位速查表**，不知道能干什么的话看一眼就知道。
+开机自动弹出的那个终端显示 **YAO*OS 横幅**；想知道系统里有哪些命令，敲 `help`（`help <命令>` 看详细用法）。键位速查表不自动刷屏，要看随时 `terminal-keys`。
 
 | 想做什么 | 怎么做 |
 | --- | --- |
@@ -375,8 +376,6 @@ music play
 # 图形界面: 搜索并下载单曲(夸克网盘转存, 需 PyQt6)
 music gui
 
-# 设/清代理(便携 U 盘上通常没跑 Clash, 直接清空)
-music setup-proxy
 # 看歌曲目录 / 已下载列表 / 环境自检
 music out
 music ls
@@ -454,9 +453,8 @@ GET https://pan.quark.cn/account/info?st=<ticket>&lw=scan   → 写入 cookie
 `music single` 的下载链路和图形界面完全一致（夸克高品质 → 失败降级低品质直链 → 存歌词封面，
 文件名 `标题-歌手.ext`），只是把 Qt 信号换成了终端输出。
 
-图形版默认代理指向 Clash，但 U 盘机器上通常没跑 Clash → 直接在图形界面里把代理清空即可
-（配置文件 `~/projects/gequhai-downloader/config.json`，镜像预置的是空代理版本）。
-`music single` 读的是同一份 config，所以夸克 Cookie 配一次两边都能用。
+图形版的配置文件 `~/projects/gequhai-downloader/config.json` 里镜像预置的是**空代理**版本
+（`"proxy": ""`，直连）。`music single` 读的是同一份 config，所以夸克 Cookie 配一次两边都能用。
 
 ### 4b. 无线网：插上就能连（`wifi` 命令）
 
@@ -579,10 +577,13 @@ opencode auth login        # 或 opencode providers
 ```
 
 **如果开着代理报 `unsupported proxy protocol`**：那是代理协议的问题，不是 opencode 坏了。
-opencode 是 Bun 写的，**只认 http/https 代理**，而 `proxy` 命令默认导出的是 `socks5://`，
-Bun 碰上就抛 `UnsupportedProxyProtocol`。镜像里的 `/usr/local/bin/opencode` 是个包装脚本，
-启动前会自己处理：能直连就直连，否则找同一台机器上的 HTTP 代理端口，都不行才报错。
-想看当前代理状况：`opencode --net-check`。
+opencode 是 Bun 写的，**只认 http/https 代理**，碰上 `socks5://` 会抛 `UnsupportedProxyProtocol`。
+镜像里的 `/usr/local/bin/opencode` 是个包装脚本，启动前会认出 socks5 并摘掉改走直连。
+想看当前能不能直连模型 API：`opencode --net-check`。
+
+> 镜像**不预置代理**（v1.9.0 起删掉了 `proxy` 命令），所以这个坑只会在你
+> 自己 `export http_proxy=socks5://...` 时出现。要用代理就自己 export 一个
+> **http/https** 的地址；国产模型（MiniMax / DeepSeek）一般直连就能用。
 
 > ⚠️ 权限说明: 按你的要求, opencode.json 里把 `bash`/`edit`/`read` 等权限**全部放开**了,
 > 而且这台机器上 `sudo` 免密 —— 也就是说 AI 能以管理员身份执行任何命令。
@@ -762,7 +763,7 @@ usb-version --json       # 机器可读（给脚本或 AI 用）
 ```
 
 ```
-=== Debian U 盘系统 ===
+=== YAO*OS ===
   版本      : v1.8.0
   基线版本  : v1.8.0 (CHANGELOG 里对应这一段)
   构建时间  : 2026-11-02 04:20:33 UTC
@@ -773,6 +774,7 @@ usb-version --json       # 机器可读（给脚本或 AI 用）
 本版包含的功能:
   music-shell   0.5.0    终端播放器(music play)
   netkit        1.1.0    局域网诊断(net topo/probe/fix)
+  chenzhou-bus  1.0.0    郴州实时公交(线路/站点/实时车辆)
   opencode      1.19.4   AI 助手(排障/画图/旅游/查票)
   train         1.1.0    12306 火车票余票
   tch-material  1.0.0    国家中小学平台电子课本下载
@@ -784,6 +786,7 @@ usb-version --json       # 机器可读（给脚本或 AI 用）
   可用的命令:
     audio-setup
     bat
+    bus
     fd
     keyboard-fix
     music
@@ -795,7 +798,6 @@ usb-version --json       # 机器可读（给脚本或 AI 用）
     net-rescue
     next-ai-drawio-mcp
     opencode
-    proxy
     screen-fit
     screenshot
     tch
@@ -812,6 +814,7 @@ usb-version --json       # 机器可读（给脚本或 AI 用）
     wifit3
 
   AI 技能(opencode):
+    chenzhou-bus
     diagram-drawio
     lan-capture
     lan-repair
@@ -828,7 +831,7 @@ usb-version --json       # 机器可读（给脚本或 AI 用）
 三张清单都是**按镜像里实际存在的东西**生成的（不是写死的）：
 少装一个组件、少一个命令、少一个技能，这张表就会如实反映。
 > v1.8.0 之前只有"组件清单"一张表，而它只列了 9 个组件 ——
-> `wifi`、`proxy`、`screen-fit`、`audio-setup`、`net-doctor` 这些用户天天敲的命令
+> `wifi`、`screen-fit`、`audio-setup`、`net-doctor` 这些用户天天敲的命令
 > 一个都没列。用户问"这套 U 盘上我到底能敲什么"，答不完整。
 
 ### 4j. 电子课本下载（`tch` 命令）
@@ -853,6 +856,50 @@ tch status / logout                          # 登录状态
 实测下载的《义务教育教科书·语文四年级下册》17.9MB / **151 页 / 16 个书签** ✓。
 
 对 AI 来说这是一个 opencode 技能（`textbook-fetch`），你说"帮我找一下四年级语文下册的电子课本"它就会自己查、下载并告诉你文件在哪。
+
+### 4k. 郴州实时公交（`bus` 命令）
+
+出门前不用掏手机，插着 U 盘敲一行就知道**哪路车还有几分钟到**：
+
+```bash
+bus                              # 打帮助
+bus lines                        # 全部线路
+bus search 2路                   # 搜线路 / 站点 / 地标
+bus line 20000002                # 某条线路的站点表（站序从 1 开始）
+bus realtime 20000002 5          # 第 5 站的实时车辆
+bus schedule 20000002            # 发车时刻表
+bus nearby 25.7936 113.0176 800  # 附近站点
+bus cli                          # 交互式查询
+bus search 2路 --json            # 结构化输出（给脚本或 AI 用）
+```
+
+`realtime` 的输出就是你在站台牌上想看的东西：
+
+```
+2路 (5站湘南幼专) 实时车辆:
+  车牌       位置             下一站          状态     距离   预计到达  拥堵
+  湘LA9239   25.790903,113.035317  火车站     在途中   45m    1分钟    畅通
+```
+
+**关于来源**：这是本地项目「郴州实时公交」——郴州公交行安卓客户端
+（`com.chenzhou.bus`）接口的 Python 绑定，接口逆向自那个客户端。
+
+集成时改了三处，都是为了"接进 U 盘系统之后还能用"：
+
+- **必须绕开环境代理**：这个接口是**国内 IP 上的纯 HTTP** ——
+  实测带代理时 `curl` 直接 `http=000`（连都连不上），摘掉就 `200` / 16ms。
+  镜像本身已经不再预置代理了，但用户自己 `export http_proxy` 的话照样中招，
+  所以 bash 包装脚本和 `client.py` 里**各摘一次**（双保险）。
+  这和音乐工具（`single.py`）是同一个坑。
+- **无参数打帮助，不掉进交互式 REPL**：REPL 会等输入，脚本里一敲就卡死。
+  想交互用 `bus cli`。
+- **加了 `--json`**：给脚本和 AI 用的结构化通道，免得 AI 去解析中文表格。
+
+对 AI 来说这是一个 opencode 技能（`chenzhou-bus`），你说"2路到火车站还有多久"
+它自己去查实时车辆然后告诉你还有几站、多少米、几分钟。
+
+> ⚠️ 这个接口是**非公开接口**，随时可能变更或失效。仅用于学习研究。
+> 查不到东西先看是不是关键词不对（线路要带"路"字），或者那个站此刻确实没车。
 
 ### 5. 基础命令行工具（以后往里加新功能用）
 
@@ -901,7 +948,6 @@ tch status / logout                          # 登录状态
 | `with_projects` | `1` | 是否预装两个下载器 + Playwright Chromium |
 | `apt_mirror` | 清华 TUNA | 镜像里的 apt 源，**填 `off` 保持官方源** |
 | `pip_index` | 清华 TUNA | 镜像里的 pip 源，**填 `off` 用默认 PyPI** |
-| `proxy_url` | `socks5://192.168.6.1:1070` | 预置代理。**只是写好配置，不会强制打开** —— `/etc/profile.d/99-proxy.sh` 每次登录先探端口，通了才用 |
 
 > 换源为什么放在构建的**最后**：`debootstrap` 和那一大堆 apt 安装要跑在 GitHub 的美国节点上，
 > 走 `deb.debian.org` 反而更快更稳；成品拿到国内再用清华源才划算。所以脚本是
@@ -1043,43 +1089,44 @@ screen-fit --disable  # 不想要开机自动匹配时关掉（手动调过分�
 - 有一块屏没设成功时 `screen-fit` 返回**非零**退出码（开机自启的 `--restore` 与
   `music-health` 都靠这个判断）。
 
-**Q：代理怎么用（默认 socks5://192.168.6.1:1070）**
+**Q：代理怎么用？**
+**没有代理功能** —— v1.9.0 起镜像把它整个删掉了（`proxy` 命令、`/etc/profile.d/99-proxy.sh`、
+`/etc/proxy.conf`、venv 里的 PySocks 全部没有了）。
+
+为什么删：以前镜像会往**每个终端**里自动 `export http_proxy`（登录 shell 走
+`/etc/profile.d`，图形终端走 `~/.bashrc`）。于是"想用代理"变成了"所有工具都被代理"，
+而镜像里自己的工具走的全是国内接口，实测一个都连不上：
+
+| 命令 | 带代理 | 直连 |
+| --- | --- | --- |
+| `train 北京 上海` | ❌ "打不开 12306 余票页" | ✅ |
+| `travel weather 郴州` | ❌ `requests` 不支持 socks5 → `InvalidSchema` | ✅ |
+| `bus search 2路` | ❌ `curl http=000`（连都连不上） | ✅ `200` / 16ms |
+
+要代理就自己 export 一个 **http/https** 的地址（`socks5://` Python 和 Bun 都不认）：
+
 ```bash
-proxy                 # 等同 proxy status
-proxy status          # 地址 / 端口通不通 / apt / 下载器 / PySocks 各是什么状态
-proxy on              # 开启：apt + 下载器 + 终端环境变量
-proxy on 192.168.1.9:7890
-proxy off             # 全部关掉
-proxy test            # 实测：真发一个请求看能不能出去
+export http_proxy=http://192.168.1.9:7890
+export https_proxy=http://192.168.1.9:7890
 ```
 
-镜像里预置了 `/etc/profile.d/99-proxy.sh`，它**先探测端口通不通，通了才 export `http_proxy`**。
-这一步是刻意的：代理没跑的时候如果还硬设 `http_proxy`，症状是"所有下载全部失败"，
-比压根没有代理更难查。`music proxy` 是同一个命令。
-
-注意 `/etc/profile.d` 只有**登录 shell** 才读，而 `xfce4-terminal` 开出来的是非登录 shell
-（只读 `~/.bashrc`）。所以镜像里同时在 `user` 与 `root` 的 `~/.bashrc` 里 source 了同一份脚本，
-两条路都通 —— 在桌面终端里新开一个窗口就能拿到 `http_proxy`。
-
-两个容易踩的点已经处理好了：
-- `apt` 用不了"先探后用"的写法，所以 apt 的代理由 `proxy on` / `off` 显式开关，
-  并且自动把 `socks5://` 转成 apt 认的 `socks5h://`。
-- Python 的 `requests` 默认**不支持** `socks5://` 代理（会报 `ProxySchemeUnknown`），
-  所以镜像里预装了几个 venv 都带 `PySocks`，`proxy on` 也会顺手补装。
-
-第三点：**音乐工具（`music search` / `single` / `gui` / `playlist`）会主动绕开环境代理**。
-同一时刻实测三个目标：
+但要注意：**走国内接口的工具会主动绕开你 export 的代理**（`music` / `bus` / `train`），
+因为这些站点走代理反而更糟：
 
 | 目标 | 直连 | 走 LAN 代理 |
 | --- | --- | --- |
 | `www.gequhai.com`（搜歌 / 播放页） | **200**，能解析出全部候选 | **403** 反爬挑战页 → 搜到 0 条 |
 | `pan.quark.cn`（夸克转存） | **200** | SSL 失败 |
 | `img2.kuwo.cn`（封面） | **200** | SSL 失败 |
+| 郴州公交接口 | **200** | **000** 连不上 |
 
-所以 `music` 在跑这几个下载命令前会 `env -u http_proxy ...` 把环境代理摘掉 ——
+所以 `music` 在跑下载命令前会 `env -u http_proxy ...` 把环境代理摘掉 ——
 症状"浏览器能打开站点、`music search` 却一条都搜不到"就是这么来的（浏览器不读
-`http_proxy`，走的本来就是直连）。`git` / `pip` 这类真需要代理的命令不受影响；
-`config.json` 里显式配的 `proxy` 仍然有效。
+`http_proxy`，走的本来就是直连）。`git` / `pip` 这类真需要代理的命令不受影响。
+
+**Claude / GPT 连不上怎么办**：那是网络封锁，不是镜像坏了。
+国产模型（MiniMax / DeepSeek）直连就能用；要用 Claude/GPT 就自己 export 一个
+http/https 代理。`opencode --net-check` 可以先体检一下能不能直连模型 API。
 
 **Q：QEMU 冒烟测试报"没捕获到 GRUB 输出"**
 这只是警告，不是失败。OVMF 可能没走 UEFI 可移动介质路径，或串口输出没打开；结构校验通过就说明镜像结构没问题。
@@ -1134,12 +1181,14 @@ debian-usb-builder/
 │   ├── test-tch.sh                           # 电子课本 tch 回归测试
 │   ├── test-usb-grow.sh                      # U 盘扩容脚本回归测试
 │   ├── test-usb-version.sh                   # 版本查询 usb-version 回归测试
+│   ├── test-bus.sh                           # 郴州实时公交回归测试(离线 mock, 不联网)
 │   ├── test-rime-config.sh                   # Rime 输入法配置回归测试(配置写在哪个文件里)
 │   ├── test-commands.sh                      # 终端体系/代理/诊断等"用户会敲的命令"回归测试
 │   └── tests/                                # lint 的**故意写错**的测试夹具
 │       └── lint-fixture-bad.sh
 ├── overlay/                                  # x86 与 N1 共用, 直接覆盖到镜像 rootfs 里
 │   ├── usr/local/bin/
+│   │   ├── help                             # 命令索引: 列出全部命令+一句话用法(help <命令> 看详情)
 │   │   ├── usb-grow.sh                       # x86: 一键扩展分区到整盘(GPT)
 │   │   ├── usb-version                       # 查版本/本版功能清单/变更记录
 │   │   ├── net-doctor                       # 网络逐层自检 + 自动修复
@@ -1160,7 +1209,8 @@ debian-usb-builder/
 │   │   ├── terminal-new                     # 在当前终端窗口加一个标签页(xfce4-terminal --tab)
 │   │   ├── terminal-keys                    # 键位速查表
 │   │   ├── terminal-setup                   # 改 Ctrl+Alt+T 键位 + 桌面项 Exec
-│   │   ├── terminal-welcome                 # 开机那个终端: 先打键位速查表再进 shell
+│   │   ├── terminal-welcome                 # 开机那个终端: 打 YAO*OS 横幅 + help 提示再进 shell
+│   │   ├── bus                              # 郴州实时公交(线路/站点/实时车辆/时刻表)
 │   │   ├── train                            # 12306 火车票余票
 │   │   ├── tch                              # 国家中小学平台电子课本下载
 │   │   ├── travel                           # 旅游攻略/行程规划/高德导航/天气
@@ -1177,13 +1227,20 @@ debian-usb-builder/
 │   │   ├── topo.py                           # 拓扑组装 + ASCII 树渲染
 │   │   ├── probe.py                          # 丢包/MTU/IP冲突/环路/DNS/无线 检测
 │   │   └── cli.py                            # net 子命令分发
+│   ├── usr/local/lib/chenzhou_bus/           # 郴州实时公交实现(本地项目)
+│   │   ├── client.py                           # 接口客户端(自动绕开环境代理)
+│   │   ├── cli.py                              # 命令行/交互式 + --json
+│   │   ├── coords.py                           # WGS-84 <-> GCJ-02 坐标转换
+│   │   ├── models.py                           # 线路/站点/车辆/时刻表数据模型
+│   │   └── REVERSE-NOTES.md                    # 接口逆向笔记
 │   ├── usr/local/lib/traintools/             # 火车票查询实现(纯标准库重写)
 │   ├── usr/local/lib/tchtools/               # 电子课本下载实现(游客模式)
 │   ├── home/user/.config/opencode/           # AI 排障助手(全局配置 + 技能)
 │   │   ├── opencode.json                     # 权限配置(全放开) + skills 路径 + drawio MCP
 │   │   ├── AGENTS.md                         # 告诉 AI 这台机器是干什么的(命令/技能清单)
 │   │   └── skills/                           # lan-topology/lan-triage/lan-repair/lan-capture/
-│   │                                          # wifi-triage/travel-planner/diagram-drawio/textbook-fetch
+│   │                                          # wifi-triage/travel-planner/diagram-drawio/
+│   │                                          # textbook-fetch/chenzhou-bus
 │   ├── home/user/.local/share/fcitx5/rime/   # Rime 配置(注意: 必须在 Rime 用户目录里)
 │   │   ├── default.custom.yaml               # 只放 schema_list(锁定简体方案)
 │   │   ├── luna_pinyin_simp.custom.yaml      # 活动方案的功能配置(Shift 切换/候选数/词库挂法)

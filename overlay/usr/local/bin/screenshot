@@ -15,6 +15,18 @@
 #
 set -uo pipefail
 
+# --help 必须先短路 —— 否则不认识的参数会掉进默认的全屏拍照
+# (真机 2026-11-07: screenshot --help 真的去拍了张照)。
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  cat <<'USAGE'
+用法:
+  screenshot        全屏截图
+  screenshot -w     当前窗口截图
+  screenshot -r     框选区域截图
+USAGE
+  exit 0
+fi
+
 OUT_DIR="${XDG_PICTURES_DIR:-$HOME/Pictures}"
 mkdir -p "$OUT_DIR" 2>/dev/null || OUT_DIR="$HOME"
 

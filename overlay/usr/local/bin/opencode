@@ -3,28 +3,21 @@
 # opencode —— AI 助手入口(包装版)
 #
 # 为什么要包一层:
-#   opencode 是 Bun 写的, 它的 HTTP 客户端**只支持 http/https 代理**。
-#   而这套 U 盘系统的 `proxy` 命令默认导出的是 socks5://(路由上的 SOCKS5 端口),
-#   于是 opencode 一发请求就报:
-#       UnsupportedProxyProtocol / unsupported proxy protocol
-#   —— 错在代理协议上, 不是 opencode 本身坏了, 更不是模型或 API key 的问题。
+#   opencode 是 Bun 写的, 它的 HTTP 客户端**只支持 http/https 代理**,
+#   碰上 socks5:// 会直接抛 "unsupported proxy protocol"。
 #
-#   这里在启动真身之前先把代理处理掉:
-#     1) 代理是 http/https  -> 原样使用(Bun 支持);
-#     2) 代理是 socks5      -> 先试直连能不能到模型 API:
-#                                 直连能 -> 去掉代理变量, 直接连(最常见);
-#                                 直连不能 -> 找同一台机器上的 HTTP 代理端口
-#                                             (8080/7890/3128/8118/10809/20171),
-#                                             有就改用它;
-#                                         都没有 -> 报错说清楚, 不让用户
-#                                             面对一个天书般的协议报错。
+#   v1.9.0 起镜像**不再预置代理**(proxy 命令和 /etc/profile.d/99-proxy.sh 都删了),
+#   所以这里只剩一个最小护栏: 万一用户自己 export 了 socks5 代理,
+#   就把它摘掉走直连 —— 免得 opencode 一发请求就甩一个天书般的协议报错。
+#   (以前那套"直连不通就去找同主机其它 HTTP 代理端口"的逻辑已经删掉了:
+#    镜像不管代理, 用户要用就自己 export 一个 http/https 代理。)
 #
 #   真身在 /usr/local/lib/opencode/opencode(构建时装进去的)。
 #
 # 常用:
 #   opencode                # 交互
 #   opencode run "问题"      # 跑一次
-#   opencode --net-check    # 只体检代理配置, 不启动 opencode
+#   opencode --net-check    # 只体检网络(能不能直连模型 API), 不启动 opencode
 #
 set -uo pipefail
 
@@ -36,7 +29,7 @@ if [[ ! -x "$REAL" ]]; then
   exit 127
 fi
 
-# ---------------------------------------------------------------- 探测代理
+# ---------------------------------------------------------------- 代理环境变量
 
 # 所有代理环境变量里, 第一个是 socks 的地址(没有就返回 1)
 socks_proxy_url() {
@@ -70,16 +63,6 @@ direct_ok() {
   [[ -f "${tmp}.ok" ]]
 }
 
-# 某个 host:port 是不是 HTTP CONNECT 代理
-# 探测目标用国内能直连的站点: 用 api.github.com 的话, 在部分网络里它自己就不通,
-# 会被误判成"这个端口不是 HTTP 代理"。
-is_http_proxy() {
-  local host="$1" port="$2" code
-  code=$(curl -sS --max-time 5 -x "http://${host}:${port}" -o /dev/null -w '%{http_code}' \
-         https://www.baidu.com 2>/dev/null || echo 000)
-  [[ "$code" != "000" ]]
-}
-
 # ---------------------------------------------------------------- 处理
 
 NET_CHECK=0
@@ -99,50 +82,24 @@ if [[ -f "$_cfg" ]]; then
 fi
 
 socks="$(socks_proxy_url || true)"
-
 if [[ -n "$socks" ]]; then
-  hostport="${socks#*://}"
-  hostport="${hostport%%/*}"
-  host="${hostport%%:*}"
-  if [[ "$host" == *@* ]]; then host="${host##*@}"; fi
-
-  echo "${Y}[opencode]${N} 检测到 socks5 代理 ${B}${socks}${N}" >&2
-
-  if direct_ok "$TMPD/direct"; then
-    unset http_proxy https_proxy all_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY 2>/dev/null || true
-    echo "${G}[opencode]${N} Bun 的 HTTP 客户端不支持 socks5 —— 已改为直连(直连可用)" >&2
-  else
-    found=""
-    for p in 8080 7890 3128 8118 10809 20171 8888; do
-      if is_http_proxy "$host" "$p"; then found="http://${host}:${p}"; break; fi
-    done
-    if [[ -n "$found" ]]; then
-      export http_proxy="$found" https_proxy="$found" HTTP_PROXY="$found" HTTPS_PROXY="$found"
-      unset all_proxy ALL_PROXY 2>/dev/null || true
-      echo "${G}[opencode]${N} 已改用同主机的 HTTP 代理 ${B}${found}${N}" >&2
-    else
-      cat >&2 <<EOF
-${R}[opencode] 错误${N}: 代理 ${B}${socks}${N} 是 socks5 协议, opencode(Bun) 只支持 http/https 代理;
-         而直连模型 API 也不通, 同主机上也没找到 HTTP 代理端口。
-
-         怎么办(挑一个):
-           1) 关掉代理重试:        proxy off
-           2) 换成 HTTP 代理地址:  proxy on http://<代理主机>:<端口>
-           3) 用命令行工具直接测:  curl -x http://<代理主机>:<端口> https://api.anthropic.com
-EOF
-      exit 78
-    fi
-  fi
-else
-  # 没有代理变量时, 如果系统里有 /etc/profile.d 之类留下的残留也会被继承, 顺手清一下空值
-  :
+  # Bun 不认 socks5。与其甩协议报错, 不如摘掉变量走直连。
+  # (http/https 代理 Bun 是支持的, 那种就原样留着)
+  unset http_proxy https_proxy all_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY 2>/dev/null || true
+  echo "${Y}[opencode]${N} 检测到 socks5 代理 ${B}${socks}${N}, Bun 不支持该协议 —— 已改为直连" >&2
 fi
 
 if [[ "$NET_CHECK" == "1" ]]; then
   echo "代理环境变量:"
   env | grep -iE '^(http|https|all|no)_proxy=' || echo "  (没有设置代理)"
   echo "直连模型 API:"
-  if direct_ok "$TMPD/check"; then echo "  ✅ 直连可用"; else echo "  ❌ 直连不通"; fi
+  if direct_ok "$TMPD/check"; then
+    echo "  ✅ 直连可用"
+  else
+    echo "  ❌ 直连不通"
+    echo "     (国产模型 MiniMax / DeepSeek 一般直连就能用;"
+    echo "      Claude / GPT 在国内需要自己 export 一个 http/https 代理)"
+  fi
   exit 0
 fi
 

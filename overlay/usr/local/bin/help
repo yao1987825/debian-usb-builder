@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+#
+# help —— YAO*OS 命令索引(这台系统装了哪些命令、怎么用)
+#
+# 为什么要有它: 这套系统是 terminal + 自研脚本堆出来的, 命令一多,
+# "我装了什么、怎么查" 就成了第一个问题。每次都问 AI 太重复 ——
+# 敲一条 help 就够, 不用记任何清单。
+#
+# 用法:
+#   help              列出所有命令 + 一句话简介
+#   help <命令>       看那条命令的详细用法(等价于 <命令> --help)
+#   help -h | --help  显示本帮助
+#
+# 简介从哪来: **运行时**扫 /usr/local/bin, 读每个脚本头部的
+#   # 命令名 —— 一句话简介
+# 所以新脚本只要头部带这一行, help 里自动出现 —— 没有任何静态清单要维护。
+# (test-commands.sh 断言每个 overlay 脚本都有这行, 防止索引出空条目)
+#
+# 注意: 必须压掉 bash 的 help 内建(enable -n help, 在 .bashrc 里),
+# 否则用户敲 help 打出来的是 bash 语法手册。
+set -uo pipefail
+
+BIN_DIR="${HELP_BIN_DIR:-/usr/local/bin}"
+
+usage() {
+  cat <<'EOF'
+用法:
+  help              列出所有命令 + 一句话简介
+  help <命令>        看那条命令的详细用法(等价于 <命令> --help)
+  help -h | --help  显示本帮助
+EOF
+}
+
+case "${1:-}" in
+  -h|--help) usage; exit 0 ;;
+esac
+
+# help <命令> → 转发 --help。先找项目命令目录, 再退回 PATH。
+# 工作区里的 overlay 脚本没带 +x(git mode 100644, 构建期才 chmod),
+# 所以有 x 就 exec、没 x 就 bash 拉起 —— 两种环境行为一致。
+if [[ -n "${1:-}" ]]; then
+  if [[ -f "${BIN_DIR}/${1}" ]]; then
+    if [[ -x "${BIN_DIR}/${1}" ]]; then
+      exec "${BIN_DIR}/${1}" --help
+    fi
+    exec bash "${BIN_DIR}/${1}" --help
+  fi
+  _path="$(command -v "$1" 2>/dev/null || true)"
+  if [[ -n "$_path" && "$_path" == /* && -x "$_path" ]]; then
+    exec "$_path" --help
+  fi
+  printf '没有叫 %s 的命令。\n' "$1" >&2
+  printf '敲 help 看全部命令。\n' >&2
+  exit 1
+fi
+
+# ---- 列出全部命令: 名称列对齐, 简介取脚本头部第一行带 "—— " 的注释 ----
+# ELF 二进制(music-shell/wifit3 这类)文件头不能加注释 —— 加了就不是可执行
+# 文件了 —— 所以用内置小表补简介; 将来再装新二进制, 没表就显示通用提示。
+declare -A _bin_desc=(
+  [music-shell]="终端音乐播放器(Rust), 由 music play 调起"
+  [wifit3]="USB 无线网卡审计(插上卡看芯片/信道, 不用编内核驱动)"
+)
+declare -a _names=() _descs=()
+_max=4
+while IFS= read -r _f; do
+  _n="$(basename "$_f")"
+  _d=""
+  # grep -I: 二进制文件一律当"没匹配", 免得 sed 把 ELF 字节流倒进索引
+  if LC_ALL=C grep -Iqm1 '' "$_f" 2>/dev/null; then
+    _raw="$(sed -n '2,12p' "$_f" 2>/dev/null | grep -m1 -E '—— ' || true)"
+    _d="${_raw#*—— }"
+  fi
+  [[ -z "$_d" ]] && _d="${_bin_desc[$_n]:-}"
+  [[ -z "$_d" ]] && _d="(无简介: 脚本头部加一行 '# ${_n} —— xxx'; 二进制则加进 help 内置表)"
+  _names+=("$_n")
+  _descs+=("$_d")
+  (( ${#_n} > _max )) && _max=${#_n}
+done < <(find "$BIN_DIR" -maxdepth 1 -type f ! -name '.*' 2>/dev/null | sort)
+
+if [[ ${#_names[@]} -eq 0 ]]; then
+  printf '没找到任何命令(目录: %s)\n' "$BIN_DIR" >&2
+  exit 1
+fi
+
+printf 'YAO*OS 命令索引 —— 共 %d 条\n' "${#_names[@]}"
+printf '详细用法: help <命令>\n\n'
+for _i in "${!_names[@]}"; do
+  printf '  %-*s  %s\n' "$_max" "${_names[$_i]}" "${_descs[$_i]}"
+done
+printf '\n系统版本: usb-version    终端键位: terminal-keys\n'

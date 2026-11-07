@@ -16,6 +16,18 @@
 #
 set -uo pipefail
 
+# --help 必须在任何检查/修复动作之前短路 —— 否则不认识的参数会掉进
+# 全量修复模式(含 apt-get 安装分支), 真机 2026-11-07 实测 --help 跑了 8 秒。
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  cat <<'USAGE'
+用法:
+  music im-fix          检查 + 修复 + 立刻启动
+  music im-fix --check  只检查不改
+  music im-fix --help   显示本帮助(不执行任何检查或修改)
+USAGE
+  exit 0
+fi
+
 CHECK_ONLY=0
 [[ "${1:-}" == "--check" ]] && CHECK_ONLY=1
 

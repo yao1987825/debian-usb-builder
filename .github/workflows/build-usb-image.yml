@@ -188,6 +188,11 @@ jobs:
       - name: 用户命令(终端体系/代理/诊断)回归测试
         run: bash scripts/test-commands.sh
 
+      # 郴州实时公交是本地项目(没有上游可对照), 集成时最容易坏在"接线"上:
+      # 代理没摘 / 无参数掉进 REPL / 少了 --json —— 这几个都有断言。
+      - name: 郴州实时公交回归测试
+        run: bash scripts/test-bus.sh
+
       - name: 构建镜像
         run: |
           # 构建日志同时落一份到 build-image.log: 构建失败时作为 artifact 上传,

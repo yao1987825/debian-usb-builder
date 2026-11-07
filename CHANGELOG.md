@@ -13,6 +13,209 @@ GitHub Actions 自动构建镜像并发布到 [Releases](https://github.com/yao1
 
 ---
 
+## v1.9.0 (2026-11-07)
+
+**新增功能：`bus` —— 郴州实时公交进镜像**（线路 / 站点 / 实时车辆 / 发车时刻表 / 附近站点）。
+
+集成的是本地项目「郴州实时公交」：郴州公交行安卓客户端（`com.chenzhou.bus`）
+接口的 Python 绑定，接口逆向自那个客户端。
+
+```bash
+bus                              # 打帮助
+bus lines                        # 全部线路
+bus search 2路                   # 搜线路 / 站点 / 地标
+bus line 20000002                # 某条线路的站点表
+bus realtime 20000002 5          # 第 5 站的实时车辆（车牌/还差几站/多少米/几分钟到/拥堵）
+bus schedule 20000002            # 发车时刻表
+bus nearby 25.7936 113.0176 800  # 附近站点
+bus cli                          # 交互式查询
+bus search 2路 --json            # 结构化输出（给脚本或 AI 用）
+```
+
+### 🔧 集成时改的三处（都是"接进 U 盘系统之后才能用"）
+
+1. **必须绕开环境代理**。这套系统的登录 shell 会经 `/etc/profile.d/99-proxy.sh`
+   导出 `http_proxy`，而这个接口是**国内 IP 上的纯 HTTP** ——
+   实测带代理时 `curl` 直接 `http=000`（连都连不上），摘掉就 `200` / 16ms。
+   所以 bash 包装脚本和 `client.py` 里**各摘一次**（双保险）。
+   这跟音乐工具 `single.py` 是同一个坑。
+2. **无参数打帮助，不掉进交互式 REPL**。REPL 会等输入，脚本里一敲就卡死；
+   想交互用 `bus cli`。
+3. **加了 `--json`**。给脚本和 AI 用的结构化通道，免得 AI 去解析中文表格。
+
+### 🤖 AI 技能 `chenzhou-bus`
+
+"2 路到火车站还有多久" —— AI 自己去查实时车辆，然后告诉你还有几站、
+多少米、几分钟、堵不堵。
+
+### ✅ 回归测试 `scripts/test-bus.sh`
+
+这个项目是**本地项目**（没有上游可对照），集成时最容易坏在"接线"上：
+命令在但 `PYTHONPATH` 没指对、`requests` 没装、**代理没摘**、
+无参数掉进 REPL、少了 `--json` —— 这几个都有断言。
+
+测试用**假的 requests**（拦掉 `Session.post` 返回固定 JSON），离线跑，
+CI 里不该有依赖外网的服务端。
+
+### 🔪 代理功能整个删掉了
+
+`proxy` 命令、`/etc/profile.d/99-proxy.sh`、`/etc/proxy.conf`、
+venv 里的 PySocks、`music proxy` / `music setup-proxy` —— 全部没有。
+
+**为什么删**：以前镜像会往**每个终端**里自动 `export http_proxy`
+（登录 shell 走 `/etc/profile.d`，图形终端走 `~/.bashrc`）。
+于是"想用代理"变成了"所有工具都被代理"，而镜像里自己的工具走的全是国内接口 ——
+真机实测，一个都连不上：
+
+| 命令 | 带代理 | 直连 |
+| --- | --- | --- |
+| `train 北京 上海` | ❌ "打不开 12306 余票页" | ✅ |
+| `travel weather 郴州` | ❌ `requests` 不支持 socks5 → `InvalidSchema` | ✅ |
+| `bus search 2路` | ❌ `curl http=000`（连都连不上） | ✅ `200` / 16ms |
+
+也就是说：代理功能开着的时候，镜像**一半的工具是坏的**。
+
+**删掉之后会失去什么**：只有一件 —— opencode 连 Claude / GPT。
+实测国内这几个模型 API 的直连情况：
+
+| 模型 API | 直连 | 备注 |
+| --- | --- | --- |
+| MiniMax | ✅ 通 | 国产模型, 直连即可 |
+| DeepSeek | ✅ 通 | 国产模型, 直连即可 |
+| Claude (anthropic) | ❌ 403 | Cloudflare 地区封锁, 需要 http/https 代理 |
+| GPT (openai) | ❌ 连不上 | 需要 http/https 代理 |
+
+要代理就自己 `export http_proxy=http://<地址>:<端口>`（**必须 http/https**，
+`socks5://` Python 和 Bun 都不认）。
+
+**保留的最小护栏**：镜像不再注入代理，但用户自己 export 的变量还在，
+所以走国内接口的工具仍然会主动绕开（否则上面那张表会再次发生）：
+
+- `bus` / `chenzhou_bus`：`client.py` 里 `os.environ.pop` 摘掉代理变量；
+- `music`：`PROXY_OFF=( -u http_proxy ... )`（本来就有的护栏）；
+- `train`：**新增** `urllib.request.ProxyHandler({})` —— urllib 默认读环境代理，
+  以前 train 会跟着代理一起坏；
+- `travel`：**新增** `amap_nav.py` 里摘掉代理变量 —— 同理；
+- `opencode`：保留"认出 socks5 并摘掉改走直连"，**删掉**了"扫端口找其它
+  HTTP 代理"那套逻辑（镜像不管代理了，用户要代理自己 export 一个 http/https 的）。
+
+**新增的两道防线**（防止以后又被带回来）：
+
+- 构建期（`build-image.sh`）：断言镜像里**没有** `99-proxy.sh` / `proxy.conf` /
+  `proxy` 命令 —— 有就直接 `die`；
+- 校验期（`verify-image.sh`）：同样反查一遍；
+- 回归期（`scripts/test-commands.sh`）：本地也查一遍，
+  外加确认 `bus` / `client.py` 的"忽略环境代理"护栏还在。
+
+### 🐛 修 v1.8.0 带出来的一个坏东西：AGENTS.md 被截断
+
+v1.8.0 那次改动把 `overlay/home/user/.config/opencode/AGENTS.md` 的**文件尾部**
+写成了 `- \`/e` + 350 个 NUL 字节，后面该有的内容（"不要碰的东西"里的两条、
+以及整个"## 报告"一节）全没了。
+
+**这个坏东西阴在哪**：
+
+- 文件大小看着差不多，git 正常提交，**所有"文件存在"类断言都是绿的**；
+- 但 AI 读到的 AGENTS.md 少了半截 —— 而 AGENTS.md 正是"告诉 AI 这台机器
+  有哪些命令和技能"的那份清单；
+- `grep` 会把这种文件当成二进制（"匹配到二进制文件"），排查时特别费劲。
+
+修法：从上一个完好版本取回尾部补上，并加了两道防线 ——
+
+- **构建期**（`build-image.sh`）：overlay 拷进 rootfs 之后扫一遍所有文本类文件，
+  发现 NUL 字节就 `die` 并打出文件名；
+- **回归期**（`scripts/test-commands.sh`）：本地也扫一遍，提交前就能发现。
+
+> 检测 NUL 字节不能用 `grep -q $'\x00'` —— bash 变量里存不了 NUL，
+> `$'\x00'` 是**空串**，于是 grep 会匹配**所有**文件（第一版就是这么写的，
+> 一跑就把 70 多个文件全报出来了）。正确做法是比"去掉 NUL 后还剩多少字节"
+> 和"原文件多少字节"。
+
+### 📖 文档
+
+- README 新增「4k. 郴州实时公交（`bus` 命令）」；
+- 仓库目录树补 `bus` 命令、`chenzhou_bus/` 模块、`chenzhou-bus` 技能、`test-bus.sh`；
+- `usb-version` 的命令清单 / 技能清单 / 组件清单示例同步更新。
+
+### 🚀 开机提速：终端从 +47 秒提前到 +1 秒（"开机约一分钟"的根因）
+
+**症状**：真机开机后黑屏 / 空桌面约 1 分钟，终端才自己冒出来。
+
+**根因（三层，全部真机实测）**：
+
+1. **终端自启项在等一个永远等不到的信号**。`xfce-terminal.desktop` 等
+   `fcitx5-remote -n` 返回非空 —— 但那个值**只有存在输入窗口时才非空**，
+   而窗口正是这个自启项自己要开的：鸡生蛋死锁。决定性实验：桌面上一个窗口
+   都没有时，`NameHasOwner` 已经是 `true`，`-n` 连续 13 秒照样是空。
+   于是每次开机都卡满 `terminal-keepalive` 的 **45 秒宽限期**才被救场
+   （实测终端进程比 X 会话晚 **47 秒**，标题还是守护打的"终端"，
+   连键位速查表都没有）。
+2. **`fcitx5-remote -o`（激活）会把输入法打回英文**。复现两次：
+   `rime → -o → keyboard-us`。它排在 rime 切换循环**之后**，把循环辛苦
+   切好的中文态在写日志前踢回英文，会话末存盘还把 `DefaultIM` 毒化成
+   `keyboard-us`，一轮轮自我强化。
+3. **boot 日志是废的**。`printf "%s im=%s"` 里的 `%s` 被 `.desktop` 的
+   字段码展开吃掉，17 行日志全长成 ` im=`（85 字节），排查时一点忙都帮不上。
+
+**修法**：
+
+- 终端自启改等 `NameHasOwner org.fcitx.Fcitx5`（真机 2~4 秒，上限 10 秒，
+  超时照样开不卡桌面）；`terminal-keepalive` 宽限期 45s → 15s；
+- `-o` 挪到 rime 切换循环**之前**（切完就不再动它）；
+- 日志行改 `echo "$(date -Is) im=$(...)"` —— 全程无 `%`，免疫字段码展开。
+
+**结果（真机冷启动对比）**：
+
+| 指标 | 修前 | 修后 |
+| --- | --- | --- |
+| 终端出现 | session +47s（守护救场，无速查表） | **session +1s**（`debian-usb`，带速查表） |
+| 开机末态输入法 | 英文直写 `keyboard-us` | **`rime` 中文态** |
+| boot 日志 | 17 行 ` im=` | `2026-11-07T11:56:58+08:00 im=rime` |
+| 终端数量 | 1（但错的那只） | 1（对的那只，无双开） |
+
+**新增断言**（构建期 `build-image.sh` + 校验期 `verify-image.sh`）：
+终端自启必须等 `NameHasOwner` 且**不得**再等 `-n`；`-o` 必须排在
+`-s rime` 之前（按字节偏移比对，顺序错直接 `die`）。
+
+### 🛠 两条命令的 `--help` 会"真干活"
+
+- **`music-im-fix --help`**：只认 `--check`，不认识的参数掉进**全量修复模式**
+  （里面还有 `apt-get install` 分支）—— 真机实测 `--help` 跑了 8 秒。
+  现在先短路输出用法，9ms 退出；
+- **`screenshot --help`**：同样掉进默认行为，`--help` 真的**拍了张照**。
+  现在先短路输出用法，8ms 退出；
+- `test-commands.sh` 补两条断言：`--help` 必须只输出用法、不得出现
+  修复标记（`✅`/`❌`/`apt-get`）或 `scrot` 调用。
+
+> 扫描方法：真机上对 `/usr/local/bin` 里 26 条项目命令逐个跑 `--help`
+> （8 秒超时）。23 条正常，2 条按上面修掉，另 4 条（`audio-setup`、
+> `travel`、`usb-version`、`keyboard-fix`）本来就支持或幂等无副作用。
+
+### 🆕 `help` 命令：一条命令查全系统（新开机终端提示行的指向目标）
+
+- 新增 `/usr/local/bin/help`：**运行时**扫 `/usr/local/bin`，读每个脚本头部的
+  `# 命令名 —— 一句话简介` 生成索引（当前 24 条）。没有静态清单 ——
+  以后新脚本头部带上这一行，`help` 里自动出现，不用改任何地方；
+- `help <命令>` 转发 `<命令> --help`；`help <不存在>` 明确报错；
+- 为此压掉 bash 的 `help` 内建（`.bashrc` 追加 `enable -n help`）——
+  bash 规则是"内建优先于 PATH"，不 disable 用户敲 `help` 永远轮不到我们这个；
+- `test-commands.sh` 补两组断言：① overlay 每个脚本必须有头部简介行
+  （索引质量的唯一兜底）；② `help` 列表/转发/报错三种行为。
+
+### 🎨 品牌：系统名 YAO*OS（开机第一眼看到的就是它）
+
+- **开机终端**（`terminal-welcome`）：不再自动打键位速查表，改打
+  **YAO*OS 横幅 + 一行「输入 help 查看系统功能」**（用户 2026-11-07：
+  "不需要一开机就显示终端一些说明，功能查询用专门的命令"）。
+  速查表没删 —— `terminal-keys` / `music keys` 随时手动看；
+- 终端窗口标题 `debian-usb` → `YAO*OS`（任务栏/Alt+Tab 直接看到）；
+- `usb-version` 摘要标题 `=== Debian U 盘系统 ===` → `=== YAO*OS ===`；
+- README / AGENTS.md / train-tickets README 里系统称呼同步；
+- **不动**：hostname `debian-usb`、仓库名、`/usr/local/share/debian-usb/` 路径
+  （纯改名有兼容风险，没必要）。
+
+---
+
 ## v1.8.0 (2026-11-02)
 
 **一句话：这一版把"写了配置但没生效"和"命令没断言/没文档"这两类集成问题清了一遍。**

@@ -138,9 +138,10 @@ fi
 [[ -f overlay/home/user/.config/opencode/AGENTS.md ]] \
   && ok "有 AGENTS.md(告诉 AI 这台机器是干什么的)" || fail "缺 AGENTS.md"
 
-echo "== opencode 的 socks5 代理适配(用户实测报 unsupported proxy protocol) =="
-# opencode 是 Bun 写的, 只认 http/https 代理; 镜像里的 proxy 默认导出 socks5://,
-# 不做适配的话用户一开代理就报 UnsupportedProxyProtocol。
+echo "== opencode 的 socks5 识别(用户实测报 unsupported proxy protocol) =="
+# opencode 是 Bun 写的, 只认 http/https 代理。镜像 v1.9.0 起不再预置代理,
+# 但用户自己 export socks5 的话还是会撞上 UnsupportedProxyProtocol ——
+# 所以包装脚本仍要认得出 socks5 并摘掉它改走直连。
 [[ -f overlay/usr/local/bin/opencode ]] && ok "有 opencode 包装脚本" || fail "缺 opencode 包装脚本"
 if grep -q "socks5://" overlay/usr/local/bin/opencode; then
   ok "包装脚本识别 socks5 代理"
@@ -148,7 +149,7 @@ else
   fail "包装脚本没识别 socks5 代理 —— 用户开代理就会报 unsupported proxy protocol"
 fi
 if grep -q "direct_ok" overlay/usr/local/bin/opencode; then
-  ok "包装脚本会在 socks5 时尝试直连"
+  ok "包装脚本能体检直连是否可用(--net-check)"
 else
   fail "包装脚本没有直连兜底"
 fi

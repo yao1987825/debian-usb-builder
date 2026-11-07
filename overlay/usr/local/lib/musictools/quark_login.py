@@ -346,7 +346,7 @@ def cmd_login(args) -> int:
         bad(f"连不上夸克接口: {type(e).__name__}: {e}")
         if proxies:
             warn(f"当前走的是代理 {proxies['http']} —— 代理没开/地址不对也会这样")
-            say("检查一下: proxy status")
+            say("检查一下: 代理地址是否填对 / 代理是否在跑")
         else:
             warn("没配代理。如果是网络不通, 先跑: music net")
         die("拿不到二维码 token, 登录没法开始", 3)

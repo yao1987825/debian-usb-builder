@@ -215,6 +215,16 @@ struct_check() {
     else
       die "fcitx5 自启项没有'重试切 rime 直到 -n 报 rime'的逻辑 —— 开机输入法会停在英文直写态"
     fi
+    # -o 激活会把输入法打回 DefaultIM(2026-11-07 真机: rime → -o → keyboard-us)
+    # 必须排在 rime 切换之前, 否则开机末态永远是英文直写。
+    local _o_at _s_at
+    _o_at="$(grep -bo 'fcitx5-remote -o' <<<"$_fc" | head -1 | cut -d: -f1)"
+    _s_at="$(grep -bo 'fcitx5-remote -s rime' <<<"$_fc" | head -1 | cut -d: -f1)"
+    if [[ -n "$_o_at" && -n "$_s_at" && "$_o_at" -lt "$_s_at" ]]; then
+      ok "fcitx5 自启项 -o 激活排在 rime 切换之前(不会把切好的 rime 打回英文)"
+    else
+      die "fcitx5 自启项 -o 没排在 rime 切换之前 —— -o 会把输入法打回英文 DefaultIM(2026-11-07 真机实测)"
+    fi
     if $SUDO debugfs -R "stat /home/user/.config/autostart/fcitx5-default.desktop" "$p3" 2>/dev/null | grep -q "Inode:"; then
       die "还留着 fcitx5-default.desktop —— 它会拉起第二个 fcitx5 实例抢 IM context"
     else
@@ -253,18 +263,34 @@ struct_check() {
         die "缺少自启项 ${_a}.desktop —— 终端守护/键位设置都不会生效"
       fi
     done
-    # 开机那个终端必须接上键位速查表(小白面对空终端不知道能干什么)
-    local _xt
+    # 开机那个终端必须接 terminal-welcome, 且打的是 YAO*OS 横幅 ——
+    # 用户(2026-11-07): 开机显示系统名, 不自动显示终端说明(功能查询走 help)。
+    local _xt _tw
     _xt="$($SUDO debugfs -R "cat /home/user/.config/autostart/xfce-terminal.desktop" "$p3" 2>/dev/null || true)"
     if grep -q "terminal-welcome" <<<"$_xt"; then
-      ok "开机终端已接上键位速查表"
+      ok "开机终端已接上 terminal-welcome"
     else
-      die "开机终端没接 terminal-welcome —— 登录后是个空终端, 用户不知道能干什么"
+      die "开机终端没接 terminal-welcome —— 登录后是个空终端, 看不出这是什么系统"
+    fi
+    _tw="$($SUDO debugfs -R "cat /usr/local/bin/terminal-welcome" "$p3" 2>/dev/null || true)"
+    if grep -q "YAO*OS" <<<"$_tw" && grep -q "输入 help 查看系统功能" <<<"$_tw"; then
+      ok "开机横幅 = YAO*OS + help 提示"
+    else
+      die "terminal-welcome 不打 YAO*OS 横幅/help 提示 —— 开机第一眼看不到系统名"
+    fi
+    if grep -qE '^[^#]*terminal-keys' <<<"$_tw"; then
+      die "terminal-welcome 还在开机调 terminal-keys(速查表) —— 用户说不要自动显示说明"
+    fi
+    ok "开机不再自动打键位速查表"
+    if grep -q "NameHasOwner string:org.fcitx.Fcitx5" <<<"$_xt"; then
+      ok "开机终端等 fcitx5 上总线再开(首窗口就能打中文, 且不会死锁)"
+    else
+      die "开机终端没等 fcitx5 上总线 —— 会退回 v1.0.3 的 IM 握手竞态(首窗口打不出中文)"
     fi
     if grep -q "fcitx5-remote -n" <<<"$_xt"; then
-      ok "开机终端会等 rime 引擎就绪再开(首个窗口就能打中文)"
+      die "开机终端还在等 fcitx5-remote -n —— 没窗口时它恒为空, 开机会白屏 45 秒(真机 2026-11-07 实测)"
     else
-      die "开机终端没等 rime 引擎 —— 第一个窗口会是英文直写态, 只有开新标签页才能打中文"
+      ok "开机终端没在等 fcitx5-remote -n(没窗口时恒为空, 等它=死锁)"
     fi
     if grep -q -- "--maximize" <<<"$_xt"; then
       ok "开机终端直接最大化"
@@ -365,6 +391,25 @@ struct_check() {
     done
     ok "traintools 模块齐全"
 
+    # ---- 郴州实时公交(bus) ----
+    if $SUDO debugfs -R "stat /usr/local/bin/bus" "$p3" 2>/dev/null | grep -q "Inode:"; then
+      ok "实时公交入口已装: /usr/local/bin/bus"
+    else
+      die "缺 /usr/local/bin/bus —— 用户没有查实时公交的入口"
+    fi
+    for _m in __init__ client cli coords models; do
+      if ! $SUDO debugfs -R "stat /usr/local/lib/chenzhou_bus/${_m}.py" "$p3" 2>/dev/null | grep -q "Inode:"; then
+        die "缺 chenzhou_bus/${_m}.py —— bus 命令跑不起来"
+      fi
+    done
+    ok "chenzhou_bus 模块齐全"
+    # 代理摘除: 少了它 bus 查询会被扔进代理, 表现是"浏览器能看, bus 查不到"
+    if $SUDO debugfs -R "cat /usr/local/bin/bus" "$p3" 2>/dev/null | grep -q "unset http_proxy"; then
+      ok "bus 包装脚本摘了环境代理"
+    else
+      die "bus 包装脚本没摘环境代理 —— 查询会被扔进代理然后连不上"
+    fi
+
     # ---- opencode + 网络排障 skills ----
     if $SUDO debugfs -R "stat /usr/local/bin/opencode" "$p3" 2>/dev/null | grep -q "Inode:"; then
       ok "opencode 入口已装: /usr/local/bin/opencode"
@@ -376,11 +421,15 @@ struct_check() {
     else
       die "缺 /usr/local/lib/opencode/opencode —— 包装脚本背后没有真身, opencode 起不来"
     fi
-    # Bun 的 HTTP 客户端不支持 socks5 代理, 包装脚本不处理就是 "unsupported proxy protocol"
+    # Bun 的 HTTP 客户端不支持 socks5 代理, 包装脚本不摘掉就是 "unsupported proxy protocol"
     if $SUDO debugfs -R "cat /usr/local/bin/opencode" "$p3" 2>/dev/null | grep -q "socks5"; then
-      ok "opencode 包装脚本带 socks5 代理适配"
+      ok "opencode 包装脚本带 socks5 识别(会摘掉改走直连)"
     else
-      die "opencode 包装脚本没有 socks5 处理逻辑 —— 代理开着就会报 unsupported proxy protocol"
+      die "opencode 包装脚本没有 socks5 处理逻辑 —— 用户自己 export socks5 就会报 unsupported proxy protocol"
+    fi
+    # 反过来: 镜像不再管代理, 包装脚本不该再去"扫端口找代理"
+    if $SUDO debugfs -R "cat /usr/local/bin/opencode" "$p3" 2>/dev/null | grep -qE 'for p in 8080 7890 3128'; then
+      die "opencode 包装脚本里还在扫端口找代理 —— 代理功能已经删了, 不该再有这套逻辑"
     fi
     if $SUDO debugfs -R "cat /home/user/.config/opencode/opencode.json" "$p3" 2>/dev/null | grep -q '"bash": "allow"'; then
       ok "opencode 配置已就位(权限已放开)"
@@ -391,16 +440,16 @@ struct_check() {
     # diagram-drawio / textbook-fetch / travel-planner 三个**装进镜像了却没人查** ——
     # 少一个技能, 结构校验照样放行, 用户刷完盘才发现 AI 不会用。
     for _sk in lan-topology lan-triage lan-repair lan-capture wifi-triage \
-               travel-planner diagram-drawio textbook-fetch; do
+               travel-planner diagram-drawio textbook-fetch chenzhou-bus; do
       if ! $SUDO debugfs -R "stat /home/user/.config/opencode/skills/${_sk}/SKILL.md" "$p3" 2>/dev/null | grep -q "Inode:"; then
         die "缺技能 ${_sk} —— AI 少了一块专业知识"
       fi
     done
-    ok "8 个 opencode 技能已就位"
+    ok "9 个 opencode 技能已就位"
     # AGENTS.md 是 AI 的"这台机器有什么"清单, 必须提到每个技能和主要命令
     _agents_md="$($SUDO debugfs -R "cat /home/user/.config/opencode/AGENTS.md" "$p3" 2>/dev/null || true)"
     if [[ -n "$_agents_md" ]]; then
-      for _sk in travel-planner diagram-drawio textbook-fetch wifit3; do
+      for _sk in travel-planner diagram-drawio textbook-fetch wifit3 chenzhou-bus bus; do
         if ! grep -q "$_sk" <<<"$_agents_md"; then
           die "AGENTS.md 里没提 ${_sk} —— AI 不知道自己有这个"
         fi
@@ -492,7 +541,7 @@ struct_check() {
     # 网络: 没有 NetworkManager 就是一台没有网络的机器, 必须卡住
     local _f
     for _f in /usr/local/bin/net-doctor /usr/local/bin/net-rescue /usr/local/bin/usb-grow.sh \
-              /usr/local/bin/screen-fit /usr/local/bin/proxy \
+              /usr/local/bin/screen-fit /usr/local/bin/help \
               /usr/local/bin/music-health /usr/local/bin/music-im-fix /usr/bin/nmcli \
               /usr/local/bin/terminal-keepalive /usr/local/bin/terminal-new \
               /usr/local/bin/terminal-keys /usr/local/bin/terminal-setup \
@@ -507,7 +556,7 @@ struct_check() {
     # 在真机上表现为"命令跑起来毫无反应", 必须在构建期就卡住。
     local _s _d
     for _s in /usr/local/bin/music /usr/local/bin/net-doctor /usr/local/bin/net-rescue /usr/local/bin/usb-grow.sh \
-               /usr/local/bin/screen-fit /usr/local/bin/proxy \
+               /usr/local/bin/screen-fit /usr/local/bin/help \
                /usr/local/bin/music-health /usr/local/bin/music-im-fix \
                /usr/local/bin/terminal-keepalive /usr/local/bin/terminal-new \
                /usr/local/bin/terminal-keys /usr/local/bin/terminal-setup \
@@ -579,23 +628,17 @@ struct_check() {
       fi
     fi
 
-    # 代理: 预置配置必须存在, 且生成出来的 shell 必须合法
-    _d="$(mktemp -d)"
-    if $SUDO debugfs -R "dump /etc/profile.d/99-proxy.sh ${_d}/99-proxy.sh" "$p3" 2>/dev/null \
-       && [[ -s "${_d}/99-proxy.sh" ]]; then
-      if bash -n "${_d}/99-proxy.sh" 2>/dev/null; then
-        ok "/etc/profile.d/99-proxy.sh 存在且语法正确"
-      else
-        die "/etc/profile.d/99-proxy.sh 语法错误, source 它会让登录失败"
+    # 代理: v1.9.0 起整个功能删了 —— 所以这里要确认**没有残留**。
+    # 以前这里是"99-proxy.sh 必须存在且语法正确", 现在反过来了:
+    # 只要镜像里还留着 99-proxy.sh / proxy.conf / proxy 命令, 就说明
+    # "删干净"这件事没做到 —— 而它一存在, 每个终端都会自动 export http_proxy,
+    # 镜像自己的 train/travel/bus 就全连不上国内接口了。
+    for _px in /etc/profile.d/99-proxy.sh /etc/proxy.conf /usr/local/bin/proxy; do
+      if $SUDO debugfs -R "stat ${_px}" "$p3" 2>/dev/null | grep -q "Inode:"; then
+        die "镜像里还有 ${_px} —— 代理功能不是删干净了吗(它一存在就会给所有终端注入 http_proxy)"
       fi
-      if grep -q 'PROXY_URL=' "${_d}/99-proxy.sh"; then
-        ok "预置代理: $(grep -oP 'PROXY_URL="\K[^"]+' "${_d}/99-proxy.sh" | head -1)"
-      else
-        warn "99-proxy.sh 里没找到 PROXY_URL"
-      fi
-    else
-      die "根分区缺少 /etc/profile.d/99-proxy.sh"
-    fi
+    done
+    ok "代理功能已移除(镜像里没有 99-proxy.sh / proxy.conf / proxy 命令)"
 
     _d="$(mktemp -d)"
     if $SUDO debugfs -R "dump /usr/local/lib/musictools/quark_login.py ${_d}/quark_login.py" "$p3" 2>/dev/null \

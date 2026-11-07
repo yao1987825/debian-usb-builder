@@ -15,7 +15,6 @@
 #   music which                     打印各组件路径
 #   music net                       网络自检
 #   music quark-login               扫码登录夸克(不需要浏览器)
-#   music proxy [status|on|off]      代理开关
 #   music screen                    自动匹配显示器原生分辨率
 #   music health                    一键体检(不确定哪里坏了就跑这个)
 #   music im-fix                    修复中文输入法
@@ -61,7 +60,6 @@ usage() {
   music quark-login               扫码登录夸克, 写入 cookie(不需要浏览器) ★下歌前必做
   music quark-status              检查夸克 cookie 还能不能用 / 缺不缺主凭证
   music quark-clear               清空夸克 cookie
-  music proxy [status|on|off]      代理开关 (等同于 proxy 命令)
   music screen [--list]           自动匹配每块显示器的原生分辨率
   music health                  一键体检: 输入法/分辨率/分区/权限/网络/夸克Cookie
   music health --fix            体检 + 自动修能安全修的
@@ -70,8 +68,6 @@ usage() {
   music keys                     终端键位速查表(标签页怎么切、终端没了怎么找回来)
   music terminal [on|off|status] 终端守护: 窗口全没了自动拉起 / 暂停 / 看状态
   music terminal new             在当前终端窗口加一个标签页
-  music setup-proxy [地址]        设置代理 (等同 music proxy on <地址>)
-  music setup-proxy off           清空代理 (等同 music proxy off)
   music out                       打印歌曲分区路径
   music ls                        列出已下载的歌曲
   music which                     打印各组件路径
@@ -218,9 +214,10 @@ export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-${HOME_DIR}/.cache/
 
 # 下载工具一律走直连: 实测同一时刻 站点/夸克/封面 直连全是 200, 走 LAN 代理
 # 反而全断(gequhai 回 403 反爬页 -> 搜到 0 条, 夸克/酷我直接 SSL 失败)。
-# 而登录 shell 会经 /etc/profile.d/99-proxy.sh 自动导出 http_proxy, requests
-# 即使拿到空代理配置也会去读它, 于是"浏览器能看、music search 搜不到"。
-# 只有下面这几个下载命令摘代理, git/pip 这类真需要代理的命令不受影响。
+# 镜像**不再预置代理**(v1.9.0 起删掉了 proxy 命令和 /etc/profile.d/99-proxy.sh),
+# 但用户自己 export http_proxy 的话 requests 照样会去读它 ——
+# 于是"浏览器能看、music search 搜不到"。所以下面这几个下载命令仍然摘掉代理变量,
+# 别的命令(git/pip)要代理的话照常用。
 PROXY_OFF=( -u http_proxy -u https_proxy -u all_proxy -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY )
   "${VENV_LIST}/bin/python" -m playwright install --with-deps chromium
   echo "[music] 完成"
@@ -244,27 +241,6 @@ cmd_wifi() {
   fi
   echo "错误: 找不到 /usr/local/bin/wifi" >&2
   return 1
-}
-
-# ---------------- 代理 ----------------
-# 代理的真正实现在 /usr/local/bin/proxy: 它要同时管 apt 配置、下载器配置、
-# 终端环境变量和 PySocks, 塞在这里只会让 music 变成一个什么都干的大脚本。
-cmd_proxy() {
-  if [[ ! -x /usr/local/bin/proxy ]]; then
-    echo "错误: 找不到 /usr/local/bin/proxy" >&2
-    return 1
-  fi
-  exec /usr/local/bin/proxy "$@"
-}
-
-cmd_setup_proxy() {
-  # 兼容旧用法: music setup-proxy [地址] | music setup-proxy off
-  local arg="${1:-}"
-  case "$arg" in
-    off|--off|clear) cmd_proxy off ;;
-    "")              cmd_proxy status ;;
-    *)               cmd_proxy on "$arg" ;;
-  esac
 }
 
 # ---------------- 夸克登录 ----------------
@@ -480,12 +456,11 @@ cmd_doctor() {
   else
     printf '%-22s %s\n' "域名解析" "❌ 失败(跑 music net 看详情)"
   fi
-  printf '%-22s %s\n' "  代理" "$(env | grep -qiE '^(http|https)_proxy=' && echo '⚠️  当前 shell 设了代理' || echo '无')"
+  printf '%-22s %s\n' "  环境代理" "$(env | grep -qiE '^(http|https)_proxy=' && echo '⚠️  当前 shell 设了代理(music 下载命令会自动绕开)' || echo '无')"
   echo "  详细诊断: music net   自动修复: music net --fix"
   if ! command -v nmcli >/dev/null 2>&1; then
     echo "  连不上网且装不了 NetworkManager 时: sudo net-rescue"
   fi
-  echo "  代理开关: music proxy status   (socks5://192.168.6.1:1070)"
 
   # 显示: 每块屏各用各的原生分辨率, 插到不同显示器上才不会是拉伸的
   printf '\n%-22s %s\n' "" "---- 显示 ----"
@@ -528,14 +503,12 @@ case "${1:-}" in
   quark-status)        shift; cmd_quark status "$@" ;;
   quark-clear)         shift; cmd_quark clear "$@" ;;
   quark)               shift; cmd_quark "$@" ;;
-  proxy)               shift; cmd_proxy "$@" ;;
   screen|display|res)  shift; cmd_screen "$@" ;;
   health|check-all)    shift; cmd_health "$@" ;;
   im-fix|imfix)        shift; cmd_im_fix "$@" ;;
   im-toggle|中英)      shift; cmd_im_toggle "$@" ;;
   keys|键位|help-keys) shift; cmd_keys "$@" ;;
   terminal|term)       shift; cmd_terminal "$@" ;;
-  setup-proxy)         shift; cmd_setup_proxy "$@" ;;
   setup-gui)           cmd_setup_gui ;;
   setup-playwright)    cmd_setup_playwright ;;
   ""|-h|--help|help)   usage ;;

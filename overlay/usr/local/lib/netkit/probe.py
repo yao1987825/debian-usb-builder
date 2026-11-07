@@ -361,7 +361,7 @@ def check_proxy() -> list:
                 WARN,
                 "环境里设了代理",
                 " ".join(f"{k}={v}" for k, v in env.items()),
-                "U 盘上通常没跑 Clash, 代理会让下载全失败: unset http_proxy https_proxy all_proxy",
+                "代理会让走国内接口的命令(train/travel/bus)连不上: unset http_proxy https_proxy all_proxy",
             )
         )
     else:

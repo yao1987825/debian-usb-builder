@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+#
+# bus —— 郴州实时公交（线路 / 站点 / 实时车辆 / 发车时刻表）
+#
+# 这台 U 盘系统不只是"下载听歌的机器", 也是一个"出行查询机":
+# 出门前在 U 盘上敲一行就知道哪路车还有几分钟到, 不用掏手机。
+#
+# 用法:
+#   bus                              # 打帮助
+#   bus lines                        # 列出全部线路
+#   bus search 2路                   # 搜索线路 / 站点 / 地标
+#   bus line 30000002                # 某条线路的站点表
+#   bus realtime 30000002 21         # 某站的实时车辆(车牌/距离/预计到站/拥堵)
+#   bus schedule 30000002            # 发车时刻表
+#   bus nearby 25.7936 113.0176 800  # 附近站点(GCJ-02 坐标)
+#   bus cli                          # 交互式查询
+#   bus search 2路 --json            # 结构化输出(给脚本或 AI 用)
+#
+# 实现说明:
+#   代码来自本地项目「郴州实时公交」(Python 绑定, 接口逆向自「郴州公交行」
+#   安卓客户端 com.chenzhou.bus), 装在 /usr/local/lib/chenzhou_bus/。
+#
+#   唯一依赖是 requests(镜像里已装 python3-requests)。
+#
+#   ⚠ 必须绕开环境代理: 这个接口是国内 IP 上的纯 HTTP —— 实测带代理时 curl 直接
+#   http=000 连都连不上, 摘掉就 200/16ms。
+#   镜像 v1.9.0 起不再预置代理(99-proxy.sh 删了), 但用户自己 export http_proxy
+#   的话照样中招, 所以在下面把代理变量摘干净。
+#
+set -uo pipefail
+
+B="$(readlink -f "${BASH_SOURCE[0]}")"
+LIB="$(dirname "${B}")/../lib/chenzhou_bus"
+
+if [[ ! -d "${LIB}" ]]; then
+  echo "bus: 找不到 ${LIB}, 镜像装坏了" >&2
+  exit 127
+fi
+
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "bus: 没有 python3" >&2
+  exit 127
+fi
+
+if ! python3 -c "import requests" >/dev/null 2>&1; then
+  echo "bus: 没装 python3-requests —— 查不了公交(装: sudo apt-get install -y python3-requests)" >&2
+  exit 127
+fi
+
+# 摘掉环境代理(见上面的说明)。client.py 里也摘了一遍, 这里是双保险:
+# 万一以后有人改了 client.py, 这一层还在。
+unset http_proxy https_proxy all_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY
+
+export PYTHONPATH="$(dirname "${LIB}")${PYTHONPATH:+:$PYTHONPATH}"
+exec python3 -m chenzhou_bus.cli "$@" 2>&1

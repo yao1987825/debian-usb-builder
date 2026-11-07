@@ -431,7 +431,7 @@ IMAGEIO_FFMPEG_EXE=/usr/bin/ffmpeg
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 EOF
 
-# 图形版下载器默认走 Clash(127.0.0.1:7897), 这里给一份清空代理的初始配置
+# 图形版下载器的初始配置。proxy 字段留空(上游认这个键, 但镜像不预置代理了)
 if [[ -f "${ROOTFS_MOUNT}/home/${USER_NAME}/projects/gequhai-downloader/utils.py" ]]; then
   cat > "${ROOTFS_MOUNT}/home/${USER_NAME}/projects/gequhai-downloader/config.json" <<'EOF'
 {

@@ -39,11 +39,6 @@ PIP_INDEX_URL="${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}"
 case "$APT_MIRROR"     in off|none|"") APT_MIRROR="" ;; esac
 case "$PIP_INDEX_URL"  in off|none|"") PIP_INDEX_URL="" ;; esac
 
-# ---- 预置代理(只是写好配置, 不会强制打开) ----
-# /etc/profile.d/99-proxy.sh 会先探测端口通不通, 通了才 export http_proxy;
-# 代理没跑的时候什么都不设, 免得表现成"所有下载全部失败"。
-PROXY_URL_DEFAULT="${PROXY_URL_DEFAULT:-socks5://192.168.6.1:1070}"
-
 IMG_SIZE_MB="${IMG_SIZE_MB:-8192}"               # 镜像总大小 (MiB)
 ESP_SIZE_MB="${ESP_SIZE_MB:-512}"                # EFI 分区
 ROOT_SIZE_MB="${ROOT_SIZE_MB:-6144}"             # 根分区
@@ -135,6 +130,7 @@ COMP_VER_NETKIT="${COMP_VER_NETKIT:-1.1.0}"     # 局域网诊断工具(本仓�
 COMP_VER_TRAIN="${COMP_VER_TRAIN:-1.1.0}"       # 火车票查询(本仓库自写, 标准库重写版)
 COMP_VER_TCH="${COMP_VER_TCH:-1.0.0}"           # 电子课本下载(改自 tchMaterial-parser)
 COMP_VER_TRAVEL="${COMP_VER_TRAVEL:--}"         # 旅游攻略技能: 上游没有版本号, 不编
+COMP_VER_BUS="${COMP_VER_BUS:-1.0.0}"             # 郴州实时公交(本地项目 chenzhou_bus)
 COMP_VER_USBVERSION="${COMP_VER_USBVERSION:-1.0.0}"
 
 
@@ -509,15 +505,15 @@ if [[ "${WITH_PROJECTS}" == "1" ]]; then
   #    命令行单曲下载(music single)复用 gequhai-downloader 里的 gequhai/quark/utils,
   #    这三个模块只依赖 requests, 所以轻量档也能用, 不需要 PyQt6。
   chroot_run su - "$USER_NAME" -c "python3 -m venv /home/${USER_NAME}/.venvs/music"
-  # pysocks 必装: requests 默认不支持 socks5:// 代理, 不装的话设了代理反而直接报错
   # qrcode 是可选增强: 装了才能把夸克登录二维码画在终端里, 没装会退化成打印 URL
-  chroot_run su - "$USER_NAME" -c "/home/${USER_NAME}/.venvs/music/bin/pip install --disable-pip-version-check --no-cache-dir -q requests pysocks qrcode" \
-    || warn "requests/pysocks/qrcode 安装失败(single 命令或扫码二维码不可用)"
+  # (不再装 pysocks: 代理功能 v1.9.0 起整个删了, 没有 socks5 代理要支持)
+  chroot_run su - "$USER_NAME" -c "/home/${USER_NAME}/.venvs/music/bin/pip install --disable-pip-version-check --no-cache-dir -q requests qrcode" \
+    || warn "requests/qrcode 安装失败(single 命令或扫码二维码不可用)"
 
   # ② 图形版(PyQt6): slim 档跳过, 需要时用 music setup-gui 补装
   if [[ "$WITH_PYQT" == "1" ]]; then
     chroot_run su - "$USER_NAME" -c "python3 -m venv /home/${USER_NAME}/.venvs/gequhai-gui"
-    chroot_run su - "$USER_NAME" -c "/home/${USER_NAME}/.venvs/gequhai-gui/bin/pip install --disable-pip-version-check --no-cache-dir -q PyQt6 requests pysocks" \
+    chroot_run su - "$USER_NAME" -c "/home/${USER_NAME}/.venvs/gequhai-gui/bin/pip install --disable-pip-version-check --no-cache-dir -q PyQt6 requests" \
       || warn "PyQt6 安装失败"
   else
     log "slim 档: 跳过 PyQt6 图形界面 (启动后可用 music setup-gui 补装)"
@@ -600,8 +596,7 @@ tar xzf "${_oc_tmp}/${OPENCODE_TARBALL}" -C "$_oc_tmp" opencode \
 # 真身放 /usr/local/lib/opencode/, /usr/local/bin/opencode 是包装脚本(overlay 里):
 # opencode 是 Bun 写的, 它的 HTTP 客户端只认 http/https 代理, 碰上 socks5://
 # 就抛 UnsupportedProxyProtocol(用户实测报 "unsupported proxy protocol")。
-# 包装脚本负责在启动前把代理处理掉: 能直连就直连, 否则找同主机的 HTTP 代理端口,
-# 都不行就报一句人话, 而不是甩一个天书般的协议报错。
+# 包装脚本负责在启动前把 socks5 代理摘掉改走直连, 而不是甩一个天书般的协议报错。
 mkdir -p "${ROOTFS}/usr/local/lib/opencode"
 install -m755 "${_oc_tmp}/opencode" "${ROOTFS}/usr/local/lib/opencode/opencode" \
   || { rm -rf "$_oc_tmp"; die "opencode 安装失败"; }
@@ -695,6 +690,30 @@ fi
 find "${ROOTFS}" -type d -name '__pycache__' -prune -exec rm -rf {} + 2>/dev/null || true
 find "${ROOTFS}" -type f -name '*.pyc' -delete 2>/dev/null || true
 
+# 文本文件里混进 NUL 字节 —— **必须在构建期就炸掉**。
+# 真实踩过(2026-11-02): overlay/home/user/.config/opencode/AGENTS.md 的文件尾部
+# 被写成了"- `/e" + 350 个 NUL, 后面该有的内容("不要碰的东西"/"报告"两节)全没了。
+# 后果很阴: 文件大小看着差不多, git 也正常提交, 但**内容被截断了** ——
+# AI 读到的 AGENTS.md 少了半截, 而所有"文件存在"类断言都还是绿的。
+# 而且 grep 会把这种文件当成二进制("匹配到二进制文件"), 排查时特别费劲。
+# 所以这里扫一遍所有文本类文件, 发现 NUL 就直接 die, 顺带把文件名打出来。
+_nul_bad=""
+while IFS= read -r _f; do
+  # bash 的 $'\x00' 是空串(变量里存不了 NUL), 所以不能用 grep 匹配 NUL。
+  # 改用"去掉 NUL 后还剩多少字节"和"原文件多少字节"比 —— 不一样就说明有 NUL。
+  if [[ "$(tr -d '\000' < "$_f" | wc -c)" != "$(wc -c < "$_f")" ]]; then
+    _nul_bad="${_nul_bad} ${_f#${ROOTFS}/}"
+  fi
+done < <(find "${ROOTFS}" -type f \
+           \( -name '*.md' -o -name '*.yaml' -o -name '*.yml' -o -name '*.json' \
+              -o -name '*.sh' -o -name '*.py' -o -name '*.desktop' -o -name '*.conf' \
+              -o -name '*.txt' -o -name '*.service' -o -name '*.list' \) \
+           -not -path '*/__pycache__/*' 2>/dev/null)
+if [[ -n "${_nul_bad}" ]]; then
+  die "这些文件里有 NUL 字节(内容被截断了):${_nul_bad}"
+fi
+ok "overlay 文本文件无 NUL 字节"
+
 # Windows 上 git 可能没记录执行位, 这里统一补上。
 # **必须紧跟在 overlay 拷贝之后**: 后面所有 "[[ -x ... ]]" 的断言都依赖这个执行位。
 # 放在别处的话, 断言会在文件还是 0644 的时候跑, 直接把构建判死
@@ -741,6 +760,9 @@ _c_add() {  # _c_add <名字> <版本> <说明>
   if [[ -x "${ROOTFS}/usr/local/lib/opencode/opencode" ]]; then
     _c_add "opencode" "${OPENCODE_VERSION}" "AI 助手(排障/画图/旅游/查票)"
   fi
+  if [[ -x "${ROOTFS}/usr/local/bin/bus" ]]; then
+    _c_add "chenzhou-bus" "${COMP_VER_BUS}" "郴州实时公交(线路/站点/实时车辆)"
+  fi
   if [[ -x "${ROOTFS}/usr/local/bin/train" ]]; then
     _c_add "train" "${COMP_VER_TRAIN}" "12306 火车票余票"
   fi
@@ -762,7 +784,7 @@ _c_add() {  # _c_add <名字> <版本> <说明>
 } > "${ROOTFS}/usr/local/share/debian-usb/components.txt"
 
 # 命令清单: components.txt 列的是"装了哪些组件", 但用户真正会敲的是**命令**。
-# 以前 components.txt 只列了 9 个组件, wifi/proxy/screen-fit/audio-setup/
+# 以前 components.txt 只列了 9 个组件, wifi/screen-fit/audio-setup/
 # net-doctor/net-rescue/music-health/music-im-fix/screenshot/keyboard-fix/music/
 # terminal-* 这些用户天天用的命令一个都没列 —— "usb-version --tools 说这套镜像
 # 有什么功能"这个问题, 答得并不完整。
@@ -888,7 +910,55 @@ fi
 # 座位字段下标是 12306 返回格式的固定位置, 错一格整列就全错(实测踩过)
 grep -q '"ze_num": 30' "${ROOTFS}/usr/local/lib/traintools/api.py" \
   || die "traintools/api.py 的座位字段下标不对(二等座必须是 30)"
+# 12306 是国内站点, urllib 默认读环境里的 http_proxy —— 用户 export 一下代理,
+# 余票查询就变成"打不开余票页"(真机实测过)。必须显式 ProxyHandler({}) 关掉。
+grep -q 'ProxyHandler' "${ROOTFS}/usr/local/lib/traintools/api.py" \
+  || die "traintools/api.py 没有 ProxyHandler({}) —— 用户 export 代理后 12306 查不了"
 ok "火车票查询: train 命令 + traintools 模块就位"
+
+# ---- 郴州实时公交(bus) ----
+# 本地项目「郴州实时公交」(Python 绑定, 接口逆向自「郴州公交行」安卓客户端
+# com.chenzhou.bus)。代码装在 /usr/local/lib/chenzhou_bus/, 入口是 /usr/local/bin/bus。
+[[ -x "${ROOTFS}/usr/local/bin/bus" ]] \
+  || die "overlay 里缺 /usr/local/bin/bus —— 用户没有查实时公交的入口"
+for _m in __init__ client cli coords models; do
+  [[ -f "${ROOTFS}/usr/local/lib/chenzhou_bus/${_m}.py" ]] \
+    || die "缺 chenzhou_bus/${_m}.py —— bus 命令跑不起来"
+done
+if command -v python3 >/dev/null 2>&1; then
+  for _f in "${ROOTFS}"/usr/local/lib/chenzhou_bus/*.py; do
+    python3 -c "import ast,sys; ast.parse(open(sys.argv[1], encoding='utf-8').read())" "$_f" \
+      || die "chenzhou_bus 里的 ${_f##*/} 有语法错误"
+  done
+else
+  warn "构建机没有 python3, 跳过 chenzhou_bus 语法静态检查"
+fi
+# requests 是**硬依赖**(client.py 里 import requests), 漏了 bus 一跑就 ImportError
+grep -q "^Package: python3-requests$" "${ROOTFS}/var/lib/dpkg/status" \
+  || die "缺 python3-requests —— bus 命令跑不起来"
+# 这个接口是国内 IP 上的纯 HTTP, 走代理必坏(实测带 http_proxy 时 curl 直接
+# http=000 连都连不上)。镜像 v1.9.0 起不再预置代理, 但用户自己 export
+# http_proxy 的话照样会中招 —— 所以"忽略环境里的代理变量"这个护栏必须**在两处**
+# 都做了: bash 包装(bus 里 unset)和 python 模块(client.py 里 os.environ.pop)。
+# 少一处就可能哪天被改回去, 然后表现为"浏览器能看, bus 查不到"。
+grep -q "unset http_proxy" "${ROOTFS}/usr/local/bin/bus" \
+  || die "bus 包装脚本里没摘环境代理 —— 查询会被扔进代理然后连不上"
+grep -q "os.environ.pop" "${ROOTFS}/usr/local/lib/chenzhou_bus/client.py" \
+  || die "chenzhou_bus/client.py 里没摘环境代理 —— 同上"
+# 接口地址和租户 ID 是这个项目能工作的前提, 改错了表现是"查不到任何线路"
+grep -q "211.143.37.50" "${ROOTFS}/usr/local/lib/chenzhou_bus/client.py" \
+  || die "chenzhou_bus/client.py 里的接口地址不对 —— 查不到任何线路"
+grep -q "zh00002" "${ROOTFS}/usr/local/lib/chenzhou_bus/client.py" \
+  || die "chenzhou_bus/client.py 里的租户 ID 不对 —— 查不到任何线路"
+# --json 是给 AI/脚本用的输出通道, 少了它 AI 只能去解析中文表格
+grep -q '"--json"' "${ROOTFS}/usr/local/lib/chenzhou_bus/cli.py" \
+  || die "chenzhou_bus/cli.py 里没有 --json —— AI 没法结构化取数"
+# 无参数必须打帮助而不是掉进交互式 REPL(REPL 会卡住等输入)
+grep -q 'if not argv:' "${ROOTFS}/usr/local/lib/chenzhou_bus/cli.py" \
+  || die "chenzhou_bus/cli.py 里没有 '无参数打帮助' 的分支 —— bus 可能卡在 REPL 里"
+[[ -f "${ROOTFS}/home/${USER_NAME}/.config/opencode/skills/chenzhou-bus/SKILL.md" ]] \
+  || die "缺 chenzhou-bus 技能 —— AI 不会自己查公交"
+ok "郴州实时公交: bus 命令 + chenzhou_bus 模块 + 依赖 + 技能就位"
 
 # ---- wifit3(USB 无线网卡审计) ----
 [[ -x "${ROOTFS}/usr/local/bin/wifit3" ]] \
@@ -985,9 +1055,14 @@ ok "旅游攻略: travel-planner 技能 + travel 命令就位"
   || die "缺 /usr/local/bin/opencode —— AI 排障助手没装进镜像"
 [[ -x "${ROOTFS}/usr/local/lib/opencode/opencode" ]] \
   || die "缺 /usr/local/lib/opencode/opencode —— 包装脚本背后没有真身, opencode 起不来"
-# 包装脚本必须处理 socks5: Bun 不认 socks5 代理, 不处理就是 "unsupported proxy protocol"
+# 包装脚本不能再去**找**代理端口了(v1.9.0 起镜像不管代理)。
+# 但还得认得出 socks5 —— Bun 碰上 socks5:// 会抛 "unsupported proxy protocol",
+# 包装脚本要把它摘掉改走直连, 而不是甩一个天书般的协议报错。
 grep -q "socks5://" "${ROOTFS}/usr/local/bin/opencode" \
-  || die "opencode 包装脚本里没有 socks5 处理逻辑 —— Bun 代理报错会直接打脸用户"
+  || die "opencode 包装脚本里没有 socks5 识别逻辑 —— Bun 代理报错会直接打脸用户"
+if grep -qE 'for p in 8080 7890 3128' "${ROOTFS}/usr/local/bin/opencode"; then
+  die "opencode 包装脚本里还在扫端口找代理 —— 代理功能已经删了, 不该再有这套逻辑"
+fi
 _oc_cfg="${ROOTFS}/home/${USER_NAME}/.config/opencode/opencode.json"
 [[ -f "$_oc_cfg" ]] || die "缺 opencode.json —— opencode 起来没有配置"
 grep -q '"\$schema"' "$_oc_cfg" || die "opencode.json 缺 \$schema 声明"
@@ -1001,7 +1076,7 @@ done
 # ---- AGENTS.md 是 AI 的"这台机器有什么"清单, 必须跟镜像里的实际内容对得上 ----
 # 只断言"文件在"是不够的: 之前 diagram-drawio 和 textbook-fetch 两个技能装进镜像了,
 # 技能目录里也有, 但 AGENTS.md 里一个字都没提 —— AI 不知道自己有这两样本事,
-# 用户得自己点名它才会用。同理 wifit3/proxy/screen-fit 这些命令也不在清单里。
+# 用户得自己点名它才会用。同理 wifit3/screen-fit 这些命令也不在清单里。
 # 所以这里逐个核对: 技能和用户会敲的命令, AGENTS.md 里必须都提到。
 _AGENTS_MD="${ROOTFS}/home/${USER_NAME}/.config/opencode/AGENTS.md"
 for _sk in lan-topology lan-triage lan-repair lan-capture wifi-triage \
@@ -1011,8 +1086,8 @@ for _sk in lan-topology lan-triage lan-repair lan-capture wifi-triage \
   grep -q "${_sk}" "$_AGENTS_MD" \
     || die "AGENTS.md 里没提技能 ${_sk} —— AI 不知道自己有这本经, 不会主动用"
 done
-for _cmd in net wifi wifit3 proxy train tch travel music screen-fit screenshot \
-            keyboard-fix usb-version usb-grow.sh; do
+for _cmd in net wifi wifit3 train tch travel music screen-fit screenshot \
+            keyboard-fix usb-version usb-grow.sh help; do
   grep -q "${_cmd}" "$_AGENTS_MD" \
     || die "AGENTS.md 里没提命令 ${_cmd} —— AI 不知道用户能敲这个"
 done
@@ -1058,43 +1133,22 @@ else
   log "PIP_INDEX_URL 为空, pip 保持默认源"
 fi
 
-# ---- 预置代理配置(不强制打开) ----
-# /etc/profile.d/99-proxy.sh 里是"先探测端口通了才 export", 所以代理没跑的时候
-# 终端不会带 http_proxy, 不会把"没开代理"变成"所有下载都失败"。
-printf 'PROXY_URL="%s"\n' "${PROXY_URL_DEFAULT}" > "${ROOTFS}/etc/proxy.conf"
-chmod 0644 "${ROOTFS}/etc/proxy.conf"
-# 模板只从 proxy 脚本本身取(proxy --print-profile-d), 两边各写一份迟早会写岔
+# ---- 代理: v1.9.0 起整个功能删掉了 ----
+# 以前这里会生成 /etc/proxy.conf + /etc/profile.d/99-proxy.sh,
+# 并且往 ~/.bashrc 里塞一行 source —— 也就是**每个登录/图形终端都会自动
+# export http_proxy**。后果是"想用代理"变成了"所有工具都被代理":
+# 镜像里自己的 train(12306)/travel(高德)/bus(公交) 全部连不上国内接口
+# (真机实测: bus 走代理 curl 直接 http=000, train 报"打不开余票页")。
 #
-# proxy 是**这里第一次被用到**, 所以它的存在性/可执行位/语法必须**在用之前**查 ——
-# 之前它的 bash -n 检查排在 150 行之后, 脚本一旦缺失, 构建会在这里报
-# "proxy --print-profile-d 生成失败", 报错指向生成器, 真正的原因(文件没了)被掩盖了。
-[[ -x "${ROOTFS}/usr/local/bin/proxy" ]] \
-  || die "overlay 里缺 /usr/local/bin/proxy(或没有执行位) —— 预置代理没法生成"
-bash -n "${ROOTFS}/usr/local/bin/proxy" \
-  || die "overlay 里 proxy 语法错误 —— 预置代理没法生成"
-"${ROOTFS}/usr/local/bin/proxy" --print-profile-d "${PROXY_URL_DEFAULT}" \
-  > "${ROOTFS}/etc/profile.d/99-proxy.sh" \
-  || die "proxy --print-profile-d 生成失败"
-chmod 0644 "${ROOTFS}/etc/profile.d/99-proxy.sh"
-# 生成出来的东西必须还是合法 shell, 否则 /etc/profile.d 一被 source 就整个登录失败
-bash -n "${ROOTFS}/etc/profile.d/99-proxy.sh" || die "/etc/profile.d/99-proxy.sh 语法错误"
-
-# 光有 /etc/profile.d 是不够的 —— 那是**登录 shell** 才读的。xfce4-terminal
-# 开出来的是非登录交互 shell, 只读 ~/.bashrc, 于是 proxy status 里永远显示
-# "终端环境变量: 未设置", 而用户明明在图形桌面里。这里给两个账号的 ~/.bashrc
-# 各加一行 source, 两条路都通。
-for _bashrc in "${ROOTFS}/home/${USER_NAME}/.bashrc" "${ROOTFS}/root/.bashrc"; do
-  [[ -f "$_bashrc" ]] || { : >>"$_bashrc"; chmod 0644 "$_bashrc"; }
-  grep -q '99-proxy.sh' "$_bashrc" || cat >>"$_bashrc" <<'EOF'
-
-# --- 代理(由 debian-usb-builder 预置) ---
-# xfce4-terminal 这类终端是非登录 shell, 读不到 /etc/profile.d, 这里补一刀。
-if [ -r /etc/profile.d/99-proxy.sh ]; then
-  . /etc/profile.d/99-proxy.sh
-fi
-EOF
-done
-log "预置代理: ${PROXY_URL_DEFAULT}(proxy status / proxy on / proxy off)"
+# 现在镜像不预置、不管理、也不注入任何代理变量。用户要代理自己 export。
+# 这里只留一条断言: 确认镜像里**没有**代理的残留, 免得以后又被带回来。
+[[ ! -e "${ROOTFS}/etc/profile.d/99-proxy.sh" ]] \
+  || die "镜像里还有 /etc/profile.d/99-proxy.sh —— 代理功能不是删干净了吗"
+[[ ! -e "${ROOTFS}/etc/proxy.conf" ]] \
+  || die "镜像里还有 /etc/proxy.conf —— 代理功能不是删干净了吗"
+[[ ! -e "${ROOTFS}/usr/local/bin/proxy" ]] \
+  || die "镜像里还有 /usr/local/bin/proxy —— 代理功能不是删干净了吗"
+ok "代理功能已移除(镜像不再注入任何代理变量)"
 
 # ---- 终端标签页标题 = 当前目录 ----
 # 真机反馈"终端的标签切换快捷键不明" —— 光给快捷键还不够,
@@ -1120,6 +1174,18 @@ case "${TERM}" in
 esac
 EOF
     log "已写入终端标签页标题(跟随当前目录)"
+  fi
+  # 压掉 bash 的 help 内建, 让 /usr/local/bin/help(命令索引)能被敲出来。
+  # bash 自带的 help 是查 bash 语法的, 这套系统用不上; 而 bash 的规则是
+  # "函数/内建优先于 PATH" —— 不 disable, 用户敲 help 永远轮不到我们那个。
+  # 同样只能追加: 真机上的 .bashrc 有用户自己的东西, 覆盖了就全没了。
+  if [[ -f "$_user_bashrc" ]] && ! grep -q 'enable -n help' "$_user_bashrc"; then
+    cat >> "$_user_bashrc" <<'EOF'
+
+# --- YAO*OS: 压掉 help 内建, 让 help(命令索引) 生效 ---
+enable -n help
+EOF
+    log "已压掉 bash 的 help 内建(PATH 里的 help 生效)"
   fi
 fi
 
@@ -1233,12 +1299,6 @@ if venv_has requests; then
 else
   die "music 虚拟环境里没有 requests —— music single / music quark-login 全都不可用"
 fi
-# pysocks: requests 走 socks5 代理必需, 没有它设了代理反而直接报错
-if venv_has socks; then
-  ok "music 虚拟环境: PySocks 可用(能走 socks5 代理)"
-else
-  warn "music 虚拟环境里没有 PySocks —— 走 socks5 代理会报 ProxySchemeUnknown"
-fi
 # qrcode 是可选的: 没装只会退化成"打印链接", 不该因此卡构建
 if venv_has qrcode; then
   log "qrcode 已装, 夸克登录二维码可以直接画在终端里"
@@ -1247,7 +1307,7 @@ else
 fi
 
 # shell 语法: 镜像里的这几个脚本是用户的救命工具, 语法错 = 跑起来毫无反应
-for _sc in music net-doctor net-rescue usb-grow.sh screen-fit proxy music-health music-im-fix; do
+for _sc in music net-doctor net-rescue usb-grow.sh screen-fit music-health music-im-fix; do
   bash -n "${ROOTFS}/usr/local/bin/${_sc}" || die "镜像里的 ${_sc} 语法错误"
 done
 log "镜像内脚本语法检查通过"
@@ -1371,12 +1431,17 @@ ok "输入法前端与 openssh-client 已在必装清单里"
 # 输入法的两条"保险"也直接写好, 不依赖 im-config 的钩子链条
 if [[ -n "${USER_NAME}" ]]; then
   mkdir -p "${ROOTFS}/home/${USER_NAME}/.config/autostart"
+  # Exec 顺序有讲究(2026-11-07 真机实测): fcitx5-remote -o(激活)会把当前
+  # 输入法**打回 DefaultIM**(rime → -o → keyboard-us, 复现两次) ——
+  # 必须放在 rime 切换循环**之前**, 否则循环切好的 rime 在写日志前又被
+  # 踢回英文, 会话末存盘把 DefaultIM 毒化成 keyboard-us, 一轮轮自我强化,
+  # 表现就是"开机打不出中文"。
   cat > "${ROOTFS}/home/${USER_NAME}/.config/autostart/fcitx5.desktop" <<'EOF'
 [Desktop Entry]
 Type=Application
 Name=Fcitx 5
 Comment=启动 fcitx5 并切到 rime(中文态), 切不动就一直重试
-Exec=sh -c 'fcitx5 -d --replace; for i in $(seq 1 100); do dbus-send --session --dest=org.freedesktop.DBus --type=method_call --print-reply / org.freedesktop.DBus.NameHasOwner string:org.fcitx.Fcitx5 2>/dev/null | grep -q "boolean true" && break; sleep 0.2; done; for i in $(seq 1 120); do [ "$(timeout 3 fcitx5-remote -n 2>/dev/null)" = rime ] && break; timeout 10 fcitx5-remote -s rime >/dev/null 2>&1; sleep 1; done; timeout 5 fcitx5-remote -o >/dev/null 2>&1; printf "%s im=%s\n" "$(date +%FT%T)" "$(timeout 3 fcitx5-remote -n 2>/dev/null)" >> "$HOME/.config/fcitx5-boot.log" 2>/dev/null || true'
+Exec=sh -c 'fcitx5 -d --replace; for i in $(seq 1 100); do dbus-send --session --dest=org.freedesktop.DBus --type=method_call --print-reply / org.freedesktop.DBus.NameHasOwner string:org.fcitx.Fcitx5 2>/dev/null | grep -q "boolean true" && break; sleep 0.2; done; timeout 5 fcitx5-remote -o >/dev/null 2>&1; for i in $(seq 1 120); do [ "$(timeout 3 fcitx5-remote -n 2>/dev/null)" = rime ] && break; timeout 10 fcitx5-remote -s rime >/dev/null 2>&1; sleep 1; done; echo "$(date -Is) im=$(timeout 3 fcitx5-remote -n 2>/dev/null)" >> "$HOME/.config/fcitx5-boot.log" 2>/dev/null || true'
 Icon=fcitx
 Terminal=false
 NoDisplay=true
@@ -1413,6 +1478,15 @@ EOF
     || die "fcitx5 自启项没有切 rime —— 开机默认是键盘直写态, 按 Shift 不会有任何反应"
   grep -q "fcitx5-remote -n" "${ROOTFS}/home/${USER_NAME}/.config/autostart/fcitx5.desktop" \
     || die "fcitx5 自启项没有校验切换结果 —— 引擎没注册完时切换会静默失败, 必须重试"
+  # -o(激活)会把输入法打回 DefaultIM(2026-11-07 真机: rime → -o → keyboard-us,
+  # 复现两次) —— 必须排在 rime 切换循环之前, 否则切好的 rime 在写日志前又被
+  # 踢回英文, 会话末存盘毒化 DefaultIM, 每轮开机都停在直写态。
+  _fc_f="${ROOTFS}/home/${USER_NAME}/.config/autostart/fcitx5.desktop"
+  _o_at="$(grep -bo 'fcitx5-remote -o' "$_fc_f" | head -1 | cut -d: -f1)"
+  _s_at="$(grep -bo 'fcitx5-remote -s rime' "$_fc_f" | head -1 | cut -d: -f1)"
+  if [[ -z "$_o_at" || -z "$_s_at" || "$_o_at" -ge "$_s_at" ]]; then
+    die "fcitx5 自启项里 -o 激活没排在 rime 切换循环之前 —— -o 会把输入法打回英文 DefaultIM(2026-11-07 真机实测)"
+  fi
   [[ ! -e "${ROOTFS}/home/${USER_NAME}/.config/autostart/fcitx5-default.desktop" ]] \
     || die "旧的 fcitx5-default.desktop 还在 —— 它会拉起第二个 fcitx5 实例, 抢 IM context"
   [[ -f "${_fcitx_svc}.disabled" ]] \
@@ -1508,11 +1582,15 @@ mkdir -p "${ROOTFS}/home/${USER_NAME}/.config/autostart"
 # autostart 项, terminal(666) 抢在 fcitx5(675) 之前启动 —— GTK 端 im-fcitx5
 # 连接 fcitx5 的 dbus 握手失败后不会再恢复, 这个窗口就终身绕不过输入法,
 # 表现为"打字直接进 shell、ctrl+space 没反应", 但凡手动新开的终端窗口都正常,
-# 极难定位。
-# 2026-10-25 又实测到第二层(真机 v1.0.5): 光等"名字上总线"还不够 ——
-# 真正决定"这个窗口能不能打中文"的是 fcitx5 的**输入法模块有没有应答**。
-# 这里等到 fcitx5-remote -n 能返回输入法名(模块活了)才开窗口, 有上限,
-# 超时照样开, 不把桌面卡死。
+# 极难定位。所以必须等 fcitx5 真的就绪再开窗, 但**等什么信号**踩过两层:
+#   v1.0.5 等 fcitx5-remote -n 返回输入法名 —— 2026-11-07 真机实测这是个
+#   **鸡生蛋死锁**: 桌面上一个窗口都没有时 -n 恒返回空(当时 NameHasOwner
+#   已经 true, -n 连续 13 秒照样是空), 而窗口正是本自启项要开的。于是每次
+#   开机都卡满 terminal-keepalive 的 45 秒宽限期才被救场 —— 用户看到的
+#   就是"开机要一分钟"(实测终端进程比 X 会话晚 47 秒, 标题还是 keepalive
+#   打的"终端", 不是本项的 debian-usb)。
+# 改等 NameHasOwner(org.fcitx.Fcitx5 真上总线): 服务在就能接 GTK 的 IM
+# 握手, 真机 2~4 秒; 上限 10 秒, 超时照样开, 不把桌面卡死。
 # 为什么不等"引擎已经切到 rime"再开窗: 真机实测 profile 的 DefaultIM 会
 # 在运行中被 fcitx5 改写(用户上次停在英文态 → 下次开机 DefaultIM 变回
 # keyboard-us), 而**新建 IM 上下文时会按 DefaultIM 重置整组** —— 等引擎
@@ -1525,7 +1603,7 @@ cat > "${ROOTFS}/home/${USER_NAME}/.config/autostart/xfce-terminal.desktop" <<'E
 Type=Application
 Name=Terminal
 Comment=启动终端
-Exec=sh -c 'for i in $(seq 1 150); do [ -n "$(timeout 3 fcitx5-remote -n 2>/dev/null)" ] && break; sleep 0.4; done; exec xfce4-terminal --maximize --title=debian-usb --geometry=120x32 -e /usr/local/bin/terminal-welcome'
+Exec=sh -c 'for i in $(seq 1 100); do dbus-send --session --dest=org.freedesktop.DBus --type=method_call --print-reply / org.freedesktop.DBus.NameHasOwner string:org.fcitx.Fcitx5 2>/dev/null | grep -q "boolean true" && break; sleep 0.1; done; sleep 0.3; exec xfce4-terminal --maximize --title=YAO*OS --geometry=120x32 -e /usr/local/bin/terminal-welcome'
 Icon=utilities-terminal
 Terminal=false
 X-GNOME-Autostart-enabled=true
@@ -1533,19 +1611,38 @@ EOF
 grep -q "NameHasOwner string:org.fcitx.Fcitx5" \
   "${ROOTFS}/home/${USER_NAME}/.config/autostart/fcitx5.desktop" \
   || die "fcitx5 自启项没有等 fcitx5 出现在 dbus 总线上 —— 切 rime 会打空"
-grep -q 'fcitx5-remote -n' \
+# 终端自启必须等 NameHasOwner, 且**绝不能**再等 fcitx5-remote -n:
+# 没窗口时 -n 恒为空(2026-11-07 真机实测), 会死锁到 keepalive 的 45 秒
+# 宽限期 —— 开机白屏一分钟。
+grep -q "NameHasOwner string:org.fcitx.Fcitx5" \
   "${ROOTFS}/home/${USER_NAME}/.config/autostart/xfce-terminal.desktop" \
-  || die "terminal 自启项没有等 fcitx5 输入法模块应答 —— 开机首个窗口会因 IM 握手竞态永远打不出中文(真机 v1.0.3 的坑)"
+  || die "terminal 自启项没等 fcitx5 上总线 —— 会退回 v1.0.3 的 IM 握手竞态(首窗口打不出中文)"
+if grep -q 'fcitx5-remote -n' "${ROOTFS}/home/${USER_NAME}/.config/autostart/xfce-terminal.desktop"; then
+  die "terminal 自启项还在等 fcitx5-remote -n —— 没窗口时它恒为空, 开机会白屏 45 秒(真机 2026-11-07 实测)"
+fi
 grep -q -- "--maximize" \
   "${ROOTFS}/home/${USER_NAME}/.config/autostart/xfce-terminal.desktop" \
   || die "开机终端没有最大化 —— 用户开机第一眼看到的是小窗口, 还得手动拉大"
-# 开机那个终端必须先打键位速查表 —— 用户说"像黑客一样在终端下操作",
-# 而小白面对一个空终端根本不知道能干什么。
+# 开机那个终端必须接 terminal-welcome, 且它打的是 YAO*OS 横幅 +
+# 一行 help 提示 —— 用户(2026-11-07): "开机终端显示系统名称, 不要
+# 自动显示终端说明, 用专门的命令查询功能"。所以这里反过来断言:
+# 速查表(terminal-keys)不能再被开机调用, 想看得自己敲。
 # (这条断言必须在 xfce-terminal.desktop 生成**之后**查 —— 那文件是本脚本
 #  上面才写出来的, 放前面查等于查一个还不存在的文件, v1.0.5/v1.1.0 就死在这。)
 grep -q "terminal-welcome" "${ROOTFS}/home/${USER_NAME}/.config/autostart/xfce-terminal.desktop" \
-  || die "开机终端没有接 terminal-welcome(键位速查表不会出现)"
-ok "开机终端已接上键位速查表"
+  || die "开机终端没有接 terminal-welcome(YAO*OS 横幅不会出现)"
+ok "开机终端已接上 terminal-welcome"
+grep -q "YAO*OS" "${ROOTFS}/usr/local/bin/terminal-welcome" \
+  || die "terminal-welcome 里没有 YAO*OS —— 开机第一眼看不到系统名"
+grep -q "输入 help 查看系统功能" "${ROOTFS}/usr/local/bin/terminal-welcome" \
+  || die "terminal-welcome 里没有 help 提示 —— 用户不知道怎么查功能"
+if grep -qE '^[^#]*terminal-keys' "${ROOTFS}/usr/local/bin/terminal-welcome"; then
+  die "terminal-welcome 还在开机调 terminal-keys(速查表) —— 用户说不要自动显示说明"
+fi
+ok "开机横幅 = YAO*OS + help 提示, 不再自动打速查表"
+[[ -x "${ROOTFS}/usr/local/bin/help" ]] \
+  || die "缺 /usr/local/bin/help —— 用户没法查系统有哪些命令"
+ok "help 命令在"
 
 # ---- 快捷键: 摘掉指向缺失程序的默认绑定 + 下发用户级覆盖(截图/窗口操作) ----
 # 真机反馈(2026-10-25): "无法打开 print 快捷键这样的警告提示"。
@@ -1577,7 +1674,7 @@ chown -R "${USER_UID}:${USER_GID}" \
   "${ROOTFS}/home/${USER_NAME}/.config/xfce4/xfconf" 2>/dev/null || true
 ok "快捷键已清理(失效绑定清零 + Print 截图键改绑 scrot + Super 方向键可用)"
 
-# 图形版下载器默认走 Clash(127.0.0.1:7897), 这里给一份清空代理的初始配置
+# 图形版下载器的初始配置。proxy 字段留空(上游认这个键, 但镜像不预置代理了)
 if [[ -f "${ROOTFS}/home/${USER_NAME}/projects/gequhai-downloader/utils.py" ]]; then
   cat > "${ROOTFS}/home/${USER_NAME}/projects/gequhai-downloader/config.json" <<'EOF'
 {
@@ -1924,7 +2021,6 @@ root UUID  : ${ROOT_UUID}
 单曲下载    : music single "<歌名>"   (只依赖 requests, 任何档位都可用)
 apt 源      : ${APT_MIRROR:-官方源}   $( [[ "$APT_MIRROR_OK" == "1" ]] && echo "(已生效)" || echo "(构建时拉不动, 已回退官方源)" )
 pip 源      : ${PIP_INDEX_URL:-默认 PyPI}
-预置代理    : ${PROXY_URL_DEFAULT}   (proxy status / proxy on / proxy off)
 显示分辨率  : 开机自动按 EDID 匹配每块屏的原生分辨率 (screen-fit --disable 可关)
 Secure Boot: 需要 shim 签名(已随镜像写入); 若无法启动请在固件里关闭 Secure Boot
 EOF

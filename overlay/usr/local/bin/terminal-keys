@@ -56,7 +56,6 @@ cat <<'EOF'
 │    music screen      按显示器原生分辨率调整                             │
 │    music quark-login 夸克网盘扫码登录(拿 cookie)                       │
 │    music terminal on|off|status  终端守护开关                         │
-│    proxy on|off|test 代理开关                                         │
 │    screen-fit        重新匹配分辨率                                   │
 │    music-im-fix      一键修好输入法                                   │
 │    usb-grow.sh --check 看看 U 盘剩余空间, --help 看全部用法            │

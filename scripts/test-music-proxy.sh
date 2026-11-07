@@ -4,8 +4,8 @@
 #
 # 背景(真机实测): 站点/夸克/封面直连全是 200, 走 LAN 代理反而全断 ——
 # gequhai 回 403 反爬页(解析出 0 条 -> "没有搜到"), 夸克/酷我 SSL 失败。
-# 而登录 shell 会经 /etc/profile.d/99-proxy.sh 自动导出 http_proxy,
-# requests 即使拿到空代理配置也会去读它, 于是"浏览器能看, music search 搜不到"。
+# 镜像 v1.9.0 起不再预置代理(99-proxy.sh 删了), 但用户自己 export http_proxy
+# 的话 requests 照样会去读它, 于是"浏览器能看, music search 搜不到"。
 #
 # 这里用一个假项目验证: single.py 跑起来后, 环境里的代理变量必须已经没了。
 set -uo pipefail

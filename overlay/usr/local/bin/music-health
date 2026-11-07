@@ -428,9 +428,9 @@ fi
 if [[ -f /etc/apt/sources.list ]]; then
   info "apt 源: $(grep -m1 '^deb ' /etc/apt/sources.list 2>/dev/null | awk '{print $2}' || echo '?')"
 fi
-if [[ -x /usr/local/bin/proxy ]]; then
-  echo "  代理:"
-  /usr/local/bin/proxy status 2>&1 | sed 's/^/       /' || warn "proxy status 跑失败"
+# 镜像不预置代理(v1.9.0 起删了 proxy 命令), 只提示用户自己 export 的代理变量
+if env | grep -qiE '^(http|https|all)_proxy='; then
+  warn "当前 shell 设了代理 —— music 的下载命令会自动绕开它(直连才通)"
 fi
 
 # 音乐工具(search/下载)一律走直连 —— 实测环境里的 http_proxy 反而会让站点回 403

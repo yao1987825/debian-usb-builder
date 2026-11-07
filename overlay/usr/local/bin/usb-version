@@ -66,7 +66,7 @@ print_tools() {
 }
 
 # 命令清单: 组件表回答"装了什么", 命令表回答"我能敲什么"。
-# 以前只有组件表, wifi/screen-fit/proxy 这些用户天天敲的命令不在里面。
+# 以前只有组件表, wifi/screen-fit 这些用户天天敲的命令不在里面。
 print_commands() {
   if [[ -f "$CMDS_FILE" ]] && [[ -s "$CMDS_FILE" ]]; then
     echo
@@ -167,7 +167,7 @@ case "$MODE" in
 esac
 
 # ---- 默认: 摘要 ----
-printf '%s=== Debian U 盘系统 ===%s\n' "$B" "$N"
+printf '%s=== YAO*OS ===%s\n' "$B" "$N"
 printf '  版本      : %s%s%s\n' "$G" "${VER:-未知}" "$N"
 printf '  基线版本  : %s (CHANGELOG 里对应这一段)\n' "$BASE_VER"
 printf '  构建时间  : %s\n' "${BUILT:-未知}"

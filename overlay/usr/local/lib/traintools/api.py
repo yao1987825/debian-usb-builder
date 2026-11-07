@@ -74,7 +74,14 @@ class TrainError(Exception):
 
 def _opener():
     cj = http.cookiejar.CookieJar()
-    op = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
+    # ProxyHandler({}) = **显式不走任何代理**。
+    # urllib 默认会读环境里的 http_proxy/https_proxy, 而 12306 是国内站点 ——
+    # 用户 export 一下代理, 余票查询就变成"打不开 12306 余票页"。
+    # (镜像 v1.9.0 起不再预置代理, 但用户自己 export 的话照样会中招)
+    op = urllib.request.build_opener(
+        urllib.request.HTTPCookieProcessor(cj),
+        urllib.request.ProxyHandler({}),
+    )
     op.addheaders = [
         ("User-Agent", UA),
         ("Accept", "application/json, text/javascript, */*; q=0.01"),

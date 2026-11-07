@@ -25,3 +25,10 @@ music-shell/
 /qingjian/
 /music-shell/
 /tchMaterial-parser/
+/zhixuewang-python/
+
+# 郴州实时公交的**源项目**(在仓库目录里留了一份)。
+# 集成进镜像的代码在 overlay/usr/local/lib/chenzhou_bus/ —— 那份才是要提交的;
+# 源项目再提交一遍就是重复 + 以后改错地方。
+# (2026-11-02 差点被 `git add -A` 顺手带进去)
+郴州实时公交/
