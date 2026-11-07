@@ -94,7 +94,7 @@ suite=bookworm
 hostname=debian-usb
 image_mb=8192
 VEOF
-  printf 'music-shell|0.5.0|终端播放器\nnetkit|1.1.0|局域网诊断\n' > "${TMP}/share/components.txt"
+  printf 'music-shell|0.6.0|终端播放器\nnetkit|1.1.0|局域网诊断\n' > "${TMP}/share/components.txt"
   cat > "${TMP}/CHANGELOG.md" <<'CEOF'
 # 更新日志
 

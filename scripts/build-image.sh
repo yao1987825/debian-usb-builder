@@ -85,7 +85,7 @@ REPO_PLAYLIST="${REPO_PLAYLIST:-https://github.com/hoogrey/gequhai-playlist-down
 # 用上游 release 的预编译产物而不是现场编: Debian 12 的 rustc 是 1.63, 编不动
 # edition 2024; 实测 v0.5.0 最高只要 GLIBC_2.34, 在 Debian 12(glibc 2.36)上
 # 直接能跑 —— 2026-10-27 真机验证: "音频已连接", 正常播放到 0:29/3:54。
-MUSIC_SHELL_VERSION="${MUSIC_SHELL_VERSION:-0.5.0}"
+MUSIC_SHELL_VERSION="${MUSIC_SHELL_VERSION:-0.6.0}"
 MUSIC_SHELL_TARBALL="music-shell-x86_64-unknown-linux-gnu.tar.gz"
 MUSIC_SHELL_URL="https://github.com/yao1987825/music-shell/releases/download/v${MUSIC_SHELL_VERSION}/${MUSIC_SHELL_TARBALL}"
 MUSIC_SHELL_SUMS_URL="https://github.com/yao1987825/music-shell/releases/download/v${MUSIC_SHELL_VERSION}/checksums.txt"

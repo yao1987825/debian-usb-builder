@@ -214,6 +214,22 @@ v1.8.0 那次改动把 `overlay/home/user/.config/opencode/AGENTS.md` 的**文�
 - **不动**：hostname `debian-usb`、仓库名、`/usr/local/share/debian-usb/` 路径
   （纯改名有兼容风险，没必要）。
 
+### 🎵 播放中 Alt+A 收歌进《我的》歌单 + `music my` 专门切过去
+
+`music-shell` 升到 **0.6.0**（上游独立仓库，推 tag → CI 构建 → 镜像按
+`MUSIC_SHELL_VERSION` 下载并校验 checksums.txt）：
+
+- **`Alt+A`**：播放中把当前这首歌追加进自定义歌单（默认《我的》），
+  按路径去重，状态栏回 `已加入《我的》(第 N 首): 歌名`，首次自动建歌单文件
+  （`~/.config/music-shell/playlists/我的.json`，和 `sv`/`pl` 同一套格式）；
+- 文本版 **`fav`**（同义 `favorite`，敲一下就生效）；配置新增
+  `favorite_playlist` 可改歌单名，老 config.json 缺字段照样跑（serde 默认值）；
+- 键位实现：终端把 Alt+A 发成两字节 `ESC a`，music-shell 的
+  `parse_escape` 认**同一次 read 到达**的 `ESC+可打印字符` 为 Alt；
+  跨 read 的 `ESC`+字母仍按「Esc 后敲字」处理 —— 否则 Esc 后按 `l` 重扫会失效；
+- **`music my`**（别名 `music 我的`）：一条命令直接进这个歌单播放，
+  前置检查（播放器 / 歌曲分区挂载 / ALSA 直通）全复用 `music play`。
+
 ---
 
 ## v1.8.0 (2026-11-02)

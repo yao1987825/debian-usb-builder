@@ -282,6 +282,50 @@ else
   bad "im-toggle 在 fcitx5 没运行时的行为不对(rc=${rc}): [$(echo "$out" | tr '\n' ' ')]"
 fi
 
+# ---- 9. music my: 专听自定义歌单《我的》(Alt+A 收歌的落点) ----
+# 假的 music-shell 打印收到的参数, 验证 --playlist 没被 shift 吃掉
+cat > "$TMP/bin/music-shell" <<'EOF'
+#!/bin/sh
+printf 'MUSIC-SHELL'
+for a in "$@"; do printf ' %s' "$a"; done
+printf '\n'
+EOF
+# 假的 audio-setup: cmd_play 会顺手调它, 给个秒退的免得跑真的
+cat > "$TMP/bin/audio-setup" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+chmod +x "$TMP/bin/music-shell" "$TMP/bin/audio-setup"
+
+out="$(run_music my)"
+expected="MUSIC-SHELL --playlist 我的"
+if [[ "$out" == "$expected" ]]; then
+  ok "music my 直接进《我的》歌单"
+else
+  bad "music my 输出不对: [$out] (期望 $expected)"
+fi
+
+out="$(run_music 我的)"
+if [[ "$out" == "$expected" ]]; then
+  ok "music 我的 中文别名与 music my 等价"
+else
+  bad "music 我的 输出不对: [$out] (期望 $expected)"
+fi
+
+out="$(run_music my --no-audio)"
+expected="MUSIC-SHELL --playlist 我的 --no-audio"
+if [[ "$out" == "$expected" ]]; then
+  ok "music my 的额外参数原样透传给 music-shell"
+else
+  bad "music my 透传不对: [$out] (期望 $expected)"
+fi
+
+if run_music help 2>&1 | grep -q "music my"; then
+  ok "music help 里写着 music my"
+else
+  bad "music help 缺 music my 这一行"
+fi
+
 echo
 if (( FAIL == 0 )); then
   echo "✅ 全部 ${PASS} 项通过"

@@ -23,7 +23,7 @@
 | `bus search/line/realtime/schedule/nearby` | 郴州实时公交: 线路站点、实时车辆(还有几站/多少米/几分钟到)、发车时刻表、附近站点 |
 | `tch search/download` | 国家中小学智慧教育平台电子课本查/下载(游客模式免登录) |
 | `travel plan/nav/weather` | 旅游攻略/行程规划/高德导航/天气(travel-planner 技能) |
-| `music play/doctor/health` | 终端播放器(music play)、体检(music doctor)、播放健康检查(music-health) |
+| `music play/my/doctor/health` | 终端播放器(music play)、专听歌单《我的》(music my, 播放中 Alt+A 收歌)、体检(music doctor)、播放健康检查(music-health) |
 | `music-im-fix` | 中文输入法(fcitx5-rime)重新部署, 输入法抽风时先跑它 |
 | `screen-fit` | 按 EDID 自动匹配显示器原生分辨率(`--disable` 关掉开机自动执行) |
 | `screenshot` | 截图(绑在 Print 键上) |

@@ -373,6 +373,9 @@ music playlist playlist.csv
 # 终端播放器(乐库就是歌曲分区, 下载完直接听) ★
 music play
 
+# 专听自定义歌单《我的》(播放中按 Alt+A 把当前歌收进去)
+music my
+
 # 图形界面: 搜索并下载单曲(夸克网盘转存, 需 PyQt6)
 music gui
 
@@ -388,7 +391,8 @@ music doctor
 `music play` 打开的是终端播放器 **music-shell**（Rust + ALSA，镜像预装，上游
 [yao1987825/music-shell](https://github.com/yao1987825/music-shell)），乐库固定指向歌曲分区，
 所以「下载 → 立刻能听」是连着的。它是全屏 TUI，会占住当前终端标签页；键位在界面里按 `?` 看，
-`q` 退出。没有声音时先跑 `music health`（第 7 节会查播放器、乐库挂载、`audio` 组和声卡）。
+`q` 退出。听歌时按 **Alt+A** 可以把当前这首歌收进自定义歌单《我的》，
+之后 `music my` 专门播这个歌单。没有声音时先跑 `music health`（第 7 节会查播放器、乐库挂载、`audio` 组和声卡）。
 
 也可以直接用原生命令：
 
@@ -772,7 +776,7 @@ usb-version --json       # 机器可读（给脚本或 AI 用）
   镜像大小  : 8192 MiB (定长镜像, 写进大 U 盘后会自动扩到整盘)
 
 本版包含的功能:
-  music-shell   0.5.0    终端播放器(music play)
+  music-shell   0.6.0    终端播放器(music play)
   netkit        1.1.0    局域网诊断(net topo/probe/fix)
   chenzhou-bus  1.0.0    郴州实时公交(线路/站点/实时车辆)
   opencode      1.19.4   AI 助手(排障/画图/旅游/查票)
